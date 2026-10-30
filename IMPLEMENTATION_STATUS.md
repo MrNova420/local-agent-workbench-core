@@ -20,7 +20,7 @@ Current status: active development; **not approved for unrestricted real-project
 
 - `python -m unittest discover -s tests -v`: **48 passed**.
 - `python -m py_compile` over application and support modules: passed.
-- `git diff --check`: passed before the latest documentation-only update.
+- `git diff --check`: passed after the latest source and documentation updates.
 - Regression tests cover turn snapshots, resumed project instructions, link traversal, persistent/cancelled MCP operations, request timeout configuration, cancellable commands, tool batches, bounded retrieval/search, full-request budgeting, patch transaction/deletion/rollback, session recovery validation, run-setting validation, and context-setting precedence.
 - Read-only runtime snapshot while inspecting the existing app: `hf.co/ressl/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`, allocated context 262,144, reported 87% CPU / 13% GPU. No request, reload, or unload was issued by this audit.
 
