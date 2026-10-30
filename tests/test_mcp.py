@@ -21,7 +21,7 @@ class MCPTests(unittest.TestCase):
    with tempfile.TemporaryDirectory() as d:
     m=MCPManager(Path(d)/'mcp.json');m.servers={'demo':{'command':'fake'}}
     with patch('mcp.ClientSession',FakeSession),patch('mcp.StdioServerParameters',lambda **kw:kw),patch('mcp.client.stdio.stdio_client',FakeManager):
-     tools=await m.discover();self.assertEqual(tools[0]['function']['name'],'mcp__demo__echo');self.assertEqual(await m.call(tools[0]['function']['name'],{}),'ok');await m.close();self.assertEqual(m.clients,{})
+      tools=await m.discover();self.assertEqual(tools[0]['function']['name'],'mcp__demo__echo');self.assertTrue(m.discovered);self.assertEqual(await m.call(tools[0]['function']['name'],{}),'ok');await m.close();self.assertEqual(m.clients,{})
   # The official SDK is an optional dependency; if unavailable, provide import stubs to exercise lifecycle.
   try:import mcp
   except ImportError:self.skipTest('MCP SDK not installed; lifecycle exercised via mocked SDK when available')

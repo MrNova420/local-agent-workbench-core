@@ -173,10 +173,11 @@ class LocalAgentApp(tk.Tk):
    discovered=list(turn.mcp_tools)
    try:
     if turn_cancel.is_set():self.events.emit({'type':'cancelled','elapsed':time.monotonic()-self.started});return
-    if self.mcp.servers and not self.mcp_tools:
+    if self.mcp.servers and not self.mcp.discovered:
      discovered=self.mcp.run(self.mcp.discover(),cancel_event=turn_cancel)
      self.mcp_tools=discovered
-     self.events.emit({'type':'mcp_status','text':f'{len(discovered)} local tools connected'})
+     failed=', '.join(self.mcp.errors) if self.mcp.errors else ''
+     self.events.emit({'type':'mcp_status','text':f'{len(discovered)} local tools connected'+(f' · failed: {failed}' if failed else '')})
     else:discovered=list(turn.mcp_tools)
     if turn_cancel.is_set():self.events.emit({'type':'cancelled','elapsed':time.monotonic()-self.started});return
    except Exception as exc:self.events.emit({'type':'mcp_status','text':f'MCP unavailable: {exc}'})

@@ -21,6 +21,7 @@ class MCPManager:
         self.clients: dict[str, tuple[Any, Any]] = {}
         self.tools: dict[str, tuple[str, str]] = {}
         self.errors: dict[str, str] = {}
+        self.discovered = False
         self.loop: asyncio.AbstractEventLoop | None = None
         self.loop_thread: threading.Thread | None = None
         self._loop_lock = threading.Lock()
@@ -133,6 +134,7 @@ class MCPManager:
                         pass
                 if isinstance(exc, asyncio.CancelledError):
                     raise
+        self.discovered = True
         return found
 
     async def call(self, name: str, args: dict[str, Any]):
