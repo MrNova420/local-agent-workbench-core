@@ -36,9 +36,10 @@ class Workspace:
 
 class ToolRegistry:
     """Only explicit, project-scoped tools. No shell strings, network or host-file tools."""
-    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None):
+    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
+        self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
         self.schemas = [
           self._schema("list_files", "List project files", {"path":{"type":"string"},"pattern":{"type":"string"}}, []),
           self._schema("search_files", "Search project text", {"query":{"type":"string"}}, ["query"]),
@@ -69,20 +70,29 @@ class ToolRegistry:
             base = self.workspace.resolve(args.get("path", ".")); pattern = args.get("pattern", "*")
             import fnmatch
             matches=[]
-            for p in iter_project_files(base):
+            for p in iter_project_files(base,max_files=20000):
                 if fnmatch.fnmatch(p.name,pattern):matches.append(p.relative_to(self.workspace.root).as_posix())
                 if len(matches)>=1200:break
             return "\n".join(matches)
         if name == "search_files":
-            query = str(args.get("query", "")).casefold(); hits=[]
-            for p in iter_project_files(self.workspace.root):
+            query = str(args.get("query", "")).strip().casefold(); hits=[];scanned=0;bytes_read=0;capped=False;hit_limit=False
+            if not query:return "Search query must not be empty."
+            for p in iter_project_files(self.workspace.root,max_files=self.search_file_limit):
+                scanned+=1
                 if p.suffix.casefold() not in TEXT_EXT:continue
-                try: lines=p.read_text(encoding="utf8").splitlines()
+                try:
+                    size=p.stat().st_size
+                    if bytes_read+size>self.search_byte_limit:capped=True;break
+                    lines=p.read_text(encoding="utf8").splitlines();bytes_read+=size
                 except (OSError,UnicodeError): continue
                 for i,line in enumerate(lines,1):
                     if query in line.casefold(): hits.append(f"{p.relative_to(self.workspace.root).as_posix()}:{i}: {line[:400]}")
-                    if len(hits)>=100: return "\n".join(hits)
-            return "\n".join(hits) or "No matches."
+                    if len(hits)>=100:hit_limit=True;break
+                if hit_limit:break
+            result="\n".join(hits) or "No matches."
+            if scanned>=self.search_file_limit:capped=True
+            if capped or hit_limit:result+=f"\n\n[Search results capped at {len(hits)} hits, {scanned} files, or {bytes_read:,} bytes; results may be incomplete.]"
+            return result
         if name == "write_file":
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
             if not self.approval(name,args): return "Denied by user."
@@ -223,29 +233,36 @@ class ToolRegistry:
         except (OSError,ValueError) as exc: return f"Command error: {exc}"
 
 class ContextManager:
-    def __init__(self, context: int=CONTEXT_MAX, reserve:int=8192): self.context,self.reserve=context,reserve
+    def __init__(self, context: int=CONTEXT_MAX, reserve:int=8192,scan_file_limit:int=5000,scan_bytes_limit:int=128*1024*1024): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
     @property
     def input_budget(self): return max(1024,self.context-self.reserve)
     def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens+1024))
     @staticmethod
     def estimate(text:str)->int: return max(1,len(text.encode("utf8")))
     def retrieve(self,root:Path,prompt:str,limit:int=18_000)->str:
-        terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}; ranked=[]
+        terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}; ranked=[];examined=0;bytes_read=0;capped=False
         if not terms:return ""
-        for p in iter_project_files(root):
+        for p in iter_project_files(root,max_files=self.scan_file_limit):
+            examined+=1
             if p.suffix.casefold() not in TEXT_EXT:continue
             try:
-                if p.stat().st_size>80000:continue
+                size=p.stat().st_size
+                if size>80000:continue
+                if bytes_read+size>self.scan_bytes_limit:capped=True;break
                 content=p.read_text(encoding="utf8")
             except (OSError,UnicodeError):continue
+            bytes_read+=size
             rel=p.relative_to(root).as_posix(); low=content.casefold(); score=sum(low.count(t) for t in terms)+3*sum(t in rel.casefold() for t in terms)
             if score:ranked.append((score,rel,content))
+        if examined>=self.scan_file_limit:capped=True
         used=0; out=[]
         for _,rel,content in sorted(ranked,key=lambda x:(-x[0],x[1].casefold())):
             block=f"--- relevant file: {rel} ---\n{content[:12000]}"; size=self.estimate(block)
             if used+size>limit:continue
             out.append(block);used+=size
-        return "\n\n".join(out)
+        result="\n\n".join(out)
+        if capped:result+=("\n\n" if result else "")+f"[Project retrieval scan capped after {examined} files / {bytes_read:,} text bytes; results may be incomplete.]"
+        return result
     def compact(self,messages:list[dict],tools:list[dict]|None=None,output_tokens:int=0)->list[dict]:
         tools=tools or [];budget=self.budget(output_tokens)
         def request_size(rows):return self.estimate(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))

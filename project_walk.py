@@ -17,10 +17,11 @@ def _link_or_junction(path: Path) -> bool:
     return path.is_symlink() or is_junction(path)
 
 
-def iter_project_files(root: Path | str, ignored: set[str] | None = None) -> Iterator[Path]:
+def iter_project_files(root: Path | str, ignored: set[str] | None = None, max_files: int | None = None) -> Iterator[Path]:
     """Yield regular files without descending into links, junctions, or generated folders."""
     base = Path(root).resolve(strict=True)
     ignored_names = DEFAULT_IGNORED if ignored is None else ignored
+    yielded=0
     for current, directories, files in os.walk(base, topdown=True, followlinks=False):
         current_path = Path(current)
         directories[:] = sorted(
@@ -31,4 +32,6 @@ def iter_project_files(root: Path | str, ignored: set[str] | None = None) -> Ite
             path = current_path / name
             if _link_or_junction(path):
                 continue
+            if max_files is not None and yielded>=max_files:return
+            yielded+=1
             yield path

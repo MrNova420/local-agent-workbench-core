@@ -147,5 +147,6 @@ The following changes are committed separately after the audit baseline:
 - Unified diff handling now validates hunk counts/context, stages all file results before applying, supports deletions, and rolls back a multi-file application if replacement fails. Approval uses a scrollable complete action preview rather than truncating long patches or file contents.
 - Session writes now use unique same-directory atomic temp files with flush/fsync and a lock; session loads validate schema, id, workspace/model/context, and message history before resuming.
 - MCP discovery has an explicit completed state so a configured server that exposes zero tools is not spawned again on every task; per-server failures are shown in runtime status.
+- Project file preview, search, retrieval, and instruction discovery now cap the number of visited files; retrieval and search also cap bytes read and report partial results.
 
 These changes address only the listed paths. Direct approved child processes can be cancelled, but process-tree containment / OS isolation, complete request token accounting, and patch transactionality remain open. The redesigned UI also awaits visible inspection and user-flow acceptance. The app remains unsuitable for unrestricted real-project agent work until those gates and a visible end-to-end acceptance are completed.

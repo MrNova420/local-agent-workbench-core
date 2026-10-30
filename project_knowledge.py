@@ -8,7 +8,7 @@ class ProjectKnowledge:
  def __init__(self,workspace:Path|str):self.root=Path(workspace).resolve(strict=True)
  def instructions(self,max_chars:int=50000)->str:
   names={'AGENTS.md','CLAUDE.md','GEMINI.md','.github/copilot-instructions.md'}; found=[]
-  for p in iter_project_files(self.root):
+  for p in iter_project_files(self.root,max_files=10_000):
    rel=p.relative_to(self.root).as_posix()
    if p.name in {'AGENTS.md','CLAUDE.md','GEMINI.md'} or rel=='.github/copilot-instructions.md' or (rel.startswith('.github/instructions/') and p.name.endswith('.instructions.md')):
     try:found.append((len(p.relative_to(self.root).parts),rel,p.read_text(encoding='utf8')))
