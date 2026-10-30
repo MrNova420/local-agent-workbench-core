@@ -9,7 +9,7 @@ Current status: active development; **not approved for unrestricted real-project
 - Windows-first Tkinter coding workbench with a project/session rail, central conversation/composer, and Plan/Activity/Changes inspector. Generation controls are in Preferences.
 - Default Ollama model remains `hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`. Reasoning remains at the model default, and context is sent as selected.
 - Immutable task snapshots; project/session/model controls are locked during a task; resume clears the current transcript and asks before switching projects.
-- Run settings (context, maximum output, temperature, access mode, and approval mode) are validated and retained on session resume; reasoning remains unset at the model default.
+- Run settings (context, maximum output, temperature, access mode, and approval mode) are validated and retained on session resume; late model metadata cannot overwrite a saved or manually selected context. Reasoning remains unset at the model default.
 - Project-specific instructions are refreshed for resumed history; shared project traversal skips symlinks, junctions, and common generated folders.
 - Persistent MCP event-loop ownership and per-turn cancellation for MCP operations.
 - Streaming has no fixed socket inactivity deadline; approved direct child commands can be cancelled and have a one-hour maximum.
@@ -18,10 +18,10 @@ Current status: active development; **not approved for unrestricted real-project
 
 ## Verification performed in this work period
 
-- `python -m unittest discover -s tests -v`: **47 passed**.
+- `python -m unittest discover -s tests -v`: **48 passed**.
 - `python -m py_compile` over application and support modules: passed.
 - `git diff --check`: passed before the latest documentation-only update.
-- Regression tests cover turn snapshots, resumed project instructions, link traversal, persistent/cancelled MCP operations, request timeout configuration, cancellable commands, tool batches, bounded retrieval/search, full-request budgeting, patch transaction/deletion/rollback, session recovery validation, and run-setting validation.
+- Regression tests cover turn snapshots, resumed project instructions, link traversal, persistent/cancelled MCP operations, request timeout configuration, cancellable commands, tool batches, bounded retrieval/search, full-request budgeting, patch transaction/deletion/rollback, session recovery validation, run-setting validation, and context-setting precedence.
 - Read-only runtime snapshot while inspecting the existing app: `hf.co/ressl/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`, allocated context 262,144, reported 87% CPU / 13% GPU. No request, reload, or unload was issued by this audit.
 
 ## Not verified here

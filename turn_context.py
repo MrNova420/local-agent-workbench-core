@@ -31,6 +31,11 @@ def parse_run_settings(context_text: str, max_tokens_text: str, temperature_text
     return context, max_tokens, temperature
 
 
+def should_apply_advertised_context(session_active: bool, user_edited_context: bool) -> bool:
+    """Metadata is only a default; it must not overwrite a session/user choice."""
+    return not session_active and not user_edited_context
+
+
 @dataclass(frozen=True)
 class TurnContext:
     workspace: Path
