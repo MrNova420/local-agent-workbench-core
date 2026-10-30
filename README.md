@@ -22,7 +22,7 @@ The app never changes OpenCode configuration. It does not load a model on launch
 - Ask/edit/plan access modes; per-action approval by default and optional per-task approval.
 - Project instruction discovery (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, GitHub Copilot instructions) and on-demand project/user skill loading.
 - Query-ranked relevant file retrieval, conversation compaction, and a conservative byte-based budget that includes messages, tool definitions, and output reserve. It does not silently change the requested context; the estimate may reject some requests early because it is not Ollama's model tokenizer.
-- Resumable JSON sessions under `%LOCALAPPDATA%\LocalAgentDesk\sessions`.
+- Resumable JSON sessions under `%LOCALAPPDATA%\LocalAgentDesk\sessions`, with atomic writes and load-time schema/history validation.
 - Local stdio MCP configured in `%LOCALAPPDATA%\LocalAgentDesk\mcp.json`; optional official SDK with `python build.py --install-mcp`.
 - Read-only CPU/RAM/GPU and Ollama-loaded context telemetry.
 - Project file preview and an inspector for task plans, tool activity, and Git diffs.

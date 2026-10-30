@@ -1,25 +1,41 @@
 """Durable local session storage for the project agent."""
 from __future__ import annotations
-import json, os, re, time, uuid
+import json, os, re, tempfile, threading, time, uuid
 from pathlib import Path
 from typing import Any
 
 class SessionStore:
-    def __init__(self,root:Path|str): self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
+    def __init__(self,root:Path|str): self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self._lock=threading.RLock()
     def create(self,workspace:str,model:str,context:int,options:dict|None=None)->dict[str,Any]:
         sid=time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8]
         return {'schema_version':1,'session_id':sid,'created_at':time.time(),'updated_at':time.time(),'workspace':str(Path(workspace).resolve()),'model':model,'context':context,'runtime_options':options or {},'access':'ask','approval_mode':'per-action','messages':[{'role':'system','content':'You are a capable local software development agent. Inspect the project, plan substantial changes, use the available project tools, and ask before writes or commands. Follow project instructions and skills as relevant. The model controls its own reasoning behavior.'}],'turns':[],'todos':[]}
     def save(self,state:dict)->Path:
-        state['updated_at']=time.time();path=self.root/(self._safe(state['session_id'])+'.json');tmp=path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(state,indent=2,ensure_ascii=False),encoding='utf8');os.replace(tmp,path);return path
+        state['updated_at']=time.time();path=self.root/(self._safe(state['session_id'])+'.json');tmp=None
+        with self._lock:
+            try:
+                with tempfile.NamedTemporaryFile('w',encoding='utf8',delete=False,dir=self.root,prefix=path.stem+'-',suffix='.tmp') as handle:
+                    tmp=Path(handle.name);json.dump(state,handle,indent=2,ensure_ascii=False);handle.flush();os.fsync(handle.fileno())
+                os.replace(tmp,path);return path
+            finally:
+                if tmp is not None:tmp.unlink(missing_ok=True)
     def load(self,sid:str)->dict:
         state=json.loads((self.root/(self._safe(sid)+'.json')).read_text(encoding='utf8'))
-        if not {'session_id','workspace','model','context','messages'}<=state.keys():raise ValueError('Session file is incomplete')
+        if not isinstance(state,dict) or not {'session_id','workspace','model','context','messages'}<=state.keys():raise ValueError('Session file is incomplete')
+        if state['session_id']!=sid:raise ValueError('Session identifier does not match its file name')
+        if state.get('schema_version',1)!=1:raise ValueError(f"Unsupported session schema version: {state.get('schema_version')}")
+        if not isinstance(state['workspace'],str) or not state['workspace']:raise ValueError('Session workspace is invalid')
+        if not isinstance(state['model'],str) or not state['model']:raise ValueError('Session model is invalid')
+        if isinstance(state['context'],bool) or not isinstance(state['context'],int) or state['context']<1:raise ValueError('Session context is invalid')
+        messages=state['messages']
+        if not isinstance(messages,list) or any(not isinstance(m,dict) or m.get('role') not in {'system','user','assistant','tool'} or not isinstance(m.get('content',''),str) for m in messages):raise ValueError('Session message history is invalid')
+        if not isinstance(state.get('turns',[]),list):raise ValueError('Session turn history is invalid')
         return state
     def list(self)->list[dict]:
         rows=[]
         for p in self.root.glob('*.json'):
-            try:s=json.loads(p.read_text(encoding='utf8'));rows.append({k:s.get(k) for k in ('session_id','workspace','model','updated_at')})
+            try:
+                s=json.loads(p.read_text(encoding='utf8'))
+                if isinstance(s,dict):rows.append({k:s.get(k) for k in ('session_id','workspace','model','updated_at')})
             except (OSError,json.JSONDecodeError):continue
         return sorted(rows,key=lambda x:x.get('updated_at') or 0,reverse=True)
     @staticmethod
