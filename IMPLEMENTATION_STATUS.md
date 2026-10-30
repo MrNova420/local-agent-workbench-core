@@ -15,13 +15,15 @@ Current status: active development; **not approved for unrestricted real-project
 - Streaming has no fixed socket inactivity deadline; approved direct child commands can be cancelled and have a one-hour maximum.
 - Context budget includes serialized conversation and tool schemas plus output reserve, using a conservative UTF-8-byte estimate. It does not rewrite the configured context.
 - Tool responses are retained for each call; over-limit batches report which actions were not executed.
+- Copy access mode creates a managed disposable session workspace. The model edits only that copy; a full diff, source-conflict check, and transactional apply-back require a separate explicit user action. Commands still require approval.
+- Tasks cannot start until the user explicitly selects a project folder; the initial home-folder fallback is not treated as consent.
 
 ## Verification performed in this work period
 
-- `python -m unittest discover -s tests -v`: **48 passed**.
+- `python -m unittest discover -s tests -v`: **66 passed**.
 - `python -m py_compile` over application and support modules: passed.
 - `git diff --check`: passed after the latest source and documentation updates.
-- Regression tests cover turn snapshots, resumed project instructions, link traversal, persistent/cancelled MCP operations, request timeout configuration, cancellable commands, tool batches, bounded retrieval/search, full-request budgeting, patch transaction/deletion/rollback, session recovery validation, run-setting validation, and context-setting precedence.
+- Regression tests cover turn snapshots, resumed project instructions, link traversal, persistent/cancelled MCP operations, request timeout configuration, cancellable commands, tool batches, bounded retrieval/search, full-request budgeting, patch transaction/deletion/rollback, session recovery validation, run-setting validation, context-setting precedence, explicit project selection, disposable-copy isolation, apply-back conflicts, and rollback.
 - Read-only runtime snapshot while inspecting the existing app: `hf.co/ressl/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`, allocated context 262,144, reported 87% CPU / 13% GPU. No request, reload, or unload was issued by this audit.
 
 ## Not verified here
@@ -33,7 +35,6 @@ Current status: active development; **not approved for unrestricted real-project
 ## Remaining release gates
 
 - Visually inspect the rebuilt UI at realistic Windows sizes/scaling and complete a disposable-project flow: choose root, hello, task, exact per-action approval, write, test, cancel, save, resume, and verify root isolation.
-- Port the existing `copy` access mode into the desktop app, including disposable workspace creation and explicit reviewed application of changes back to the source. The app currently offers only `plan`, `ask`, and `edit`.
 - Complete event/UI lifecycle testing for startup, cancel, approval-dialog close, save/resume, and shutdown races.
 - Add Windows child-process tree containment and resource limits; direct command approval still runs with the user's Windows account and is not an OS sandbox.
 - Make project traversal respect `.gitignore` and nested ignore rules while keeping link and file/byte limits.

@@ -17,9 +17,9 @@ The app never changes OpenCode configuration. It does not load a model on launch
 
 - General installed Ollama model selection, temperature, output-token, and context settings.
 - Streaming conversation with time-to-first-token and elapsed phase status.
-- Project-bounded file listing, search, reads, approved file writes, unified patches, and argv-only commands.
+- Project-bounded file listing, search, reads, access-controlled file writes, unified patches, and argv-only commands.
 - Full scrollable action previews before approval, with transactional multi-file patch application and explicit patch deletion handling.
-- Ask/edit/plan access modes; per-action approval by default and optional per-task approval.
+- Copy/plan/ask/edit access modes; per-action approval by default and optional per-task approval. Copy mode gives the agent a managed disposable workspace; the source stays untouched until you review the full diff and apply it explicitly.
 - Project instruction discovery (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, GitHub Copilot instructions) and on-demand project/user skill loading.
 - Query-ranked relevant file retrieval and search have explicit scan limits and disclose partial results. Conversation compaction uses a conservative byte-based budget that includes messages, tool definitions, and output reserve; it never changes the requested context, and may reject some requests early because it is not Ollama's model tokenizer.
 - Resumable JSON sessions under `%LOCALAPPDATA%\LocalAgentDesk\sessions`, with atomic writes and load-time schema/history validation.
@@ -30,7 +30,7 @@ The app never changes OpenCode configuration. It does not load a model on launch
 
 ## Security and boundaries
 
-Project file tools resolve paths under the selected workspace and reject symlinks. Shell strings are not accepted; commands use argv with `shell=False`. Command approvals explain commands run with your Windows account permissions. MCP servers execute local subprocesses specified by the user in the MCP config; add only commands you trust. MCP calls also ask for approval. Sessions store conversation content locally, potentially including code excerpts.
+Project file tools resolve paths under the active workspace and reject symlinks. Copy mode excludes VCS/cache directories and links, applies only reviewable text changes, checks for source conflicts, and stages apply-back transactionally after explicit review. Shell strings are not accepted; commands use argv with `shell=False`. Command approvals explain commands run with your Windows account permissions. MCP servers execute local subprocesses specified by the user in the MCP config; add only commands you trust. MCP calls also ask for approval. Sessions store conversation content locally, potentially including code excerpts.
 
 ## Tests
 

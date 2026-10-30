@@ -34,6 +34,46 @@ class SessionValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "identifier"):
                 store.load(state["session_id"])
 
+    def test_load_rejects_invalid_saved_run_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(directory, MODEL, CONTEXT_MAX)
+            state.update(max_tokens=0, temperature=float("nan"))
+            store.save(state)
+
+            with self.assertRaisesRegex(ValueError, "output token"):
+                store.load(state["session_id"])
+
+    def test_load_rejects_unsafe_copy_access_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(directory, MODEL, CONTEXT_MAX)
+            state["access"] = "host-write-anywhere"
+            store.save(state)
+
+            with self.assertRaisesRegex(ValueError, "access mode"):
+                store.load(state["session_id"])
+
+    def test_load_rejects_copy_baseline_path_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(directory, MODEL, CONTEXT_MAX)
+            state.update(access="copy", copy_manifest={"../outside.py": "a" * 64})
+            store.save(state)
+
+            with self.assertRaisesRegex(ValueError, "baseline entry"):
+                store.load(state["session_id"])
+
+    def test_load_rejects_nonfinite_saved_temperature(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(directory, MODEL, CONTEXT_MAX)
+            state.update(max_tokens=4096, temperature=float("nan"))
+            store.save(state)
+
+            with self.assertRaisesRegex(ValueError, "temperature"):
+                store.load(state["session_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,19 @@ def should_apply_advertised_context(session_active: bool, user_edited_context: b
     return not session_active and not user_edited_context
 
 
+def validate_selected_workspace(selected: bool, root: Path | str) -> Path:
+    """Require an explicit project choice instead of treating a fallback as consent."""
+    if not selected:
+        raise ValueError("Choose a project folder before starting a task.")
+    try:
+        workspace = Path(root).resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("The selected project folder is unavailable.") from exc
+    if not workspace.is_dir():
+        raise ValueError("The selected project must be a directory.")
+    return workspace
+
+
 @dataclass(frozen=True)
 class TurnContext:
     workspace: Path

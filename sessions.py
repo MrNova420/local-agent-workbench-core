@@ -1,6 +1,6 @@
 """Durable local session storage for the project agent."""
 from __future__ import annotations
-import json, os, re, tempfile, threading, time, uuid
+import json, math, os, re, tempfile, threading, time, uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,18 @@ class SessionStore:
         if not isinstance(state['workspace'],str) or not state['workspace']:raise ValueError('Session workspace is invalid')
         if not isinstance(state['model'],str) or not state['model']:raise ValueError('Session model is invalid')
         if isinstance(state['context'],bool) or not isinstance(state['context'],int) or state['context']<1:raise ValueError('Session context is invalid')
+        if 'max_tokens' in state and (isinstance(state['max_tokens'],bool) or not isinstance(state['max_tokens'],int) or state['max_tokens']<1):raise ValueError('Session maximum output token setting is invalid')
+        if 'temperature' in state and (isinstance(state['temperature'],bool) or not isinstance(state['temperature'],(int,float)) or not 0<=state['temperature']<=2 or not math.isfinite(state['temperature'])):raise ValueError('Session temperature setting is invalid')
+        if not isinstance(state.get('access','ask'),str) or state.get('access','ask') not in {'plan','copy','ask','edit'}:raise ValueError('Session access mode is invalid')
+        if not isinstance(state.get('approval_mode','per-action'),str) or state.get('approval_mode','per-action') not in {'per-action','per-task'}:raise ValueError('Session approval mode is invalid')
+        if 'working_workspace' in state and (not isinstance(state['working_workspace'],str) or not state['working_workspace']):raise ValueError('Session working workspace is invalid')
+        manifest=state.get('copy_manifest')
+        if manifest is not None:
+            if not isinstance(manifest,dict) or len(manifest)>100000:raise ValueError('Session copy baseline is invalid')
+            for relative,digest in manifest.items():
+                if not isinstance(relative,str) or not relative:raise ValueError('Session copy baseline entry is invalid')
+                path=Path(relative)
+                if path.is_absolute() or '..' in path.parts or not isinstance(digest,str) or not re.fullmatch(r'[0-9a-f]{64}',digest):raise ValueError('Session copy baseline entry is invalid')
         messages=state['messages']
         if not isinstance(messages,list) or any(not isinstance(m,dict) or m.get('role') not in {'system','user','assistant','tool'} or not isinstance(m.get('content',''),str) for m in messages):raise ValueError('Session message history is invalid')
         if not isinstance(state.get('turns',[]),list):raise ValueError('Session turn history is invalid')
