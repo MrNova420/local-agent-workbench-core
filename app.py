@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json, os, threading, time, tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 from desktop_engine import AgentEngine, OllamaRuntime, MODEL, CONTEXT_MAX
 from sessions import SessionStore
@@ -9,53 +9,97 @@ from ui_events import EventBus
 from project_knowledge import ProjectKnowledge
 from mcp_support import MCPManager
 from turn_context import TurnContext
+from project_view import preview_files
 
 APP=Path(os.environ.get('LOCALAPPDATA',Path.home()))/'LocalAgentDesk'
 SESSIONS=SessionStore(APP/'sessions')
-BG='#0B1020'; PANEL='#111A2E'; PANEL2='#17233B'; LINE='#263552'; TEXT='#EAF2FF'; MUTED='#93A7C3'; CYAN='#55D6E8'; BLUE='#7688FF'; GREEN='#6FE0B4'; AMBER='#F3C879'; RED='#FF7789'
+BG='#111316'; PANEL='#191C20'; PANEL2='#22272C'; LINE='#343A40'; TEXT='#F1EEE8'; MUTED='#9A9F9F'; CYAN='#B8D98A'; BLUE='#C5B1F2'; GREEN='#B8D98A'; AMBER='#E5BA72'; RED='#E87D78'
 
 class LocalAgentApp(tk.Tk):
  def __init__(self):
-  super().__init__();self.title('Local Agent Desk');self.geometry('1440x920');self.minsize(1120,720);self.configure(bg=BG)
+  super().__init__();self.title('Local Agent Desk');self.geometry('1580x960');self.minsize(1120,720);self.configure(bg=BG)
   self.option_add('*Font','{Segoe UI} 10');self.events=EventBus();self.runtime=OllamaRuntime();self.telemetry=Telemetry();self.engine=None;self.state=None;self.session_state=None;self.busy=False;self.started=None;self.pending_approval=None;self.approval_condition=threading.Condition();self.workspace=Path.home();self.sessions=SESSIONS.list();self.mcp_status='Not connected';self.mcp=MCPManager(APP/'mcp.json');self.mcp.load();self.mcp_tools=[];self.displayed_context=CONTEXT_MAX
-  self._style();self._layout();self.after(100,self._poll);self.after(1200,self._refresh_runtime);self.after(900,self._telemetry)
+  self._style();self._layout();self._refresh_sessions();self.after(100,self._poll);self.after(1200,self._refresh_runtime);self.after(900,self._telemetry)
  def _style(self):
-  s=ttk.Style(self);s.theme_use('clam');s.configure('TCombobox',fieldbackground=PANEL2,background=PANEL2,foreground=TEXT,arrowcolor=CYAN,bordercolor=LINE,lightcolor=LINE,darkcolor=LINE);s.configure('Vertical.TScrollbar',background=PANEL2,troughcolor=BG,arrowcolor=MUTED)
+  s=ttk.Style(self);s.theme_use('clam');s.configure('TCombobox',fieldbackground=PANEL2,background=PANEL2,foreground=TEXT,arrowcolor=CYAN,bordercolor=LINE,lightcolor=LINE,darkcolor=LINE);s.configure('Vertical.TScrollbar',background=PANEL2,troughcolor=BG,arrowcolor=MUTED);s.configure('TNotebook',background=PANEL,tabmargins=(4,5,4,0),borderwidth=0);s.configure('TNotebook.Tab',background=PANEL2,foreground=MUTED,padding=(12,8),borderwidth=0);s.map('TNotebook.Tab',background=[('selected',PANEL)],foreground=[('selected',TEXT)])
  def _layout(self):
-  self.columnconfigure(1,weight=1);self.rowconfigure(1,weight=1)
-  header=tk.Frame(self,bg=BG,height=74);header.grid(row=0,column=0,columnspan=2,sticky='ew',padx=24,pady=(16,12));header.columnconfigure(1,weight=1)
-  logo=tk.Canvas(header,width=40,height=40,bg=BG,highlightthickness=0);logo.grid(row=0,column=0,rowspan=2,sticky='w');logo.create_oval(3,3,37,37,fill='#162740',outline=CYAN,width=2);logo.create_arc(9,9,31,31,start=25,extent=260,style='arc',outline=BLUE,width=3);logo.create_oval(17,17,23,23,fill=CYAN,outline='')
-  tk.Label(header,text='LOCAL AGENT DESK',bg=BG,fg=TEXT,font=('Segoe UI',15)).grid(row=0,column=1,sticky='w',padx=12,pady=(2,0));tk.Label(header,text='Private project development · Ollama runtime',bg=BG,fg=MUTED,font=('Segoe UI',9)).grid(row=1,column=1,sticky='w',padx=12)
-  self.runtime_badge=tk.Label(header,text='●  Ollama checking',bg='#142236',fg=AMBER,padx=14,pady=8,font=('Segoe UI',9));self.runtime_badge.grid(row=0,column=2,rowspan=2,sticky='e')
-  side=tk.Frame(self,bg=PANEL,highlightbackground=LINE,highlightthickness=1,width=310);side.grid(row=1,column=0,sticky='nsew',padx=(24,12),pady=(0,16));side.grid_propagate(False);side.columnconfigure(0,weight=1)
-  self._label(side,'WORKSPACE',0);self.path_label=tk.Label(side,text='No project selected',bg=PANEL,fg=MUTED,wraplength=260,justify='left');self.path_label.grid(row=1,column=0,sticky='ew',padx=18,pady=(8,8));self.workspace_btn=self._button(side,'Choose project folder',self._choose_workspace,2)
-  self._label(side,'MODEL',3);self.model_var=tk.StringVar(value=MODEL);self.model_combo=ttk.Combobox(side,textvariable=self.model_var,state='readonly');self.model_combo.grid(row=4,column=0,sticky='ew',padx=18,pady=(8,6));self.model_combo.bind('<<ComboboxSelected>>',lambda e:self._model_changed())
-  self.model_note=tk.Label(side,text='Reasoning: model default · Context: 262,144',bg=PANEL,fg=MUTED,wraplength=260,justify='left');self.model_note.grid(row=5,column=0,sticky='w',padx=18,pady=(0,8))
-  self._label(side,'RUN PROFILE',6);row=tk.Frame(side,bg=PANEL);row.grid(row=7,column=0,sticky='ew',padx=18,pady=(8,4));row.columnconfigure(1,weight=1);tk.Label(row,text='Context',bg=PANEL,fg=MUTED).grid(row=0,column=0,sticky='w');self.context_var=tk.StringVar(value='262144');self.context_entry=tk.Entry(row,textvariable=self.context_var,bg=PANEL2,fg=TEXT,insertbackground=TEXT,relief='flat',highlightthickness=1,highlightbackground=LINE,width=11);self.context_entry.grid(row=0,column=1,sticky='e',ipady=6)
-  row2=tk.Frame(side,bg=PANEL);row2.grid(row=8,column=0,sticky='ew',padx=18,pady=4);row2.columnconfigure(1,weight=1);tk.Label(row2,text='Output tokens',bg=PANEL,fg=MUTED).grid(row=0,column=0,sticky='w');self.tokens_var=tk.StringVar(value='4096');self.tokens_entry=tk.Entry(row2,textvariable=self.tokens_var,bg=PANEL2,fg=TEXT,insertbackground=TEXT,relief='flat',highlightthickness=1,highlightbackground=LINE,width=11);self.tokens_entry.grid(row=0,column=1,sticky='e',ipady=6)
-  row3=tk.Frame(side,bg=PANEL);row3.grid(row=9,column=0,sticky='ew',padx=18,pady=4);tk.Label(row3,text='Access',bg=PANEL,fg=MUTED).pack(side='left');self.access_var=tk.StringVar(value='ask');self.access_combo=ttk.Combobox(row3,textvariable=self.access_var,values=['ask','edit','plan'],state='readonly',width=10);self.access_combo.pack(side='right')
-  row4=tk.Frame(side,bg=PANEL);row4.grid(row=10,column=0,sticky='ew',padx=18,pady=4);tk.Label(row4,text='Approval',bg=PANEL,fg=MUTED).pack(side='left');self.approval_var=tk.StringVar(value='per-action');self.approval_combo=ttk.Combobox(row4,textvariable=self.approval_var,values=['per-action','per-task'],state='readonly',width=12);self.approval_combo.pack(side='right')
-  self._label(side,'LIVE RESOURCES',11);self.resource_label=tk.Label(side,text='Idle · model will load only when you send a task',bg=PANEL,fg=MUTED,justify='left',wraplength=270);self.resource_label.grid(row=12,column=0,sticky='ew',padx=18,pady=(8,8))
-  self._label(side,'SESSIONS',13);self.session_var=tk.StringVar();self.session_combo=ttk.Combobox(side,textvariable=self.session_var,state='readonly');self.session_combo.grid(row=14,column=0,sticky='ew',padx=18,pady=(8,5));self.resume_btn=self._button(side,'Resume selected session',self._resume_session,15);self.new_session_btn=self._button(side,'New session',self._new_session,16)
-  self._label(side,'LOCAL MCP',17);self.mcp_label=tk.Label(side,text='Local stdio servers · not connected',bg=PANEL,fg=MUTED);self.mcp_label.grid(row=18,column=0,sticky='w',padx=18,pady=(8,4));self._button(side,'Configure MCP servers',self._configure_mcp,19)
-  main=tk.Frame(self,bg=BG);main.grid(row=1,column=1,sticky='nsew',padx=(0,24),pady=(0,16));main.rowconfigure(1,weight=1);main.columnconfigure(0,weight=1)
-  toolbar=tk.Frame(main,bg=PANEL,highlightbackground=LINE,highlightthickness=1);toolbar.grid(row=0,column=0,sticky='ew',pady=(0,12));toolbar.columnconfigure(2,weight=1)
-  tk.Label(toolbar,text='  SESSION',bg=PANEL,fg=MUTED,font=('Segoe UI',9)).grid(row=0,column=0,sticky='w',padx=10,pady=12);self.session_title=tk.Label(toolbar,text='Ready for a project',bg=PANEL,fg=TEXT,font=('Segoe UI',10));self.session_title.grid(row=0,column=1,sticky='w',padx=6);self.status=tk.Label(toolbar,text='● READY',bg=PANEL,fg=GREEN,font=('Segoe UI',9));self.status.grid(row=0,column=3,sticky='e',padx=18)
-  feed=tk.Frame(main,bg=PANEL,highlightbackground=LINE,highlightthickness=1);feed.grid(row=1,column=0,sticky='nsew');feed.rowconfigure(0,weight=1);feed.columnconfigure(0,weight=1)
-  self.chat=tk.Text(feed,bg='#0E1728',fg=TEXT,insertbackground=TEXT,relief='flat',wrap='word',padx=24,pady=22,spacing1=5,spacing3=8,state='disabled',font=('Segoe UI',10));self.chat.grid(row=0,column=0,sticky='nsew',padx=1,pady=1);scroll=ttk.Scrollbar(feed,command=self.chat.yview);scroll.grid(row=0,column=1,sticky='ns');self.chat.configure(yscrollcommand=scroll.set)
-  self.chat.tag_configure('user',foreground=CYAN,font=('Segoe UI',10));self.chat.tag_configure('assistant',foreground=BLUE,font=('Segoe UI',10));self.chat.tag_configure('tool',foreground=AMBER,font=('Segoe UI',9));self.chat.tag_configure('error',foreground=RED);self.chat.tag_configure('body',foreground=TEXT);self.chat.tag_configure('muted',foreground=MUTED)
-  composer=tk.Frame(main,bg=PANEL,highlightbackground=LINE,highlightthickness=1);composer.grid(row=2,column=0,sticky='ew',pady=(12,0));composer.columnconfigure(0,weight=1);self.prompt=tk.Text(composer,height=4,bg=PANEL2,fg=TEXT,insertbackground=TEXT,relief='flat',wrap='word',padx=14,pady=12,font=('Segoe UI',10));self.prompt.grid(row=0,column=0,sticky='ew',padx=12,pady=12);self.prompt.insert('1.0','Describe the project task. Add a project folder to begin.')
-  actions=tk.Frame(composer,bg=PANEL);actions.grid(row=1,column=0,sticky='ew',padx=12,pady=(0,12));tk.Label(actions,text='Enter to send · Shift+Enter for a new line',bg=PANEL,fg=MUTED,font=('Segoe UI',9)).pack(side='left');self.cancel_btn=tk.Button(actions,text='Cancel',command=self._cancel,bg='#34202F',fg=RED,relief='flat',padx=16,pady=8,state='disabled');self.cancel_btn.pack(side='right',padx=(8,0));self.send_btn=tk.Button(actions,text='Start task  ↗',command=self._send,bg='#1B5970',fg='#EAFBFF',relief='flat',padx=18,pady=8,font=('Segoe UI',9));self.send_btn.pack(side='right');self.prompt.bind('<Return>',self._enter)
-  self._append('assistant','Local Agent Desk','Choose a project folder and describe what you want built. It will use the exact selected Ollama model, keep its reasoning behavior at the model default, and ask before each edit or command. Models are not loaded when the app opens.')
- def _label(self,parent,text,row):tk.Label(parent,text=text,bg=PANEL,fg=CYAN,font=('Segoe UI',8)).grid(row=row,column=0,sticky='w',padx=18,pady=(16,0))
+  self.columnconfigure(1,weight=1);self.rowconfigure(1,weight=1);self.columnconfigure(0,minsize=250,weight=0);self.columnconfigure(2,minsize=285,weight=0)
+  header=tk.Frame(self,bg=BG,height=70);header.grid(row=0,column=0,columnspan=3,sticky='ew',padx=22,pady=(14,10));header.columnconfigure(1,weight=1)
+  mark=tk.Canvas(header,width=38,height=38,bg=BG,highlightthickness=0);mark.grid(row=0,column=0,sticky='w');mark.create_rectangle(3,3,35,35,fill='#263028',outline=CYAN,width=1);mark.create_line(11,25,18,11,25,25,fill=CYAN,width=2);mark.create_line(13,21,23,21,fill=BLUE,width=2)
+  tk.Label(header,text='LOCAL AGENT',bg=BG,fg=TEXT,font=('Segoe UI Semibold',13)).grid(row=0,column=1,sticky='w',padx=12);tk.Label(header,text='PRIVATE DEVELOPMENT WORKSPACE',bg=BG,fg=MUTED,font=('Segoe UI',8)).grid(row=0,column=1,sticky='w',padx=12,pady=(31,0))
+  self.runtime_badge=tk.Label(header,text='●  Checking Ollama',bg=PANEL2,fg=AMBER,padx=13,pady=8,font=('Segoe UI',9));self.runtime_badge.grid(row=0,column=2,sticky='e',padx=(8,12))
+  self.settings_btn=tk.Button(header,text='Preferences',command=self._settings_dialog,bg=PANEL,fg=TEXT,activebackground=PANEL2,relief='flat',padx=14,pady=8);self.settings_btn.grid(row=0,column=3,sticky='e')
+  side=tk.Frame(self,bg=PANEL,width=270);side.grid(row=1,column=0,sticky='nsew',padx=(22,10),pady=(0,18));side.grid_propagate(False);side.columnconfigure(0,weight=1);side.rowconfigure(5,weight=1)
+  tk.Label(side,text='PROJECT',bg=PANEL,fg=MUTED,font=('Segoe UI Semibold',8)).grid(row=0,column=0,sticky='w',padx=16,pady=(17,7))
+  self.workspace_btn=tk.Button(side,text='＋  Open project folder',command=self._choose_workspace,bg='#28312A',fg=CYAN,activebackground='#313D33',relief='flat',anchor='w',padx=12,pady=10);self.workspace_btn.grid(row=1,column=0,sticky='ew',padx=12)
+  self.path_label=tk.Label(side,text='No project open',bg=PANEL,fg=MUTED,wraplength=225,justify='left',anchor='w',font=('Segoe UI',9));self.path_label.grid(row=2,column=0,sticky='ew',padx=16,pady=(8,14))
+  tk.Label(side,text='PROJECT FILES',bg=PANEL,fg=MUTED,font=('Segoe UI Semibold',8)).grid(row=3,column=0,sticky='w',padx=16,pady=(0,5))
+  files_box=tk.Frame(side,bg=PANEL2);files_box.grid(row=4,column=0,sticky='nsew',padx=10);files_box.rowconfigure(0,weight=1);files_box.columnconfigure(0,weight=1)
+  self.file_list=tk.Listbox(files_box,bg=PANEL2,fg=TEXT,selectbackground='#394538',selectforeground=TEXT,relief='flat',highlightthickness=0,font=('Cascadia Code',9),activestyle='none');self.file_list.grid(row=0,column=0,sticky='nsew');files_scroll=ttk.Scrollbar(files_box,command=self.file_list.yview);files_scroll.grid(row=0,column=1,sticky='ns');self.file_list.configure(yscrollcommand=files_scroll.set)
+  tk.Label(side,text='RECENT SESSIONS',bg=PANEL,fg=MUTED,font=('Segoe UI Semibold',8)).grid(row=6,column=0,sticky='w',padx=16,pady=(18,6))
+  self.session_var=tk.StringVar();self.session_combo=ttk.Combobox(side,textvariable=self.session_var,state='readonly');self.session_combo.grid(row=7,column=0,sticky='ew',padx=12,pady=(0,6));self.resume_btn=tk.Button(side,text='Resume selected',command=self._resume_session,bg=PANEL2,fg=TEXT,activebackground='#30363A',relief='flat',padx=10,pady=8);self.resume_btn.grid(row=8,column=0,sticky='ew',padx=12,pady=3);self.new_session_btn=tk.Button(side,text='＋  New conversation',command=self._new_session,bg=PANEL,fg=CYAN,activebackground=PANEL2,relief='flat',anchor='w',padx=10,pady=8);self.new_session_btn.grid(row=9,column=0,sticky='ew',padx=12,pady=(3,12))
+  main=tk.Frame(self,bg=BG);main.grid(row=1,column=1,sticky='nsew',padx=10,pady=(0,18));main.rowconfigure(1,weight=1);main.columnconfigure(0,weight=1)
+  toolbar=tk.Frame(main,bg=PANEL);toolbar.grid(row=0,column=0,sticky='ew',pady=(0,9));toolbar.columnconfigure(1,weight=1)
+  tk.Label(toolbar,text='CONVERSATION',bg=PANEL,fg=MUTED,font=('Segoe UI Semibold',8)).grid(row=0,column=0,sticky='w',padx=(14,8),pady=(9,2));self.session_title=tk.Label(toolbar,text='Ready for a project',bg=PANEL,fg=TEXT,font=('Segoe UI Semibold',11));self.session_title.grid(row=1,column=0,sticky='w',padx=14,pady=(0,10))
+  self.model_var=tk.StringVar(value=MODEL);self.model_combo=ttk.Combobox(toolbar,textvariable=self.model_var,state='readonly',width=42);self.model_combo.grid(row=0,column=1,rowspan=2,sticky='e',padx=8,pady=9);self.model_combo.bind('<<ComboboxSelected>>',lambda e:self._model_changed())
+  self.status=tk.Label(toolbar,text='● READY',bg=PANEL2,fg=GREEN,font=('Segoe UI Semibold',8),padx=10,pady=7);self.status.grid(row=0,column=2,rowspan=2,sticky='e',padx=(7,14))
+  feed=tk.Frame(main,bg=PANEL);feed.grid(row=1,column=0,sticky='nsew');feed.rowconfigure(0,weight=1);feed.columnconfigure(0,weight=1)
+  self.chat=tk.Text(feed,bg='#15181A',fg=TEXT,insertbackground=TEXT,relief='flat',wrap='word',padx=30,pady=26,spacing1=7,spacing3=10,state='disabled',font=('Segoe UI',10));self.chat.grid(row=0,column=0,sticky='nsew',padx=1,pady=1);scroll=ttk.Scrollbar(feed,command=self.chat.yview);scroll.grid(row=0,column=1,sticky='ns');self.chat.configure(yscrollcommand=scroll.set)
+  self.chat.tag_configure('user',foreground=CYAN,font=('Segoe UI Semibold',10));self.chat.tag_configure('assistant',foreground=BLUE,font=('Segoe UI Semibold',10));self.chat.tag_configure('tool',foreground=AMBER,font=('Segoe UI',9));self.chat.tag_configure('error',foreground=RED);self.chat.tag_configure('body',foreground=TEXT);self.chat.tag_configure('muted',foreground=MUTED)
+  composer=tk.Frame(main,bg=PANEL);composer.grid(row=2,column=0,sticky='ew',pady=(9,0));composer.columnconfigure(0,weight=1);self.prompt=tk.Text(composer,height=4,bg=PANEL2,fg=TEXT,insertbackground=CYAN,relief='flat',wrap='word',padx=16,pady=14,font=('Segoe UI',10),highlightthickness=1,highlightbackground=LINE,highlightcolor=CYAN);self.prompt.grid(row=0,column=0,sticky='ew',padx=10,pady=(10,5));self.prompt.insert('1.0','Describe the project task…')
+  actions=tk.Frame(composer,bg=PANEL);actions.grid(row=1,column=0,sticky='ew',padx=12,pady=(1,10));tk.Label(actions,text='Enter to send  ·  Shift + Enter for a new line',bg=PANEL,fg=MUTED,font=('Segoe UI',8)).pack(side='left');self.cancel_btn=tk.Button(actions,text='Cancel run',command=self._cancel,bg='#392B2A',fg=RED,relief='flat',padx=13,pady=8,state='disabled');self.cancel_btn.pack(side='right',padx=(8,0));self.send_btn=tk.Button(actions,text='Run task  ↗',command=self._send,bg='#B8D98A',fg='#182018',activebackground='#C7E69A',relief='flat',padx=17,pady=8,font=('Segoe UI Semibold',9));self.send_btn.pack(side='right');self.prompt.bind('<Return>',self._enter)
+  inspector=tk.Frame(self,bg=PANEL,width=300);inspector.grid(row=1,column=2,sticky='nsew',padx=(0,22),pady=(0,18));inspector.grid_propagate(False);inspector.rowconfigure(1,weight=1);inspector.columnconfigure(0,weight=1)
+  tk.Label(inspector,text='TASK INSPECTOR',bg=PANEL,fg=MUTED,font=('Segoe UI Semibold',8)).grid(row=0,column=0,sticky='w',padx=14,pady=(14,6));self.inspector_tabs=ttk.Notebook(inspector);self.inspector_tabs.grid(row=1,column=0,sticky='nsew',padx=8,pady=(0,8))
+  self.plan_view=self._inspector_text(self.inspector_tabs,'Plan');self.activity_view=self._inspector_text(self.inspector_tabs,'Activity');self.diff_view=self._inspector_text(self.inspector_tabs,'Changes')
+  diff_btn=tk.Button(inspector,text='Refresh Git changes',command=self._refresh_diff,bg=PANEL2,fg=TEXT,activebackground='#30363A',relief='flat',padx=11,pady=8);diff_btn.grid(row=2,column=0,sticky='ew',padx=10,pady=(0,5));self.diff_btn=diff_btn
+  self.resource_label=tk.Label(inspector,text='Idle · model loads only when a task starts',bg=PANEL,fg=MUTED,justify='left',wraplength=255,font=('Segoe UI',8));self.resource_label.grid(row=3,column=0,sticky='ew',padx=13,pady=(3,6))
+  self.mcp_label=tk.Label(inspector,text='MCP  ·  not connected',bg=PANEL,fg=MUTED,anchor='w',font=('Segoe UI',8));self.mcp_label.grid(row=4,column=0,sticky='ew',padx=13,pady=(0,4));tk.Button(inspector,text='Configure local MCP',command=self._configure_mcp,bg=PANEL,fg=CYAN,activebackground=PANEL2,relief='flat',anchor='w',padx=12,pady=7).grid(row=5,column=0,sticky='ew',padx=8,pady=(0,8))
+  self.model_note=tk.Label(toolbar,text='Reasoning: model default · context metadata pending',bg=PANEL,fg=MUTED,font=('Segoe UI',8));self.model_note.grid(row=2,column=0,columnspan=3,sticky='w',padx=14,pady=(0,8))
+  self._append('assistant','Local Agent Desk','A private coding workspace for your local model. Open a project, choose a task, and review every proposed change before it runs.')
+ def _inspector_text(self,parent,title):
+  frame=tk.Frame(parent,bg=PANEL);parent.add(frame,text=title);frame.rowconfigure(0,weight=1);frame.columnconfigure(0,weight=1);view=tk.Text(frame,bg=PANEL,fg=TEXT,insertbackground=TEXT,relief='flat',wrap='word',padx=12,pady=12,font=('Segoe UI',9),state='disabled');view.grid(row=0,column=0,sticky='nsew');scroll=ttk.Scrollbar(frame,command=view.yview);scroll.grid(row=0,column=1,sticky='ns');view.configure(yscrollcommand=scroll.set);return view
  def _button(self,parent,text,command,row):
-  b=tk.Button(parent,text=text,command=command,bg=PANEL2,fg=TEXT,activebackground='#203351',activeforeground=TEXT,relief='flat',anchor='w',padx=12,pady=8);b.grid(row=row,column=0,sticky='ew',padx=18,pady=3);return b
+  b=tk.Button(parent,text=text,command=command,bg=PANEL2,fg=TEXT,activebackground='#30363A',activeforeground=TEXT,relief='flat',anchor='w',padx=12,pady=8);b.grid(row=row,column=0,sticky='ew',padx=18,pady=3);return b
  def _append(self,role,title,body):
   self.chat.configure(state='normal');self.chat.insert('end',title+'\n',role);self.chat.insert('end',body+'\n\n','body');self.chat.see('end');self.chat.configure(state='disabled')
+ def _view_append(self,view,text,replace=False):
+  view.configure(state='normal')
+  if replace:view.delete('1.0','end')
+  view.insert('end',text+'\n');view.see('end');view.configure(state='disabled')
+ def _settings_dialog(self):
+  if getattr(self,'settings_window',None) and self.settings_window.winfo_exists():self.settings_window.lift();return
+  win=tk.Toplevel(self);self.settings_window=win;win.title('Run settings');win.geometry('440x530');win.configure(bg=BG);win.transient(self);win.grab_set();win.columnconfigure(0,weight=1)
+  tk.Label(win,text='RUN SETTINGS',bg=BG,fg=CYAN,font=('Segoe UI Semibold',9)).grid(row=0,column=0,sticky='w',padx=24,pady=(22,3));tk.Label(win,text='Tune the next task',bg=BG,fg=TEXT,font=('Segoe UI Semibold',17)).grid(row=1,column=0,sticky='w',padx=24,pady=(0,18))
+  box=tk.Frame(win,bg=PANEL);box.grid(row=2,column=0,sticky='ew',padx=18);box.columnconfigure(0,weight=1)
+  tk.Label(box,text='Context tokens',bg=PANEL,fg=MUTED).grid(row=0,column=0,sticky='w',padx=16,pady=(15,5));self.context_entry=tk.Entry(box,textvariable=self.context_var,bg=PANEL2,fg=TEXT,insertbackground=CYAN,relief='flat',highlightthickness=1,highlightbackground=LINE,width=22);self.context_entry.grid(row=1,column=0,sticky='ew',padx=16,ipady=8)
+  tk.Label(box,text='Maximum output tokens',bg=PANEL,fg=MUTED).grid(row=2,column=0,sticky='w',padx=16,pady=(13,5));self.tokens_entry=tk.Entry(box,textvariable=self.tokens_var,bg=PANEL2,fg=TEXT,insertbackground=CYAN,relief='flat',highlightthickness=1,highlightbackground=LINE,width=22);self.tokens_entry.grid(row=3,column=0,sticky='ew',padx=16,ipady=8)
+  tk.Label(box,text='File access',bg=PANEL,fg=MUTED).grid(row=4,column=0,sticky='w',padx=16,pady=(13,5));self.access_combo=ttk.Combobox(box,textvariable=self.access_var,values=['ask','edit','plan'],state='readonly');self.access_combo.grid(row=5,column=0,sticky='ew',padx=16)
+  tk.Label(box,text='Approval',bg=PANEL,fg=MUTED).grid(row=6,column=0,sticky='w',padx=16,pady=(13,5));self.approval_combo=ttk.Combobox(box,textvariable=self.approval_var,values=['per-action','per-task'],state='readonly');self.approval_combo.grid(row=7,column=0,sticky='ew',padx=16,pady=(0,16))
+  tk.Label(win,text='Reasoning stays at the model default. Context remains at your selected value; allocation is reported live.',bg=BG,fg=MUTED,wraplength=380,justify='left').grid(row=3,column=0,sticky='w',padx=24,pady=14)
+  actions=tk.Frame(win,bg=BG);actions.grid(row=4,column=0,sticky='ew',padx=18,pady=(8,18));tk.Button(actions,text='Configure MCP',command=self._configure_mcp,bg=PANEL2,fg=TEXT,relief='flat',padx=12,pady=9).pack(side='left');tk.Button(actions,text='Done',command=win.destroy,bg=CYAN,fg='#182018',relief='flat',padx=24,pady=9).pack(side='right')
+  win.bind('<Destroy>',lambda e:self._clear_settings_widgets() if e.widget is win else None)
+ def _clear_settings_widgets(self):
+  self.context_entry=self.tokens_entry=self.access_combo=self.approval_combo=None
+ def _refresh_project_files(self):
+  root=self.workspace
+  def work():
+   try:rows=preview_files(root,limit=500);self.events.emit({'type':'project_files','root':str(root),'rows':rows})
+   except Exception as exc:self.events.emit({'type':'project_files','root':str(root),'error':str(exc)})
+  threading.Thread(target=work,name='project-index',daemon=True).start()
+ def _refresh_diff(self):
+  if not self.workspace.is_dir():return
+  root=self.workspace
+  def work():
+   try:
+    import subprocess
+    result=subprocess.run(['git','diff','--no-ext-diff','--'],cwd=root,capture_output=True,text=True,timeout=15,shell=False,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0));content=(result.stdout+result.stderr).strip() or 'No unstaged Git changes.'
+   except Exception as exc:content=f'Git diff unavailable: {exc}'
+   self.events.emit({'type':'project_diff','root':str(root),'content':content})
+  threading.Thread(target=work,name='git-diff-preview',daemon=True).start()
  def _choose_workspace(self):
   if self.busy:return
   selected=filedialog.askdirectory(title='Select project folder',initialdir=str(self.workspace))
-  if selected:self.workspace=Path(selected);self.path_label.configure(text=str(self.workspace),fg=TEXT);self.session_title.configure(text=self.workspace.name);self._new_session()
+  if selected:self.workspace=Path(selected);self.path_label.configure(text=str(self.workspace),fg=TEXT);self.session_title.configure(text=self.workspace.name);self._new_session();self._refresh_project_files()
  def _refresh_runtime(self):
   self.runtime_badge.configure(text='●  Checking Ollama',fg=AMBER)
   def work():
@@ -88,7 +132,7 @@ class LocalAgentApp(tk.Tk):
   try:
    state=SESSIONS.load(sid);workspace=Path(state['workspace']).resolve(strict=True)
    if not workspace.is_dir():raise ValueError('The saved project folder is no longer available.')
-   self.session_state=state;self.workspace=workspace;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages")
+   self.session_state=state;self.workspace=workspace;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages");self._refresh_project_files()
    for msg in state.get('messages',[]):
     if msg.get('role') in {'user','assistant'} and msg.get('content'):self._append(msg['role'],'You' if msg['role']=='user' else 'Agent',msg['content'])
   except Exception as exc:messagebox.showerror('Could not resume session',str(exc))
@@ -146,8 +190,8 @@ class LocalAgentApp(tk.Tk):
   threading.Thread(target=run,name='agent-task',daemon=True).start()
  def _set_busy(self,value):
   self.busy=value;self.send_btn.configure(state='disabled' if value else 'normal');self.cancel_btn.configure(state='normal' if value else 'disabled');self.status.configure(text='● RUNNING' if value else '● READY',fg=AMBER if value else GREEN)
-  state='disabled' if value else 'normal'
-  for widget in (self.workspace_btn,self.model_combo,self.context_entry,self.tokens_entry,self.access_combo,self.approval_combo,self.session_combo,self.resume_btn,self.new_session_btn):widget.configure(state=state if not isinstance(widget,ttk.Combobox) else ('disabled' if value else 'readonly'))
+  for widget in (self.workspace_btn,self.model_combo,self.context_entry,self.tokens_entry,self.access_combo,self.approval_combo,self.session_combo,self.resume_btn,self.new_session_btn,self.settings_btn,self.diff_btn):
+   if widget is not None:widget.configure(state=('disabled' if value else ('readonly' if isinstance(widget,ttk.Combobox) else 'normal')))
  def _cancel(self):
   if self.engine:self.engine.cancel()
   if hasattr(self,'stop_event'):self.stop_event.set()
@@ -163,13 +207,16 @@ class LocalAgentApp(tk.Tk):
    kind=e.get('type')
    if kind=='models':self._handle_models(e['models'])
    elif kind=='runtime_error':self.runtime_badge.configure(text='●  Ollama unavailable',fg=RED)
-   elif kind=='model_info':self.displayed_context=e['context'];self.model_note.configure(text=f"Reasoning: model default · advertised context: {e['context']:,} tokens · allocation shown live after send");self.context_var.set(str(e['context']))
+   elif kind=='model_info':
+    if e.get('model')==self.model_var.get():self.displayed_context=e['context'];self.model_note.configure(text=f"Reasoning: model default · advertised {e['context']:,} tokens · live allocation shown below");self.context_var.set(str(e['context']))
    elif kind=='model_info_error':self.model_note.configure(text='Model metadata unavailable; context remains user-controlled.')
    elif kind=='text':
     self.chat.configure(state='normal');self.chat.insert('end',e['text'],'body');self.chat.see('end');self.chat.configure(state='disabled')
    elif kind=='phase':self.status.configure(text=('● '+e['phase'].upper()+f" · {int(e.get('elapsed',0))}s · ctx {e.get('context',self.context_var.get())}") if e['phase']=='waiting' else '● '+e['phase'].upper(),fg=AMBER)
-   elif kind=='tool_start':self._append('tool','Tool: '+e['name'],json.dumps(e.get('arguments'),ensure_ascii=False))
-   elif kind=='tool_done':self._append('tool','Result',str(e.get('result',''))[:3000])
+   elif kind=='tool_start':
+    detail='Tool: '+e['name']+'\n'+json.dumps(e.get('arguments'),ensure_ascii=False);self._append('tool','Tool activity',detail);self._view_append(self.activity_view,detail)
+   elif kind=='tool_done':
+    detail='Result\n'+str(e.get('result',''))[:3000];self._append('tool','Tool result',detail);self._view_append(self.activity_view,detail)
    elif kind=='approval_request':self._approval_dialog(e)
    elif kind=='complete':self._append('assistant','Turn complete',f"Elapsed {e['elapsed']:.1f}s");self._set_busy(False);self._save();self._refresh_sessions()
    elif kind=='cancelled':self._append('tool','Cancelled',f"Request interrupted after {e['elapsed']:.1f}s. Ollama was left running.");self._set_busy(False);self._refresh_sessions()
@@ -182,7 +229,16 @@ class LocalAgentApp(tk.Tk):
    elif kind=='context_limit':self._append('error','Context budget',e['error']);self._set_busy(False)
    elif kind=='mcp_status':self.mcp_label.configure(text=e['text'])
    elif kind=='load_warn':self._append('tool','Context / memory notice',e['text'])
-   elif kind=='plan':self._append('tool','Task plan',json.dumps(e['items'],indent=2,ensure_ascii=False))
+   elif kind=='plan':
+    plan=json.dumps(e['items'],indent=2,ensure_ascii=False);self._append('tool','Task plan',plan);self._view_append(self.plan_view,plan,replace=True);self.inspector_tabs.select(0)
+   elif kind=='project_files':
+    if e['root']==str(self.workspace):
+     self.file_list.delete(0,'end')
+     if e.get('error'):self.file_list.insert('end','Index error · '+e['error'])
+     else:
+      for row in e['rows']:self.file_list.insert('end',('▧  ' if row['text'] else '▣  ')+row['path'])
+   elif kind=='project_diff':
+    if e['root']==str(self.workspace):self._view_append(self.diff_view,e['content'],replace=True);self.inspector_tabs.select(2)
   self.after(100,self._poll)
  def _approval_dialog(self,e):
   name,args=e['name'],e.get('arguments',{});condition=e['condition'];result=e['result'];self.pending_approval=(condition,result)
@@ -204,14 +260,14 @@ class LocalAgentApp(tk.Tk):
   if d.get('cpu_percent') is not None:parts.append(f"CPU {d['cpu_percent']:.0f}%")
   total=d.get('ram_total_bytes');avail=d.get('ram_available_bytes')
   if total and avail:parts.append(f"RAM {(total-avail)/1024**3:.1f}/{total/1024**3:.1f} GB")
-  if d.get('gpu'):parts.append('GPU '+d['gpu'].splitlines()[0])
+  if d.get('gpu'):parts.append('NVIDIA system GPU '+d['gpu'].splitlines()[0])
   if d.get('loaded'):
    m=d['loaded'][0];parts.append(f"Ollama allocated context {m.get('context_length','?'):,}" if isinstance(m.get('context_length'),int) else 'Model loaded')
    requested=self.session_state.get('context',self.displayed_context) if getattr(self,'session_state',None) else int(self.context_var.get() or self.displayed_context)
    actual=m.get('context_length')
    if isinstance(actual,int) and actual<requested:parts.append(f"WARNING: Ollama allocated {actual:,}, request was {requested:,}. Check runtime logs/memory; app did not lower setting.")
   if self.busy and self.started:parts.append(f"Elapsed {int(time.monotonic()-self.started)}s · {self.status.cget('text').split(' · ')[0]}")
-  self.resource_label.configure(text='\n'.join(parts) or 'Resource telemetry unavailable')
+  self.resource_label.configure(text='\n'.join(parts) or 'System telemetry unavailable')
   if total and avail and avail/total<.10 and not getattr(self,'_memory_warning_shown',False):self._memory_warning_shown=True;self._append('tool','Memory pressure',f"Only {avail/1024**3:.1f} GiB RAM remains available. Ollama decides whether the requested context can be allocated; the app will not silently lower it.")
  def _configure_mcp(self):
   path=APP/'mcp.json';path.parent.mkdir(parents=True,exist_ok=True)

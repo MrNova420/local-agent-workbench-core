@@ -1,6 +1,8 @@
 # Local Agent Desk
 
-A lightweight, Windows-first, single-agent local coding harness with a polished Tkinter desktop. It uses Ollama for inference and can work across any Ollama-installed model. The exact default is `hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`.
+A Windows-first, single-agent local coding workbench using Ollama. The exact default is `hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`.
+
+The desktop is organized around the work loop: a project and recent-session rail, a central conversation/composer, and an inspector for plans, tool activity, and Git changes. Run settings live in a dedicated window so high-context and approval controls remain available without crowding the conversation. This interface redesign is source-implemented but still needs visible desktop inspection and full user-flow acceptance.
 
 ## Start
 
@@ -22,6 +24,7 @@ The app never changes OpenCode configuration. It does not load a model on launch
 - Resumable JSON sessions under `%LOCALAPPDATA%\LocalAgentDesk\sessions`.
 - Local stdio MCP configured in `%LOCALAPPDATA%\LocalAgentDesk\mcp.json`; optional official SDK with `python build.py --install-mcp`.
 - Read-only CPU/RAM/GPU and Ollama-loaded context telemetry.
+- Project file preview and an inspector for task plans, tool activity, and Git diffs.
 - CLI is not bundled in this fresh product; desktop app is the V1 application surface. No clouds or subagents in V1.
 
 ## Security and boundaries
