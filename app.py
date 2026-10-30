@@ -221,8 +221,7 @@ class LocalAgentApp(tk.Tk):
  def on_close(self):
   if self.engine and self.busy:self.engine.cancel()
   self._save()
-  try:self.mcp.run(self.mcp.close())
-  except Exception:pass
+  threading.Thread(target=self.mcp.shutdown,name='mcp-shutdown',daemon=True).start()
   self.destroy()
 
 if __name__=='__main__':
