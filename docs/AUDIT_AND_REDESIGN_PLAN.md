@@ -129,7 +129,7 @@ The app should feel like a focused local coding environment optimized for small,
 ## Unverified / limitations
 
 - No test suite or live provider request was run for this audit.
-- No visible UI inspection was performed in this audit; visual comments above are based on source structure and styles.
+- The existing window was later brought forward and visually inspected; it was the older source revision, idle, with a `StableTest` workspace and matching session selected. The redesigned source was not loaded into that process or visually inspected. No model request or project write was submitted.
 - Command execution currently has the host user's privileges. A redesigned approval dialog alone cannot provide a security sandbox.
 - The existing repository contains one baseline snapshot commit with all prototype files. Git cannot reconstruct a per-edit history for work that predates that commit; new changes can be committed incrementally from this point.
 

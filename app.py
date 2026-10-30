@@ -18,7 +18,8 @@ BG='#111316'; PANEL='#191C20'; PANEL2='#22272C'; LINE='#343A40'; TEXT='#F1EEE8';
 class LocalAgentApp(tk.Tk):
  def __init__(self):
   super().__init__();self.title('Local Agent Desk');self.geometry('1580x960');self.minsize(1120,720);self.configure(bg=BG)
-  self.option_add('*Font','{Segoe UI} 10');self.events=EventBus();self.runtime=OllamaRuntime();self.telemetry=Telemetry();self.engine=None;self.state=None;self.session_state=None;self.busy=False;self.started=None;self.pending_approval=None;self.approval_condition=threading.Condition();self.workspace=Path.home();self.sessions=SESSIONS.list();self.mcp_status='Not connected';self.mcp=MCPManager(APP/'mcp.json');self.mcp.load();self.mcp_tools=[];self.displayed_context=CONTEXT_MAX
+  self.option_add('*Font','{Segoe UI} 10');self.events=EventBus();self.runtime=OllamaRuntime();self.telemetry=Telemetry();self.engine=None;self.state=None;self.session_state=None;self.busy=False;self.started=None;self.pending_approval=None;self.approval_condition=threading.Condition();self.workspace=Path.home();self.project_selected=False;self.sessions=SESSIONS.list();self.mcp_status='Not connected';self.mcp=MCPManager(APP/'mcp.json');self.mcp.load();self.mcp_tools=[];self.displayed_context=CONTEXT_MAX
+  self.context_var=tk.StringVar(value=str(CONTEXT_MAX));self.tokens_var=tk.StringVar(value='4096');self.access_var=tk.StringVar(value='ask');self.approval_var=tk.StringVar(value='per-action');self.context_entry=self.tokens_entry=self.access_combo=self.approval_combo=None
   self._style();self._layout();self._refresh_sessions();self.after(100,self._poll);self.after(1200,self._refresh_runtime);self.after(900,self._telemetry)
  def _style(self):
   s=ttk.Style(self);s.theme_use('clam');s.configure('TCombobox',fieldbackground=PANEL2,background=PANEL2,foreground=TEXT,arrowcolor=CYAN,bordercolor=LINE,lightcolor=LINE,darkcolor=LINE);s.configure('Vertical.TScrollbar',background=PANEL2,troughcolor=BG,arrowcolor=MUTED);s.configure('TNotebook',background=PANEL,tabmargins=(4,5,4,0),borderwidth=0);s.configure('TNotebook.Tab',background=PANEL2,foreground=MUTED,padding=(12,8),borderwidth=0);s.map('TNotebook.Tab',background=[('selected',PANEL)],foreground=[('selected',TEXT)])
@@ -29,7 +30,7 @@ class LocalAgentApp(tk.Tk):
   tk.Label(header,text='LOCAL AGENT',bg=BG,fg=TEXT,font=('Segoe UI Semibold',13)).grid(row=0,column=1,sticky='w',padx=12);tk.Label(header,text='PRIVATE DEVELOPMENT WORKSPACE',bg=BG,fg=MUTED,font=('Segoe UI',8)).grid(row=0,column=1,sticky='w',padx=12,pady=(31,0))
   self.runtime_badge=tk.Label(header,text='●  Checking Ollama',bg=PANEL2,fg=AMBER,padx=13,pady=8,font=('Segoe UI',9));self.runtime_badge.grid(row=0,column=2,sticky='e',padx=(8,12))
   self.settings_btn=tk.Button(header,text='Preferences',command=self._settings_dialog,bg=PANEL,fg=TEXT,activebackground=PANEL2,relief='flat',padx=14,pady=8);self.settings_btn.grid(row=0,column=3,sticky='e')
-  side=tk.Frame(self,bg=PANEL,width=270);side.grid(row=1,column=0,sticky='nsew',padx=(22,10),pady=(0,18));side.grid_propagate(False);side.columnconfigure(0,weight=1);side.rowconfigure(5,weight=1)
+  side=tk.Frame(self,bg=PANEL,width=270);side.grid(row=1,column=0,sticky='nsew',padx=(22,10),pady=(0,18));side.grid_propagate(False);side.columnconfigure(0,weight=1);side.rowconfigure(4,weight=1)
   tk.Label(side,text='PROJECT',bg=PANEL,fg=MUTED,font=('Segoe UI Semibold',8)).grid(row=0,column=0,sticky='w',padx=16,pady=(17,7))
   self.workspace_btn=tk.Button(side,text='＋  Open project folder',command=self._choose_workspace,bg='#28312A',fg=CYAN,activebackground='#313D33',relief='flat',anchor='w',padx=12,pady=10);self.workspace_btn.grid(row=1,column=0,sticky='ew',padx=12)
   self.path_label=tk.Label(side,text='No project open',bg=PANEL,fg=MUTED,wraplength=225,justify='left',anchor='w',font=('Segoe UI',9));self.path_label.grid(row=2,column=0,sticky='ew',padx=16,pady=(8,14))
@@ -99,7 +100,7 @@ class LocalAgentApp(tk.Tk):
  def _choose_workspace(self):
   if self.busy:return
   selected=filedialog.askdirectory(title='Select project folder',initialdir=str(self.workspace))
-  if selected:self.workspace=Path(selected);self.path_label.configure(text=str(self.workspace),fg=TEXT);self.session_title.configure(text=self.workspace.name);self._new_session();self._refresh_project_files()
+  if selected:self.workspace=Path(selected);self.project_selected=True;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.session_title.configure(text=self.workspace.name);self._new_session();self._refresh_project_files()
  def _refresh_runtime(self):
   self.runtime_badge.configure(text='●  Checking Ollama',fg=AMBER)
   def work():
@@ -124,15 +125,20 @@ class LocalAgentApp(tk.Tk):
   if self.busy:return
   self.session_state=None;self.state=None;self.session_var.set('');self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self.session_title.configure(text=self.workspace.name if self.workspace else 'New session');self._append('assistant','New session','Project selected. Set the model and context, then describe the task.')
  def _refresh_sessions(self):
-  rows=SESSIONS.list();self.session_rows=rows;self.session_combo.configure(values=[x['session_id'] for x in rows]);self.session_var.set(self.session_state.get('session_id','') if self.session_state else '')
+  rows=SESSIONS.list();self.session_rows=rows;self.session_choices={}
+  for row in rows:
+   sid=row['session_id'];project=Path(row.get('workspace') or '').name or 'Missing project';label=f"{sid}  ·  {project}";self.session_choices[label]=sid
+  self.session_combo.configure(values=list(self.session_choices));active=self.session_state.get('session_id') if self.session_state else None;self.session_var.set(next((label for label,sid in self.session_choices.items() if sid==active),'') if active else '')
  def _resume_session(self):
   if self.busy:return
-  sid=self.session_var.get()
+  sid=self.session_choices.get(self.session_var.get(),self.session_var.get())
   if not sid:return
   try:
    state=SESSIONS.load(sid);workspace=Path(state['workspace']).resolve(strict=True)
    if not workspace.is_dir():raise ValueError('The saved project folder is no longer available.')
-   self.session_state=state;self.workspace=workspace;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages");self._refresh_project_files()
+   if self.project_selected and self.workspace.is_dir() and self.workspace.resolve()!=workspace and not messagebox.askyesno('Switch project?',f"This session belongs to another project:\n\n{workspace}\n\nSwitch the active project and resume it?"):
+    return
+   self.session_state=state;self.workspace=workspace;self.project_selected=True;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages");self._refresh_project_files()
    for msg in state.get('messages',[]):
     if msg.get('role') in {'user','assistant'} and msg.get('content'):self._append(msg['role'],'You' if msg['role']=='user' else 'Agent',msg['content'])
   except Exception as exc:messagebox.showerror('Could not resume session',str(exc))
@@ -154,7 +160,9 @@ class LocalAgentApp(tk.Tk):
    turn=TurnContext.capture(workspace=self.workspace,model=model,context=context,access=self.access_var.get(),approval_mode=self.approval_var.get(),max_tokens=tokens,temperature=0.2,runtime_options=state.get('runtime_options',{}),prompt=prompt,session=state,mcp_tools=self.mcp_tools)
   except Exception as exc:messagebox.showerror('Could not start task',str(exc));return
   self.session_state=turn.session;state=turn.session;self.state=state
-  self._save();self._memory_warning_shown=False;self._append('user','You',prompt);self.prompt.delete('1.0','end');self._set_busy(True);self.started=time.monotonic();self.stop_event=threading.Event();self.events.emit({'type':'phase','phase':'connecting'})
+  try:self._save()
+  except Exception as exc:messagebox.showerror('Could not save session',str(exc));return
+  self._memory_warning_shown=False;self._append('user','You',prompt);self.prompt.delete('1.0','end');self._set_busy(True);self.started=time.monotonic();self.stop_event=threading.Event();self.events.emit({'type':'phase','phase':'connecting'})
   def approve(name,args):
    condition=threading.Condition();result={'value':False,'done':False};self.events.emit({'type':'approval_request','name':name,'arguments':args,'condition':condition,'result':result})
    with condition:
@@ -268,7 +276,8 @@ class LocalAgentApp(tk.Tk):
   if d.get('gpu'):parts.append('NVIDIA system GPU '+d['gpu'].splitlines()[0])
   if d.get('loaded'):
    m=d['loaded'][0];parts.append(f"Ollama allocated context {m.get('context_length','?'):,}" if isinstance(m.get('context_length'),int) else 'Model loaded')
-   requested=self.session_state.get('context',self.displayed_context) if getattr(self,'session_state',None) else int(self.context_var.get() or self.displayed_context)
+   try:requested=self.session_state.get('context',self.displayed_context) if getattr(self,'session_state',None) else int(self.context_var.get() or self.displayed_context)
+   except (TypeError,ValueError):requested=self.displayed_context
    actual=m.get('context_length')
    if isinstance(actual,int) and actual<requested:parts.append(f"WARNING: Ollama allocated {actual:,}, request was {requested:,}. Check runtime logs/memory; app did not lower setting.")
   if self.busy and self.started:parts.append(f"Elapsed {int(time.monotonic()-self.started)}s · {self.status.cget('text').split(' · ')[0]}")
@@ -281,7 +290,8 @@ class LocalAgentApp(tk.Tk):
   except Exception:messagebox.showinfo('MCP configuration',f'Edit local stdio server configuration at:\n{path}\n\nInstall optional dependencies with pip install -r requirements-mcp.txt, then restart the app.')
  def on_close(self):
   if self.engine and self.busy:self.engine.cancel()
-  self._save()
+  try:self._save()
+  except Exception:pass
   threading.Thread(target=self.mcp.shutdown,name='mcp-shutdown',daemon=True).start()
   self.destroy()
 
