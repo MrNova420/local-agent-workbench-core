@@ -160,8 +160,9 @@ class ContextManager:
     def __init__(self, context: int=CONTEXT_MAX, reserve:int=8192): self.context,self.reserve=context,reserve
     @property
     def input_budget(self): return max(1024,self.context-self.reserve)
+    def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens+1024))
     @staticmethod
-    def estimate(text:str)->int: return max(1,len(text.encode("utf8"))//3)
+    def estimate(text:str)->int: return max(1,len(text.encode("utf8")))
     def retrieve(self,root:Path,prompt:str,limit:int=18_000)->str:
         terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}; ranked=[]
         if not terms:return ""
@@ -179,16 +180,22 @@ class ContextManager:
             if used+size>limit:continue
             out.append(block);used+=size
         return "\n\n".join(out)
-    def compact(self,messages:list[dict])->list[dict]:
-        total=sum(self.estimate(str(m.get("content", ""))) for m in messages)
-        if total<=self.input_budget:return messages
-        if len(messages)<5:raise ValueError(f"Request exceeds input budget for {self.context:,}-token context; context was not reduced.")
-        system=messages[:1]; conversation=messages[1:]; recent=conversation[-4:]; old=conversation[:-4]
-        notes=[f"{m.get('role')}: {str(m.get('content',''))[:250]}" for m in old if m.get("content")]
-        summary={"role":"system","content":"Earlier conversation summary (automatically compacted):\n"+"\n".join(notes[-20:])}
+    def compact(self,messages:list[dict],tools:list[dict]|None=None,output_tokens:int=0)->list[dict]:
+        tools=tools or [];budget=self.budget(output_tokens)
+        def request_size(rows):return self.estimate(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))
+        tool_size=self.estimate(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
+        if tool_size+max(self.reserve,output_tokens+1024)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
+        total=request_size(messages)
+        if total<=budget:return messages
+        if len(messages)<3:raise ValueError(f"Request exceeds input budget for {self.context:,}-token context; context was not reduced.")
+        system=messages[:1]; conversation=messages[1:]
+        last_user=max((i for i,m in enumerate(conversation) if m.get("role")=="user"),default=len(conversation)-1)
+        old=conversation[:last_user];recent=conversation[last_user:]
+        notes=[f"{m.get('role')}: {str(m.get('content',''))[:120]}" for m in old if m.get("content")]
+        summary={"role":"system","content":"Earlier conversation summary (automatically compacted):\n"+"\n".join(notes[-8:])}
         compacted=system+[summary]+recent
-        if sum(self.estimate(str(m.get("content",""))) for m in compacted)>self.input_budget:
-            raise ValueError(f"Conversation exceeds the {self.input_budget:,}-token input budget at configured context {self.context:,}; context was not reduced.")
+        if request_size(compacted)>budget:
+            raise ValueError(f"Conversation exceeds the {budget:,}-token input budget at configured context {self.context:,}; context was not reduced.")
         return compacted
 
 class OllamaRuntime:
@@ -258,7 +265,7 @@ class AgentEngine:
         try:
             for step in range(33):
                 if self.cancel_event.is_set():raise RequestCancelled()
-                msgs=self.context.compact(msgs);self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.input_budget})
+                tools=self.state["registry"].schemas+self.mcp_tools;msgs=self.context.compact(msgs,tools,self.state["max_tokens"]);self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 result=self.runtime.stream(self.state,msgs,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
                 calls=msg.get("tool_calls") or []
                 if not calls:self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result});return msgs
