@@ -17,7 +17,7 @@ Current status: active development; **not approved for unrestricted real-project
 
 ## Verification performed in this work period
 
-- `python -m unittest discover -s tests -v`: **38 passed**.
+- `python -m unittest discover -s tests -v`: **39 passed**.
 - `python -m py_compile` over application and support modules: passed.
 - `git diff --check`: passed before the latest documentation-only update.
 - Regression tests cover turn snapshots, resumed project instructions, link traversal, persistent/cancelled MCP operations, request timeout configuration, cancellable commands, tool batches, full-request budgeting, and patch transaction/deletion behavior.
