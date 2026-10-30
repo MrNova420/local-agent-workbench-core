@@ -254,11 +254,23 @@ class LocalAgentApp(tk.Tk):
   self.after(100,self._poll)
  def _approval_dialog(self,e):
   name,args=e['name'],e.get('arguments',{});condition=e['condition'];result=e['result'];self.pending_approval=(condition,result)
-  if name=='run_command':detail='Command\n'+json.dumps(args.get('argv',[]),ensure_ascii=False)+'\n\nCommands execute with your Windows account permissions.'
-  elif name=='apply_patch':detail='Patch preview\n'+str(args.get('patch',''))[:5000]
-  else:detail=json.dumps(args,indent=2,ensure_ascii=False)[:3000]
-  scope='\n\nPer-task approval: accepting authorizes later tool actions for this task.' if self.approval_var.get()=='per-task' else '\n\nThis approval applies to this action only.'
-  ok=messagebox.askyesno('Approve '+name,detail+scope+'\n\nApprove?',icon='warning')
+  dialog=tk.Toplevel(self);dialog.title('Review requested action');dialog.geometry('860x650');dialog.minsize(620,430);dialog.configure(bg=BG);dialog.transient(self);dialog.grab_set();dialog.columnconfigure(0,weight=1);dialog.rowconfigure(3,weight=1)
+  tk.Label(dialog,text='ACTION REVIEW',bg=BG,fg=AMBER,font=('Segoe UI Semibold',9)).grid(row=0,column=0,sticky='w',padx=20,pady=(16,3));tk.Label(dialog,text=name.replace('_',' ').title(),bg=BG,fg=TEXT,font=('Segoe UI Semibold',16)).grid(row=1,column=0,sticky='w',padx=20,pady=(0,10))
+  if name=='run_command':
+   detail='Command argv:\n'+json.dumps(args.get('argv',[]),ensure_ascii=False,indent=2)+f"\n\nTimeout: {args.get('timeout_seconds',120)} seconds\n\nThis process runs with your Windows account permissions."
+  elif name=='apply_patch':detail=str(args.get('patch',''))
+  else:detail=json.dumps(args,indent=2,ensure_ascii=False)
+  if name.startswith('mcp__'):warning='Local MCP server actions may access resources outside the selected project.'
+  elif name=='run_command':warning='Commands are not sandboxed and can access files beyond the selected project.'
+  elif self.approval_var.get()=='per-task':warning='Per-task approval authorizes later model-requested tool actions for this task.'
+  else:warning='Only this action will be approved.'
+  tk.Label(dialog,text=warning,bg='#332B20',fg=AMBER,wraplength=800,justify='left',padx=12,pady=9).grid(row=2,column=0,sticky='new',padx=16,pady=(0,8))
+  preview=tk.Frame(dialog,bg=PANEL);preview.grid(row=3,column=0,sticky='nsew',padx=16,pady=(0,8));preview.rowconfigure(0,weight=1);preview.columnconfigure(0,weight=1)
+  text=tk.Text(preview,bg=PANEL2,fg=TEXT,insertbackground=TEXT,relief='flat',wrap='none',font=('Cascadia Code',9),padx=12,pady=10);text.grid(row=0,column=0,sticky='nsew');ys=ttk.Scrollbar(preview,command=text.yview);ys.grid(row=0,column=1,sticky='ns');xs=ttk.Scrollbar(preview,command=text.xview,orient='horizontal');xs.grid(row=1,column=0,sticky='ew');text.configure(yscrollcommand=ys.set,xscrollcommand=xs.set);text.insert('1.0',detail);text.configure(state='disabled')
+  actions=tk.Frame(dialog,bg=BG);actions.grid(row=4,column=0,sticky='ew',padx=16,pady=(2,16));actions.columnconfigure(0,weight=1);approved={'value':False}
+  def decide(value):approved['value']=value;dialog.destroy()
+  tk.Button(actions,text='Deny',command=lambda:decide(False),bg=PANEL2,fg=TEXT,relief='flat',padx=18,pady=9).grid(row=0,column=1,padx=(0,8));tk.Button(actions,text='Approve task' if self.approval_var.get()=='per-task' else 'Approve action',command=lambda:decide(True),bg=CYAN,fg='#182018',relief='flat',padx=18,pady=9).grid(row=0,column=2)
+  dialog.protocol('WM_DELETE_WINDOW',lambda:decide(False));self.wait_window(dialog);ok=approved['value']
   with condition:result.update(value=ok,done=True);condition.notify_all()
   self.pending_approval=None
  def _telemetry(self):

@@ -18,6 +18,7 @@ The app never changes OpenCode configuration. It does not load a model on launch
 - General installed Ollama model selection, temperature, output-token, and context settings.
 - Streaming conversation with time-to-first-token and elapsed phase status.
 - Project-bounded file listing, search, reads, approved file writes, unified patches, and argv-only commands.
+- Full scrollable action previews before approval, with transactional multi-file patch application and explicit patch deletion handling.
 - Ask/edit/plan access modes; per-action approval by default and optional per-task approval.
 - Project instruction discovery (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, GitHub Copilot instructions) and on-demand project/user skill loading.
 - Query-ranked relevant file retrieval, conversation compaction, and a conservative byte-based budget that includes messages, tool definitions, and output reserve. It does not silently change the requested context; the estimate may reject some requests early because it is not Ollama's model tokenizer.

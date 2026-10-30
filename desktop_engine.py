@@ -104,34 +104,100 @@ class ToolRegistry:
             return self._command(args)
         return f"Unknown tool: {name}"
     def _patch(self, patch: str) -> str:
-        import difflib
-        lines=patch.splitlines(); i=0; changed=[]
+        import os,re,tempfile
+        lines=patch.splitlines(keepends=True);i=0;plans=[];seen=set()
+        header_name=lambda line:line.split("\t",1)[0][4:].strip()
+        def line_body(line):return line.rstrip("\r\n")
         while i<len(lines):
-            if not lines[i].startswith("--- "): i+=1; continue
-            old=lines[i][4:].split("\t")[0]; i+=1
-            if i>=len(lines) or not lines[i].startswith("+++ "): return "Invalid unified diff headers."
-            new=lines[i][4:].split("\t")[0]; i+=1
-            target=new.removeprefix("b/") if new!="/dev/null" else old.removeprefix("a/")
-            path=self.workspace.resolve(target)
-            try: before=path.read_text(encoding="utf8").splitlines(keepends=True) if path.exists() else []
-            except (OSError,UnicodeError) as exc: return f"Could not read {target}: {exc}"
-            hunk=[]
+            if not lines[i].startswith("--- "):i+=1;continue
+            old_name=header_name(lines[i]);i+=1
+            if i>=len(lines) or not lines[i].startswith("+++ "):return "Invalid unified diff headers."
+            new_name=header_name(lines[i]);i+=1
+            deleting=new_name=="/dev/null";creating=old_name=="/dev/null"
+            if creating and deleting:return "Invalid unified diff: both paths are /dev/null."
+            old_rel=old_name.removeprefix("a/");new_rel=new_name.removeprefix("b/")
+            target=new_rel if not deleting else old_rel
+            if not creating and not deleting and old_rel!=new_rel:return "File renames are not supported in a patch."
+            if target in seen:return f"Duplicate patch target: {target}."
+            seen.add(target)
+            try:path=self.workspace.resolve(target)
+            except (OSError,ValueError) as exc:return f"Invalid patch path {target}: {exc}"
+            exists=path.exists()
+            if creating and exists:return f"Patch would overwrite existing file {target}."
+            if not creating and not exists:return f"Patch target does not exist: {target}."
+            try:
+                with path.open("r",encoding="utf-8",newline="") as handle:before=handle.readlines()
+            except FileNotFoundError:before=[]
+            except (OSError,UnicodeError) as exc:return f"Could not read {target}: {exc}"
+            out=[];cursor=0;hunks=0
             while i<len(lines) and not lines[i].startswith("--- "):
-                if lines[i].startswith("@@"): i+=1; continue
-                marker=lines[i][:1]; content=lines[i][1:]+"\n"; i+=1
-                if marker in {" ","-","+","\\"}: hunk.append((marker,content))
-            out=[]; cursor=0; failed=False
-            for marker,content in hunk:
-                if marker=="+": out.append(content); continue
-                expected=content
-                if cursor>=len(before) or before[cursor].rstrip("\r\n")!=expected.rstrip("\r\n"): failed=True; break
-                if marker==" ": out.append(before[cursor])
-                cursor+=1
-            if failed: return f"Patch context mismatch in {target}."
-            out.extend(before[cursor:]); after="".join(out)
-            if not getattr(self,"_patch_approved",False) and not self.approval("write_file",{"path":target,"content":after}): return "Denied by user."
-            path.parent.mkdir(parents=True,exist_ok=True); path.write_text(after,encoding="utf8",newline="\n"); changed.append(target)
-        return "Updated: " + (", ".join(changed) if changed else "no files")
+                if not lines[i].startswith("@@ "):i+=1;continue
+                match=re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@",line_body(lines[i]))
+                if not match:return f"Invalid hunk header in {target}."
+                old_start=int(match.group(1));old_count=int(match.group(2) or 1);new_start=int(match.group(3));new_count=int(match.group(4) or 1);i+=1
+                start=max(0,old_start-1) if old_count else old_start
+                if start<cursor or start>len(before):return f"Invalid hunk position in {target}."
+                out.extend(before[cursor:start]);cursor=start;consumed_old=consumed_new=0
+                while i<len(lines) and (consumed_old<old_count or consumed_new<new_count):
+                    raw=lines[i]
+                    if raw.startswith("\\ No newline at end of file"):
+                        if out:out[-1]=out[-1].rstrip("\r\n")
+                        i+=1;continue
+                    if not raw or raw[0] not in {" ","+","-"}:return f"Invalid hunk line in {target}."
+                    marker=raw[0];content=raw[1:]
+                    if marker in {" ","-"}:
+                        if cursor>=len(before) or line_body(before[cursor])!=line_body(content):return f"Patch context mismatch in {target}."
+                        if marker==" ":out.append(before[cursor]);consumed_new+=1
+                        cursor+=1;consumed_old+=1
+                    else:out.append(content);consumed_new+=1
+                    i+=1
+                if consumed_old!=old_count or consumed_new!=new_count:return f"Patch hunk count mismatch in {target}."
+                if new_start and new_start-1>len(out):return f"Invalid new hunk position in {target}."
+                hunks+=1
+            if not hunks:return f"No valid hunks for {target}."
+            out.extend(before[cursor:]);after="".join(out)
+            if deleting and after:return f"Deletion patch for {target} leaves content behind."
+            plans.append((target,path,None if deleting else after,exists))
+        if not plans:return "Invalid unified diff: no file changes found."
+        if not getattr(self,"_patch_approved",False):
+            preview={"files":[{"path":name,"delete":content is None,"content":content} for name,_,content,_ in plans]}
+            if not self.approval("apply_patch",{"patch":patch,"preview":preview}):return "Denied by user."
+
+        staged=[];backups=[];placed=[];created_dirs=[]
+        try:
+            for name,path,content,exists in plans:
+                missing=[];parent=path.parent
+                while not parent.exists() and parent!=self.workspace.root:missing.append(parent);parent=parent.parent
+                for folder in reversed(missing):
+                    folder.mkdir();created_dirs.append(folder)
+                if content is None:staged.append((name,path,None,exists,None));continue
+                with tempfile.NamedTemporaryFile("w",encoding="utf-8",newline="",delete=False,dir=path.parent,prefix=".agentdesk-",suffix=".tmp") as handle:
+                    handle.write(content);temp_path=Path(handle.name)
+                staged.append((name,path,content,exists,temp_path))
+            for name,path,content,exists,temp_path in staged:
+                backup=None
+                if exists:
+                    fd,backup_name=tempfile.mkstemp(prefix=".agentdesk-backup-",dir=path.parent);os.close(fd);Path(backup_name).unlink();backup=Path(backup_name);os.replace(path,backup);backups.append((path,backup))
+                if temp_path is not None:os.replace(temp_path,path);placed.append(path)
+            for _,backup in backups:
+                if backup.exists():backup.unlink()
+        except Exception as exc:
+            for path in reversed(placed):
+                try:path.unlink(missing_ok=True)
+                except OSError:pass
+            for path,backup in reversed(backups):
+                try:
+                    if backup.exists():os.replace(backup,path)
+                except OSError:pass
+            for _,_,_,_,temp_path in staged:
+                if temp_path:
+                    try:temp_path.unlink(missing_ok=True)
+                    except OSError:pass
+            for folder in reversed(created_dirs):
+                try:folder.rmdir()
+                except OSError:pass
+            return f"Patch transaction rolled back: {exc}"
+        return "Updated: "+", ".join(name for name,_,_,_ in plans)
     def _command(self,args:dict)->str:
         import subprocess
         argv=args.get("argv")
