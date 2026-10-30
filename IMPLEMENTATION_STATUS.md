@@ -33,10 +33,11 @@ Current status: active development; **not approved for unrestricted real-project
 ## Remaining release gates
 
 - Visually inspect the rebuilt UI at realistic Windows sizes/scaling and complete a disposable-project flow: choose root, hello, task, exact per-action approval, write, test, cancel, save, resume, and verify root isolation.
-- Make patch application transactional and fully validate unified diff semantics.
-- Finish session schema validation/recovery and robust event/UI lifecycle testing.
-- Add process-tree/resource containment; direct command approval still runs with the user's Windows account and is not an OS sandbox.
+- Port the existing `copy` access mode into the desktop app, including disposable workspace creation and explicit reviewed application of changes back to the source. The app currently offers only `plan`, `ask`, and `edit`.
+- Complete event/UI lifecycle testing for startup, cancel, approval-dialog close, save/resume, and shutdown races.
+- Add Windows child-process tree containment and resource limits; direct command approval still runs with the user's Windows account and is not an OS sandbox.
+- Make project traversal respect `.gitignore` and nested ignore rules while keeping link and file/byte limits.
 - Measure actual Ollama first-token latency, generation speed, allocated context, and peak RAM/VRAM under the approved model-preservation protocol.
-- Revisit packaging, startup/shutdown, diagnostic exports, and installation/updating before calling the app production-ready.
+- Revisit packaging, diagnostic exports, and installation/updating before calling the app production-ready.
 
 See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for findings, architecture direction, and gates.
