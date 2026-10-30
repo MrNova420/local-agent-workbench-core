@@ -1,14 +1,14 @@
 """Read project guidance and skills on demand, with symlink/traversal protections."""
 from pathlib import Path
 from typing import Any
-IGNORED={".git",".hg",".svn",".venv","venv","node_modules","__pycache__",".pytest_cache","dist","build","target","Library","Temp"}
+from project_walk import DEFAULT_IGNORED,iter_project_files
+IGNORED=DEFAULT_IGNORED
 
 class ProjectKnowledge:
  def __init__(self,workspace:Path|str):self.root=Path(workspace).resolve(strict=True)
  def instructions(self,max_chars:int=50000)->str:
   names={'AGENTS.md','CLAUDE.md','GEMINI.md','.github/copilot-instructions.md'}; found=[]
-  for p in self.root.rglob('*'):
-   if not p.is_file() or p.is_symlink() or IGNORED.intersection(p.relative_to(self.root).parts):continue
+  for p in iter_project_files(self.root):
    rel=p.relative_to(self.root).as_posix()
    if p.name in {'AGENTS.md','CLAUDE.md','GEMINI.md'} or rel=='.github/copilot-instructions.md' or (rel.startswith('.github/instructions/') and p.name.endswith('.instructions.md')):
     try:found.append((len(p.relative_to(self.root).parts),rel,p.read_text(encoding='utf8')))

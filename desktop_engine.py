@@ -3,6 +3,7 @@ from __future__ import annotations
 import json, os, re, threading, time, urllib.error, urllib.request
 from pathlib import Path
 from project_knowledge import ProjectKnowledge
+from project_walk import iter_project_files
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -64,11 +65,16 @@ class ToolRegistry:
             return knowledge.load_skill(args.get("name",""),skills)
         if name == "list_files":
             base = self.workspace.resolve(args.get("path", ".")); pattern = args.get("pattern", "*")
-            return "\n".join(p.relative_to(self.workspace.root).as_posix() for p in base.rglob(pattern) if p.is_file() and not p.is_symlink() and not IGNORED.intersection(p.relative_to(self.workspace.root).parts))[:1200]
+            import fnmatch
+            matches=[]
+            for p in iter_project_files(base):
+                if fnmatch.fnmatch(p.name,pattern):matches.append(p.relative_to(self.workspace.root).as_posix())
+                if len(matches)>=1200:break
+            return "\n".join(matches)
         if name == "search_files":
             query = str(args.get("query", "")).casefold(); hits=[]
-            for p in self.workspace.root.rglob("*"):
-                if not p.is_file() or p.is_symlink() or p.suffix.casefold() not in TEXT_EXT or IGNORED.intersection(p.relative_to(self.workspace.root).parts): continue
+            for p in iter_project_files(self.workspace.root):
+                if p.suffix.casefold() not in TEXT_EXT:continue
                 try: lines=p.read_text(encoding="utf8").splitlines()
                 except (OSError,UnicodeError): continue
                 for i,line in enumerate(lines,1):
@@ -143,8 +149,8 @@ class ContextManager:
     def retrieve(self,root:Path,prompt:str,limit:int=18_000)->str:
         terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}; ranked=[]
         if not terms:return ""
-        for p in root.rglob("*"):
-            if not p.is_file() or p.is_symlink() or p.suffix.casefold() not in TEXT_EXT or IGNORED.intersection(p.relative_to(root).parts):continue
+        for p in iter_project_files(root):
+            if p.suffix.casefold() not in TEXT_EXT:continue
             try:
                 if p.stat().st_size>80000:continue
                 content=p.read_text(encoding="utf8")
