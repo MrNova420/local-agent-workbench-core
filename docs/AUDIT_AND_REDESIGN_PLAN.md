@@ -132,3 +132,12 @@ The app should feel like a focused local coding environment optimized for small,
 - No visible UI inspection was performed in this audit; visual comments above are based on source structure and styles.
 - Command execution currently has the host user's privileges. A redesigned approval dialog alone cannot provide a security sandbox.
 - The existing repository contains one baseline snapshot commit with all prototype files. Git cannot reconstruct a per-edit history for work that predates that commit; new changes can be committed incrementally from this point.
+
+## Work started after the audit
+
+The following changes are committed separately after the audit baseline:
+
+- `0c7542a` captures an immutable per-turn snapshot, prevents project/session/model controls from changing during an active turn, clears stale session selection/transcript state, and emits UI completion only after session persistence. A regression test covers snapshot isolation.
+- The follow-up reliability commit makes the current workspace system instructions replace stale generic instructions on resumed history and rejects symlinks before path resolution in `Workspace.resolve`; tests cover both cases.
+
+These changes address only the listed paths. They do not yet fix no-follow directory traversal, MCP event-loop ownership, child-process cancellation/isolation, complete request token accounting, patch transactionality, or the application redesign. The app remains unsuitable for unrestricted real-project agent work until those gates and a visible end-to-end user-flow acceptance are completed.
