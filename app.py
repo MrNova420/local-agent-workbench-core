@@ -166,7 +166,7 @@ class LocalAgentApp(tk.Tk):
    try:
     if turn_cancel.is_set():self.events.emit({'type':'cancelled','elapsed':time.monotonic()-self.started});return
     if self.mcp.servers and not self.mcp_tools:
-     discovered=self.mcp.run(self.mcp.discover())
+     discovered=self.mcp.run(self.mcp.discover(),cancel_event=turn_cancel)
      self.mcp_tools=discovered
      self.events.emit({'type':'mcp_status','text':f'{len(discovered)} local tools connected'})
     else:discovered=list(turn.mcp_tools)
@@ -179,7 +179,7 @@ class LocalAgentApp(tk.Tk):
      if event.get('type') in {'error','cancelled'}:terminal['kind']=event['type']
      if event.get('type')=='complete':event={**event,'type':'generation_complete'}
      self.events.emit(event)
-    engine=AgentEngine(turn.workspace,turn.model,turn.context,turn.access,turn.approval_mode,engine_event,approve,runtime_options=turn.runtime_options,max_tokens=turn.max_tokens,temperature=turn.temperature,project_instructions=knowledge.instructions(),mcp_tools=discovered,mcp_call=lambda name,args:self.mcp.run(self.mcp.call(name,args)))
+    engine=AgentEngine(turn.workspace,turn.model,turn.context,turn.access,turn.approval_mode,engine_event,approve,runtime_options=turn.runtime_options,max_tokens=turn.max_tokens,temperature=turn.temperature,project_instructions=knowledge.instructions(),mcp_tools=discovered,mcp_call=lambda name,args:self.mcp.run(self.mcp.call(name,args),cancel_event=turn_cancel))
     self.engine=engine
     if turn_cancel.is_set():engine.cancel()
     new_messages=engine.run(turn.prompt,turn.session['messages']);turn.session['messages']=new_messages
@@ -212,7 +212,11 @@ class LocalAgentApp(tk.Tk):
    elif kind=='model_info_error':self.model_note.configure(text='Model metadata unavailable; context remains user-controlled.')
    elif kind=='text':
     self.chat.configure(state='normal');self.chat.insert('end',e['text'],'body');self.chat.see('end');self.chat.configure(state='disabled')
-   elif kind=='phase':self.status.configure(text=('● '+e['phase'].upper()+f" · {int(e.get('elapsed',0))}s · ctx {e.get('context',self.context_var.get())}") if e['phase']=='waiting' else '● '+e['phase'].upper(),fg=AMBER)
+   elif kind=='phase':
+    if e['phase']=='waiting':label=f"● WAITING · {int(e.get('elapsed',0))}s · ctx {e.get('context',self.context_var.get())}"
+    elif e['phase']=='generating':label=f"● GENERATING · first output at {e.get('elapsed',0):.1f}s"
+    else:label='● '+e['phase'].upper()
+    self.status.configure(text=label,fg=AMBER)
    elif kind=='tool_start':
     detail='Tool: '+e['name']+'\n'+json.dumps(e.get('arguments'),ensure_ascii=False);self._append('tool','Tool activity',detail);self._view_append(self.activity_view,detail)
    elif kind=='tool_done':
@@ -245,7 +249,8 @@ class LocalAgentApp(tk.Tk):
   if name=='run_command':detail='Command\n'+json.dumps(args.get('argv',[]),ensure_ascii=False)+'\n\nCommands execute with your Windows account permissions.'
   elif name=='apply_patch':detail='Patch preview\n'+str(args.get('patch',''))[:5000]
   else:detail=json.dumps(args,indent=2,ensure_ascii=False)[:3000]
-  ok=messagebox.askyesno('Approve '+name,detail+'\n\nApprove this action?',icon='warning')
+  scope='\n\nPer-task approval: accepting authorizes later tool actions for this task.' if self.approval_var.get()=='per-task' else '\n\nThis approval applies to this action only.'
+  ok=messagebox.askyesno('Approve '+name,detail+scope+'\n\nApprove?',icon='warning')
   with condition:result.update(value=ok,done=True);condition.notify_all()
   self.pending_approval=None
  def _telemetry(self):

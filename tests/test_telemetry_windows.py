@@ -24,10 +24,10 @@ class TelemetryWindowsTests(unittest.TestCase):
         )
 
     @patch(
-        "subprocess.run",
-        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        "subprocess.Popen",
+        return_value=SimpleNamespace(communicate=lambda timeout=None: ("", ""), returncode=0),
     )
-    def test_approved_command_suppresses_console_window(self, run):
+    def test_approved_command_suppresses_console_window(self, popen):
         with tempfile.TemporaryDirectory() as root:
             registry = ToolRegistry(Workspace(Path(root)), lambda *_: True)
             registry.run(
@@ -36,7 +36,7 @@ class TelemetryWindowsTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            run.call_args.kwargs.get("creationflags"),
+            popen.call_args.kwargs.get("creationflags"),
             getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 

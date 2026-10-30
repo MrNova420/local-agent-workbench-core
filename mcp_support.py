@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeout
 import json
 import os
 import threading
 from pathlib import Path
 from typing import Any
+
+
+class MCPRequestCancelled(Exception):
+    """The caller cancelled one pending MCP operation."""
 
 
 class MCPManager:
@@ -61,10 +66,16 @@ class MCPManager:
             raise RuntimeError("MCP synchronous bridge cannot block its own event loop")
         return self.loop
 
-    def run(self, awaitable):
+    def run(self, awaitable, cancel_event: threading.Event | None = None):
         loop = self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(awaitable, loop)
-        return future.result()
+        while True:
+            try:
+                return future.result(timeout=0.1)
+            except FutureTimeout:
+                if cancel_event is not None and cancel_event.is_set():
+                    future.cancel()
+                    raise MCPRequestCancelled("MCP operation cancelled")
 
     async def discover(self):
         try:
@@ -107,7 +118,7 @@ class MCPManager:
                             "parameters": tool.inputSchema or {"type": "object", "properties": {}},
                         },
                     })
-            except Exception as exc:
+            except BaseException as exc:
                 self.errors[name] = f"{type(exc).__name__}: {exc}"
                 self.clients.pop(name, None)
                 if session_entered:
@@ -120,6 +131,8 @@ class MCPManager:
                         await manager.__aexit__(None, None, None)
                     except Exception:
                         pass
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
         return found
 
     async def call(self, name: str, args: dict[str, Any]):

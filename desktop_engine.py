@@ -4,6 +4,7 @@ import json, os, re, threading, time, urllib.error, urllib.request
 from pathlib import Path
 from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
+from mcp_support import MCPRequestCancelled
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -35,8 +36,9 @@ class Workspace:
 
 class ToolRegistry:
     """Only explicit, project-scoped tools. No shell strings, network or host-file tools."""
-    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None):
+    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
+        self.cancel_event=cancel_event or threading.Event()
         self.schemas = [
           self._schema("list_files", "List project files", {"path":{"type":"string"},"pattern":{"type":"string"}}, []),
           self._schema("search_files", "Search project text", {"query":{"type":"string"}}, ["query"]),
@@ -136,9 +138,23 @@ class ToolRegistry:
         if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv): return "argv must be a non-empty string list."
         if any(x in {"&&","||",";","|",">","<"} for x in argv): return "Shell operators are not accepted."
         try:
-            r=subprocess.run(argv,cwd=self.workspace.root,capture_output=True,text=True,timeout=max(1,min(300,int(args.get("timeout_seconds",120)))),shell=False,check=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
-            return (r.stdout+"\n"+r.stderr+f"\n[exit {r.returncode}]")[:12000]
-        except (OSError,subprocess.TimeoutExpired) as exc: return f"Command error: {exc}"
+            limit=max(1,min(3600,int(args.get("timeout_seconds",120))))
+            process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+            deadline=time.monotonic()+limit
+            while True:
+                if self.cancel_event.is_set():
+                    process.terminate()
+                    try:process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:process.kill();process.communicate()
+                    return "Command cancelled by user."
+                if time.monotonic()>=deadline:
+                    process.kill();stdout,stderr=process.communicate()
+                    return (stdout+"\n"+stderr+f"\n[command timed out after {limit}s]")[:12000]
+                try:
+                    stdout,stderr=process.communicate(timeout=min(.2,max(.01,deadline-time.monotonic())))
+                    return (stdout+"\n"+stderr+f"\n[exit {process.returncode}]")[:12000]
+                except subprocess.TimeoutExpired:continue
+        except (OSError,ValueError) as exc: return f"Command error: {exc}"
 
 class ContextManager:
     def __init__(self, context: int=CONTEXT_MAX, reserve:int=8192): self.context,self.reserve=context,reserve
@@ -193,15 +209,17 @@ class OllamaRuntime:
         payload={"model":state["model"],"messages":messages,"stream":True,"tools":state["registry"].schemas+state.get("mcp_tools",[]),"keep_alive":state.get("keep_alive","30m"),
                  "options":{"temperature":state["temperature"],"num_ctx":state["context"],"num_predict":state["max_tokens"],**state.get("runtime_options",{})}}
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
-        result={"message":{"role":"assistant","content":""}};calls={}
+        result={"message":{"role":"assistant","content":""}};calls={};request_started=time.monotonic();first_output=True
         try:
-            response=urllib.request.urlopen(req,timeout=600)
+            response=urllib.request.urlopen(req,timeout=None)
             with self.lock:self.response=response
             while True:
                 if cancel.is_set():raise RequestCancelled("Cancelled")
                 line=response.readline()
                 if not line:break
                 item=json.loads(line.decode());msg=item.get("message") or {};text=msg.get("content") or ""
+                if first_output and (text or msg.get("tool_calls")):
+                    first_output=False;emit({"type":"phase","phase":"generating","elapsed":time.monotonic()-request_started})
                 if text:result["message"]["content"]+=text;emit({"type":"text","text":text,"at":time.monotonic()})
                 for idx,call in enumerate(msg.get("tool_calls") or []):
                     slot=calls.setdefault(idx,{"id":f"call-{idx}","type":"function","function":{"name":"","arguments":""}});fn=call.get("function") or {}
@@ -222,7 +240,7 @@ class AgentEngine:
     def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.mcp_tools=mcp_tools or [];self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event()
-        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event),"mcp_tools":self.mcp_tools,"messages":[]}
+        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event),"mcp_tools":self.mcp_tools,"messages":[]}
     def _approval(self,name:str,args:Any)->bool:
         if self.approval_mode=="per-task" and self.approved_task:return True
         ok=self.approve(name,args)
@@ -244,20 +262,34 @@ class AgentEngine:
                 result=self.runtime.stream(self.state,msgs,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
                 calls=msg.get("tool_calls") or []
                 if not calls:self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result});return msgs
-                for call in calls[:16]:
-                    fn=call.get("function") or {};name=fn.get("name","");args=fn.get("arguments",{})
-                    if isinstance(args,str):
-                        try:args=json.loads(args or "{}")
-                        except json.JSONDecodeError:args={}
-                    self.event({"type":"tool_start","name":name,"arguments":args})
-                    if name.startswith("mcp__") and self.mcp_call:
-                        if not self._approval(name,args): out="Denied by user."
-                        else: out=self.mcp_call(name,args)
-                    else: out=self.state["registry"].run(name,args)
+                for index,call in enumerate(calls):
+                    fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
+                    args_error=None
+                    if isinstance(raw_args,str):
+                        try:args=json.loads(raw_args or "{}")
+                        except json.JSONDecodeError as exc:args={};args_error=f"Invalid JSON tool arguments: {exc}"
+                    else:args=raw_args
+                    if not isinstance(args,dict):args_error="Tool arguments must be a JSON object.";args={}
+                    if index>=16:out="Not executed: maximum of 16 tool actions per model response; retry with a smaller batch."
+                    elif self.cancel_event.is_set():out="Cancelled before this tool action ran."
+                    elif args_error:out=args_error
+                    else:
+                        self.event({"type":"tool_start","name":name,"arguments":args})
+                        try:
+                            if name.startswith("mcp__") and self.mcp_call:
+                                if not self._approval(name,args):out="Denied by user."
+                                else:out=self.mcp_call(name,args)
+                            else:out=self.state["registry"].run(name,args)
+                        except MCPRequestCancelled:out="Cancelled during MCP action."
+                        except Exception as exc:out=f"Tool error: {type(exc).__name__}: {exc}"
                     self.event({"type":"tool_done","name":name,"result":str(out)[:12000]})
-                    msgs.append({"role":"tool","tool_call_id":call.get("id",""),"content":out})
+                    msgs.append({"role":"tool","tool_call_id":call.get("id",f"call-{index}"),"content":str(out)})
+                    if self.cancel_event.is_set():
+                        for pending_index,pending in enumerate(calls[index+1:],start=index+1):
+                            msgs.append({"role":"tool","tool_call_id":pending.get("id",f"call-{pending_index}"),"content":"Cancelled before this tool action ran."})
+                        raise RequestCancelled()
             raise RuntimeError("Reached the per-turn 32-step tool-call limit")
-        except RequestCancelled:self.event({"type":"cancelled","elapsed":time.monotonic()-start})
+        except (RequestCancelled,MCPRequestCancelled):self.event({"type":"cancelled","elapsed":time.monotonic()-start})
         except Exception as exc:self.event({"type":"error","error":f"{type(exc).__name__}: {exc}"})
         return msgs
 
