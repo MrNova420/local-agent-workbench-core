@@ -11,3 +11,20 @@ class EventBus:
    try:out.append(self._q.get_nowait())
    except queue.Empty:break
   return out
+
+class AgentEventRelay:
+ """Keep terminal engine events behind session persistence."""
+ def __init__(self,emit):self._emit=emit;self._terminal=None
+ def __call__(self,event:dict[str,Any]):
+  kind=event.get('type')
+  if kind in {'error','cancelled'}:
+   self._terminal=dict(event)
+   return
+  if kind=='complete':event={**event,'type':'generation_complete'}
+  self._emit(event)
+ @property
+ def has_terminal(self):return self._terminal is not None
+ def emit_terminal_after_persist(self):
+  event,self._terminal=self._terminal,None
+  if event is not None:self._emit(event)
+ def discard_terminal(self):self._terminal=None

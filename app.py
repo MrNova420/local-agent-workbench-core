@@ -5,7 +5,7 @@ from pathlib import Path
 from desktop_engine import AgentEngine, OllamaRuntime, MODEL, CONTEXT_MAX
 from sessions import SessionStore
 from telemetry import Telemetry
-from ui_events import EventBus
+from ui_events import AgentEventRelay, EventBus
 from project_knowledge import ProjectKnowledge
 from mcp_support import MCPManager
 from turn_context import TurnContext, parse_run_settings, should_apply_advertised_context, validate_selected_workspace
@@ -244,19 +244,22 @@ class LocalAgentApp(tk.Tk):
    except Exception as exc:self.events.emit({'type':'mcp_status','text':f'MCP unavailable: {exc}'})
    try:
     knowledge=ProjectKnowledge(turn.workspace)
-    terminal={'kind':None}
-    def engine_event(event):
-     if event.get('type') in {'error','cancelled'}:terminal['kind']=event['type']
-     if event.get('type')=='complete':event={**event,'type':'generation_complete'}
-     self.events.emit(event)
-    engine=AgentEngine(turn.workspace,turn.model,turn.context,turn.access,turn.approval_mode,engine_event,approve,runtime_options=turn.runtime_options,max_tokens=turn.max_tokens,temperature=turn.temperature,project_instructions=knowledge.instructions(),mcp_tools=discovered,mcp_call=lambda name,args:self.mcp.run(self.mcp.call(name,args),cancel_event=turn_cancel))
+    relay=AgentEventRelay(self.events.emit)
+    engine=AgentEngine(turn.workspace,turn.model,turn.context,turn.access,turn.approval_mode,relay,approve,runtime_options=turn.runtime_options,max_tokens=turn.max_tokens,temperature=turn.temperature,project_instructions=knowledge.instructions(),mcp_tools=discovered,mcp_call=lambda name,args:self.mcp.run(self.mcp.call(name,args),cancel_event=turn_cancel))
     self.engine=engine
     if turn_cancel.is_set():engine.cancel()
     new_messages=engine.run(turn.prompt,turn.session['messages']);turn.session['messages']=new_messages
-    if terminal['kind'] is None:
-     turn.session.setdefault('turns',[]).append({'prompt':turn.prompt,'at':time.time()});SESSIONS.save(turn.session);self.events.emit({'type':'session_saved'});self.events.emit({'type':'turn_result','messages':new_messages});self.events.emit({'type':'complete','elapsed':time.monotonic()-self.started})
-    else:SESSIONS.save(turn.session);self.events.emit({'type':'session_saved'})
-   except Exception as exc:self.events.emit({'type':'error','error':f'{type(exc).__name__}: {exc}'})
+    terminal=relay.has_terminal
+    if not terminal:turn.session.setdefault('turns',[]).append({'prompt':turn.prompt,'at':time.time()})
+    SESSIONS.save(turn.session);self.events.emit({'type':'session_saved'})
+    if not terminal:
+     self.events.emit({'type':'turn_result','messages':new_messages});self.events.emit({'type':'complete','elapsed':time.monotonic()-self.started})
+    else:relay.emit_terminal_after_persist()
+   except Exception as exc:
+    if 'relay' in locals():relay.discard_terminal()
+    try:SESSIONS.save(turn.session);self.events.emit({'type':'session_saved'})
+    except Exception as persist_exc:exc=RuntimeError(f'{type(exc).__name__}: {exc}; session save also failed: {type(persist_exc).__name__}: {persist_exc}')
+    self.events.emit({'type':'error','error':f'{type(exc).__name__}: {exc}'})
   threading.Thread(target=run,name='agent-task',daemon=True).start()
  def _workspace_label(self):
   if self.session_state and self.session_state.get('access')=='copy' and self.workspace.resolve()!=self.source_workspace.resolve():return f"Source: {self.source_workspace}\nWorking copy: {self.workspace}"

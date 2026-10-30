@@ -20,10 +20,11 @@ Current status: active development; **not approved for unrestricted real-project
 
 ## Verification performed in this work period
 
-- `python -m unittest discover -s tests -v`: **66 passed**.
+- `python -m unittest discover -s tests -q`: **69 passed**.
 - `python -m py_compile` over application and support modules: passed.
 - `git diff --check`: passed after the latest source and documentation updates.
 - Regression tests cover turn snapshots, resumed project instructions, link traversal, persistent/cancelled MCP operations, request timeout configuration, cancellable commands, tool batches, bounded retrieval/search, full-request budgeting, patch transaction/deletion/rollback, session recovery validation, run-setting validation, context-setting precedence, explicit project selection, disposable-copy isolation, apply-back conflicts, and rollback.
+- Terminal engine errors and cancellation are held until the worker persists the resulting session, preventing the UI from accepting a new prompt against stale in-memory history. A regression test verifies the event ordering.
 - Read-only runtime snapshot while inspecting the existing app: `hf.co/ressl/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`, allocated context 262,144, reported 87% CPU / 13% GPU. No request, reload, or unload was issued by this audit.
 
 ## Not verified here
@@ -35,7 +36,7 @@ Current status: active development; **not approved for unrestricted real-project
 ## Remaining release gates
 
 - Visually inspect the rebuilt UI at realistic Windows sizes/scaling and complete a disposable-project flow: choose root, hello, task, exact per-action approval, write, test, cancel, save, resume, and verify root isolation.
-- Complete event/UI lifecycle testing for startup, cancel, approval-dialog close, save/resume, and shutdown races.
+- Complete remaining event/UI lifecycle testing for startup, approval-dialog close, save/resume, and shutdown races; terminal-event persistence ordering has a mocked regression test but has not been exercised in the visible app.
 - Add Windows child-process tree containment and resource limits; direct command approval still runs with the user's Windows account and is not an OS sandbox.
 - Measure actual Ollama first-token latency, generation speed, allocated context, and peak RAM/VRAM under the approved model-preservation protocol.
 - Revisit packaging, diagnostic exports, and installation/updating before calling the app production-ready.
