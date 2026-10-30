@@ -34,6 +34,31 @@ class DisposableWorkspaceTests(unittest.TestCase):
             self.assertEqual(manifest, {"main.py": hashlib.sha256((source / "main.py").read_bytes()).hexdigest()})
             self.assertEqual((source / "main.py").read_text(), "print('base')\n")
 
+    def test_copy_omits_gitignored_files_and_nested_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            (source / ".gitignore").write_text("*.secret\ncache/\n", encoding="utf-8")
+            (source / "app.py").write_text("visible", encoding="utf-8")
+            (source / "token.secret").write_text("ignored", encoding="utf-8")
+            cache = source / "cache"
+            cache.mkdir()
+            (cache / "data.bin").write_bytes(b"ignored")
+            nested = source / "src"
+            nested.mkdir()
+            (nested / ".gitignore").write_text("local.json\n", encoding="utf-8")
+            (nested / "local.json").write_text("ignored", encoding="utf-8")
+            (nested / "code.py").write_text("visible", encoding="utf-8")
+            working = Path(temp) / "store" / "session" / "project"
+
+            create_disposable_workspace(source, working)
+
+            self.assertTrue((working / "app.py").exists())
+            self.assertTrue((working / "src" / "code.py").exists())
+            self.assertFalse((working / "token.secret").exists())
+            self.assertFalse((working / "cache").exists())
+            self.assertFalse((working / "src" / "local.json").exists())
+
     def test_review_lists_changes_and_flags_source_conflicts(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -116,14 +141,14 @@ class DisposableWorkspaceTests(unittest.TestCase):
             original.write_text("copied version\n")
             copied_hash = hashlib.sha256(original.read_bytes()).hexdigest()
             destination = base / "store" / "project"
-            real_copytree = __import__("shutil").copytree
+            real_copy = __import__("shutil").copy2
 
             def copy_then_change_source(source_path, destination_path, **kwargs):
-                result = real_copytree(source_path, destination_path, **kwargs)
+                result = real_copy(source_path, destination_path, **kwargs)
                 original.write_text("external concurrent change\n")
                 return result
 
-            with patch("disposable_workspace.shutil.copytree", side_effect=copy_then_change_source):
+            with patch("disposable_workspace.shutil.copy2", side_effect=copy_then_change_source):
                 manifest = create_disposable_workspace(source, destination)
 
             (destination / "main.py").write_text("agent edit\n")

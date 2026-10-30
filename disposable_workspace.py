@@ -85,20 +85,17 @@ def create_disposable_workspace(source: Path | str, destination: Path | str) -> 
     if destination_root.exists():
         raise FileExistsError(f"Disposable workspace already exists: {destination_root}")
 
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        base = Path(directory)
-        skipped = {name for name in names if name in DEFAULT_IGNORED}
-        for name in names:
-            item = base / name
-            if item.is_symlink() or getattr(os.path, "isjunction", lambda _p: False)(item):
-                skipped.add(name)
-        return skipped
-
     destination_root.parent.mkdir(parents=True, exist_ok=True)
     staging_root = Path(tempfile.mkdtemp(prefix=f".{destination_root.name}-copy-", dir=destination_root.parent))
     try:
         staged_project = staging_root / "project"
-        shutil.copytree(source_root, staged_project, ignore=ignore)
+        staged_project.mkdir()
+        for source_file in iter_project_files(source_root):
+            if source_file.is_symlink() or getattr(os.path, "isjunction", lambda _p: False)(source_file):
+                continue
+            target = staged_project / source_file.relative_to(source_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, target)
         manifest = capture_manifest(staged_project)
         os.rename(staged_project, destination_root)
         return manifest

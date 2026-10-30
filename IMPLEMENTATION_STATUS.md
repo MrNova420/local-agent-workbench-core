@@ -10,7 +10,7 @@ Current status: active development; **not approved for unrestricted real-project
 - Default Ollama model remains `hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M`. Reasoning remains at the model default, and context is sent as selected.
 - Immutable task snapshots; project/session/model controls are locked during a task; resume clears the current transcript and asks before switching projects.
 - Run settings (context, maximum output, temperature, access mode, and approval mode) are validated and retained on session resume; late model metadata cannot overwrite a saved or manually selected context. Reasoning remains unset at the model default.
-- Project-specific instructions are refreshed for resumed history; shared project traversal skips symlinks, junctions, and common generated folders.
+- Project-specific instructions are refreshed for resumed history; shared project traversal respects root and nested `.gitignore` rules, skips symlinks/junctions and common generated folders, and retains explicit file/byte limits.
 - Persistent MCP event-loop ownership and per-turn cancellation for MCP operations.
 - Streaming has no fixed socket inactivity deadline; approved direct child commands can be cancelled and have a one-hour maximum.
 - Context budget includes serialized conversation and tool schemas plus output reserve, using a conservative UTF-8-byte estimate. It does not rewrite the configured context.
@@ -37,7 +37,6 @@ Current status: active development; **not approved for unrestricted real-project
 - Visually inspect the rebuilt UI at realistic Windows sizes/scaling and complete a disposable-project flow: choose root, hello, task, exact per-action approval, write, test, cancel, save, resume, and verify root isolation.
 - Complete event/UI lifecycle testing for startup, cancel, approval-dialog close, save/resume, and shutdown races.
 - Add Windows child-process tree containment and resource limits; direct command approval still runs with the user's Windows account and is not an OS sandbox.
-- Make project traversal respect `.gitignore` and nested ignore rules while keeping link and file/byte limits.
 - Measure actual Ollama first-token latency, generation speed, allocated context, and peak RAM/VRAM under the approved model-preservation protocol.
 - Revisit packaging, diagnostic exports, and installation/updating before calling the app production-ready.
 

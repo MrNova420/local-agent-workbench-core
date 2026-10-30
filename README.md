@@ -7,9 +7,10 @@ The desktop is organized around the work loop: a project and recent-session rail
 ## Start
 
 1. Install Python 3.10+ (Tkinter enabled) and Ollama.
-2. Keep the Ollama service running. The app does not start, stop, unload, or pull models.
-3. Run `Start Local Agent Desk.bat` or `python app.py`.
-4. Choose a project folder, select one installed model, review the context setting, and enter a task.
+2. Install the app dependency once: `python -m pip install -r requirements.txt`.
+3. Keep the Ollama service running. The app does not start, stop, unload, or pull models.
+4. Run `Start Local Agent Desk.bat` or `python app.py`.
+5. Choose a project folder, select one installed model, review the context setting, and enter a task.
 
 The app never changes OpenCode configuration. It does not load a model on launch. It requests the chosen context (defaulted from model metadata, up to the full advertised context) and reports Ollama's actual allocated context. If the runtime rejects or cannot allocate it, the request shows the error; the app does not silently reduce context. Reasoning controls are left unset. Inference has no response deadline; Cancel closes only the current request. The app does not stop Ollama or unload a model.
 
@@ -21,7 +22,7 @@ The app never changes OpenCode configuration. It does not load a model on launch
 - Full scrollable action previews before approval, with transactional multi-file patch application and explicit patch deletion handling.
 - Copy/plan/ask/edit access modes; per-action approval by default and optional per-task approval. Copy mode gives the agent a managed disposable workspace; the source stays untouched until you review the full diff and apply it explicitly.
 - Project instruction discovery (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, GitHub Copilot instructions) and on-demand project/user skill loading.
-- Query-ranked relevant file retrieval and search have explicit scan limits and disclose partial results. Conversation compaction uses a conservative byte-based budget that includes messages, tool definitions, and output reserve; it never changes the requested context, and may reject some requests early because it is not Ollama's model tokenizer.
+- Query-ranked relevant file retrieval, search, previews, and copy snapshots honor root and nested `.gitignore` patterns and have explicit scan limits that disclose partial results. Conversation compaction uses a conservative byte-based budget that includes messages, tool definitions, and output reserve; it never changes the requested context, and may reject some requests early because it is not Ollama's model tokenizer.
 - Resumable JSON sessions under `%LOCALAPPDATA%\LocalAgentDesk\sessions`, with atomic writes and load-time schema/history validation.
 - Local stdio MCP configured in `%LOCALAPPDATA%\LocalAgentDesk\mcp.json`; optional official SDK with `python build.py --install-mcp`.
 - Read-only CPU/RAM/GPU and Ollama-loaded context telemetry.
