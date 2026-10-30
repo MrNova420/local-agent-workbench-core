@@ -3,8 +3,32 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any
+
+
+def parse_run_settings(context_text: str, max_tokens_text: str, temperature_text: str) -> tuple[int, int, float]:
+    """Validate user-selected inference limits without silently changing them."""
+    try:
+        context = int(context_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Context must be a whole number.") from exc
+    try:
+        max_tokens = int(max_tokens_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Maximum output must be a whole number.") from exc
+    try:
+        temperature = float(temperature_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Temperature must be a number from 0 to 2.") from exc
+    if context < 1024:
+        raise ValueError("Context must be at least 1,024 tokens.")
+    if max_tokens < 1:
+        raise ValueError("Maximum output must be positive.")
+    if not math.isfinite(temperature) or not 0 <= temperature <= 2:
+        raise ValueError("temperature must be between 0 and 2.")
+    return context, max_tokens, temperature
 
 
 @dataclass(frozen=True)

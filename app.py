@@ -8,7 +8,7 @@ from telemetry import Telemetry
 from ui_events import EventBus
 from project_knowledge import ProjectKnowledge
 from mcp_support import MCPManager
-from turn_context import TurnContext
+from turn_context import TurnContext, parse_run_settings
 from project_view import preview_files
 
 APP=Path(os.environ.get('LOCALAPPDATA',Path.home()))/'LocalAgentDesk'
@@ -19,7 +19,7 @@ class LocalAgentApp(tk.Tk):
  def __init__(self):
   super().__init__();self.title('Local Agent Desk');self.geometry('1580x960');self.minsize(1120,720);self.configure(bg=BG)
   self.option_add('*Font','{Segoe UI} 10');self.events=EventBus();self.runtime=OllamaRuntime();self.telemetry=Telemetry();self.engine=None;self.state=None;self.session_state=None;self.busy=False;self.started=None;self.pending_approval=None;self.approval_condition=threading.Condition();self.workspace=Path.home();self.project_selected=False;self.sessions=SESSIONS.list();self.mcp_status='Not connected';self.mcp=MCPManager(APP/'mcp.json');self.mcp.load();self.mcp_tools=[];self.displayed_context=CONTEXT_MAX
-  self.context_var=tk.StringVar(value=str(CONTEXT_MAX));self.tokens_var=tk.StringVar(value='4096');self.access_var=tk.StringVar(value='ask');self.approval_var=tk.StringVar(value='per-action');self.context_entry=self.tokens_entry=self.access_combo=self.approval_combo=None
+  self.context_var=tk.StringVar(value=str(CONTEXT_MAX));self.tokens_var=tk.StringVar(value='4096');self.temperature_var=tk.StringVar(value='0.2');self.access_var=tk.StringVar(value='ask');self.approval_var=tk.StringVar(value='per-action');self.context_entry=self.tokens_entry=self.temperature_entry=self.access_combo=self.approval_combo=None
   self._style();self._layout();self._refresh_sessions();self.after(100,self._poll);self.after(1200,self._refresh_runtime);self.after(900,self._telemetry)
  def _style(self):
   s=ttk.Style(self);s.theme_use('clam');s.configure('TCombobox',fieldbackground=PANEL2,background=PANEL2,foreground=TEXT,arrowcolor=CYAN,bordercolor=LINE,lightcolor=LINE,darkcolor=LINE);s.configure('Vertical.TScrollbar',background=PANEL2,troughcolor=BG,arrowcolor=MUTED);s.configure('TNotebook',background=PANEL,tabmargins=(4,5,4,0),borderwidth=0);s.configure('TNotebook.Tab',background=PANEL2,foreground=MUTED,padding=(12,8),borderwidth=0);s.map('TNotebook.Tab',background=[('selected',PANEL)],foreground=[('selected',TEXT)])
@@ -69,18 +69,19 @@ class LocalAgentApp(tk.Tk):
   view.insert('end',text+'\n');view.see('end');view.configure(state='disabled')
  def _settings_dialog(self):
   if getattr(self,'settings_window',None) and self.settings_window.winfo_exists():self.settings_window.lift();return
-  win=tk.Toplevel(self);self.settings_window=win;win.title('Run settings');win.geometry('440x530');win.configure(bg=BG);win.transient(self);win.grab_set();win.columnconfigure(0,weight=1)
+  win=tk.Toplevel(self);self.settings_window=win;win.title('Run settings');win.geometry('440x620');win.configure(bg=BG);win.transient(self);win.grab_set();win.columnconfigure(0,weight=1)
   tk.Label(win,text='RUN SETTINGS',bg=BG,fg=CYAN,font=('Segoe UI Semibold',9)).grid(row=0,column=0,sticky='w',padx=24,pady=(22,3));tk.Label(win,text='Tune the next task',bg=BG,fg=TEXT,font=('Segoe UI Semibold',17)).grid(row=1,column=0,sticky='w',padx=24,pady=(0,18))
   box=tk.Frame(win,bg=PANEL);box.grid(row=2,column=0,sticky='ew',padx=18);box.columnconfigure(0,weight=1)
   tk.Label(box,text='Context tokens',bg=PANEL,fg=MUTED).grid(row=0,column=0,sticky='w',padx=16,pady=(15,5));self.context_entry=tk.Entry(box,textvariable=self.context_var,bg=PANEL2,fg=TEXT,insertbackground=CYAN,relief='flat',highlightthickness=1,highlightbackground=LINE,width=22);self.context_entry.grid(row=1,column=0,sticky='ew',padx=16,ipady=8)
   tk.Label(box,text='Maximum output tokens',bg=PANEL,fg=MUTED).grid(row=2,column=0,sticky='w',padx=16,pady=(13,5));self.tokens_entry=tk.Entry(box,textvariable=self.tokens_var,bg=PANEL2,fg=TEXT,insertbackground=CYAN,relief='flat',highlightthickness=1,highlightbackground=LINE,width=22);self.tokens_entry.grid(row=3,column=0,sticky='ew',padx=16,ipady=8)
-  tk.Label(box,text='File access',bg=PANEL,fg=MUTED).grid(row=4,column=0,sticky='w',padx=16,pady=(13,5));self.access_combo=ttk.Combobox(box,textvariable=self.access_var,values=['ask','edit','plan'],state='readonly');self.access_combo.grid(row=5,column=0,sticky='ew',padx=16)
-  tk.Label(box,text='Approval',bg=PANEL,fg=MUTED).grid(row=6,column=0,sticky='w',padx=16,pady=(13,5));self.approval_combo=ttk.Combobox(box,textvariable=self.approval_var,values=['per-action','per-task'],state='readonly');self.approval_combo.grid(row=7,column=0,sticky='ew',padx=16,pady=(0,16))
+  tk.Label(box,text='Temperature (0–2)',bg=PANEL,fg=MUTED).grid(row=4,column=0,sticky='w',padx=16,pady=(13,5));self.temperature_entry=tk.Entry(box,textvariable=self.temperature_var,bg=PANEL2,fg=TEXT,insertbackground=CYAN,relief='flat',highlightthickness=1,highlightbackground=LINE,width=22);self.temperature_entry.grid(row=5,column=0,sticky='ew',padx=16,ipady=8)
+  tk.Label(box,text='File access',bg=PANEL,fg=MUTED).grid(row=6,column=0,sticky='w',padx=16,pady=(13,5));self.access_combo=ttk.Combobox(box,textvariable=self.access_var,values=['ask','edit','plan'],state='readonly');self.access_combo.grid(row=7,column=0,sticky='ew',padx=16)
+  tk.Label(box,text='Approval',bg=PANEL,fg=MUTED).grid(row=8,column=0,sticky='w',padx=16,pady=(13,5));self.approval_combo=ttk.Combobox(box,textvariable=self.approval_var,values=['per-action','per-task'],state='readonly');self.approval_combo.grid(row=9,column=0,sticky='ew',padx=16,pady=(0,16))
   tk.Label(win,text='Reasoning stays at the model default. Context remains at your selected value; allocation is reported live.',bg=BG,fg=MUTED,wraplength=380,justify='left').grid(row=3,column=0,sticky='w',padx=24,pady=14)
   actions=tk.Frame(win,bg=BG);actions.grid(row=4,column=0,sticky='ew',padx=18,pady=(8,18));tk.Button(actions,text='Configure MCP',command=self._configure_mcp,bg=PANEL2,fg=TEXT,relief='flat',padx=12,pady=9).pack(side='left');tk.Button(actions,text='Done',command=win.destroy,bg=CYAN,fg='#182018',relief='flat',padx=24,pady=9).pack(side='right')
   win.bind('<Destroy>',lambda e:self._clear_settings_widgets() if e.widget is win else None)
  def _clear_settings_widgets(self):
-  self.context_entry=self.tokens_entry=self.access_combo=self.approval_combo=None
+  self.context_entry=self.tokens_entry=self.temperature_entry=self.access_combo=self.approval_combo=None
  def _refresh_project_files(self):
   root=self.workspace
   def work():
@@ -138,7 +139,7 @@ class LocalAgentApp(tk.Tk):
    if not workspace.is_dir():raise ValueError('The saved project folder is no longer available.')
    if self.project_selected and self.workspace.is_dir() and self.workspace.resolve()!=workspace and not messagebox.askyesno('Switch project?',f"This session belongs to another project:\n\n{workspace}\n\nSwitch the active project and resume it?"):
     return
-   self.session_state=state;self.workspace=workspace;self.project_selected=True;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages");self._refresh_project_files()
+   self.session_state=state;self.workspace=workspace;self.project_selected=True;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.tokens_var.set(str(state.get('max_tokens',4096)));self.temperature_var.set(str(state.get('temperature',0.2)));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages");self._refresh_project_files()
    for msg in state.get('messages',[]):
     if msg.get('role') in {'user','assistant'} and msg.get('content'):self._append(msg['role'],'You' if msg['role']=='user' else 'Agent',msg['content'])
   except Exception as exc:messagebox.showerror('Could not resume session',str(exc))
@@ -149,15 +150,14 @@ class LocalAgentApp(tk.Tk):
   if not self.workspace.is_dir():messagebox.showinfo('Choose a project','Select the project folder first.');return
   prompt=self.prompt.get('1.0','end').strip()
   if not prompt or prompt.startswith('Describe the project task'):return
-  try:context=int(self.context_var.get());tokens=int(self.tokens_var.get());
-  except ValueError:messagebox.showerror('Invalid settings','Context and output tokens must be whole numbers.');return
-  if context<1024 or tokens<1:messagebox.showerror('Invalid settings','Context must be at least 1,024 and output tokens must be positive.');return
+  try:context,tokens,temperature=parse_run_settings(self.context_var.get(),self.tokens_var.get(),self.temperature_var.get())
+  except ValueError as exc:messagebox.showerror('Invalid settings',str(exc));return
   model=self.model_var.get().strip()
   if not model:messagebox.showerror('No model selected','No installed Ollama models were found. Install your model with Ollama, then refresh/reopen the app.');return
   if not self.session_state:self.session_state=SESSIONS.create(str(self.workspace),model,context)
-  state=self.session_state;state.update(workspace=str(self.workspace),model=model,context=context,access=self.access_var.get(),approval_mode=self.approval_var.get(),max_tokens=tokens,temperature=0.2)
+  state=self.session_state;state.update(workspace=str(self.workspace),model=model,context=context,access=self.access_var.get(),approval_mode=self.approval_var.get(),max_tokens=tokens,temperature=temperature)
   try:
-   turn=TurnContext.capture(workspace=self.workspace,model=model,context=context,access=self.access_var.get(),approval_mode=self.approval_var.get(),max_tokens=tokens,temperature=0.2,runtime_options=state.get('runtime_options',{}),prompt=prompt,session=state,mcp_tools=self.mcp_tools)
+   turn=TurnContext.capture(workspace=self.workspace,model=model,context=context,access=self.access_var.get(),approval_mode=self.approval_var.get(),max_tokens=tokens,temperature=temperature,runtime_options=state.get('runtime_options',{}),prompt=prompt,session=state,mcp_tools=self.mcp_tools)
   except Exception as exc:messagebox.showerror('Could not start task',str(exc));return
   self.session_state=turn.session;state=turn.session;self.state=state
   try:self._save()
@@ -199,7 +199,7 @@ class LocalAgentApp(tk.Tk):
   threading.Thread(target=run,name='agent-task',daemon=True).start()
  def _set_busy(self,value):
   self.busy=value;self.send_btn.configure(state='disabled' if value else 'normal');self.cancel_btn.configure(state='normal' if value else 'disabled');self.status.configure(text='● RUNNING' if value else '● READY',fg=AMBER if value else GREEN)
-  for widget in (self.workspace_btn,self.model_combo,self.context_entry,self.tokens_entry,self.access_combo,self.approval_combo,self.session_combo,self.resume_btn,self.new_session_btn,self.settings_btn,self.diff_btn):
+  for widget in (self.workspace_btn,self.model_combo,self.context_entry,self.tokens_entry,self.temperature_entry,self.access_combo,self.approval_combo,self.session_combo,self.resume_btn,self.new_session_btn,self.settings_btn,self.diff_btn):
    if widget is not None:widget.configure(state=('disabled' if value else ('readonly' if isinstance(widget,ttk.Combobox) else 'normal')))
  def _cancel(self):
   if self.engine:self.engine.cancel()
