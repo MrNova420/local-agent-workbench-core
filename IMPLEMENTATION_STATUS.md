@@ -29,13 +29,13 @@ Current status: active development; **not approved for unrestricted real-project
 
 ## Not verified here
 
-- The visible existing window was the older UI, idle at READY, showing the `LocalAgentDesk-StableTest-...` workspace and its matching session. The redesigned source was not visually inspected or exercised end-to-end. No model request or project write was submitted.
+- Visually inspected the rebuilt source at 1,580×990: the three-column project/conversation/inspector layout rendered, with no project selected and the model reasoning left at model default. The folder picker opened. UI automation then returned a Codex screenshot while reporting the app HWND; interaction was stopped before folder selection. The test process was closed, the older StableTest window was left untouched, and no inference or project write was submitted. A fresh empty fixture remains at `C:\Users\kayde\Documents\Codex\2026-10-30\fi\work\local-agent-desk-userflow-empty`.
 - No live Ollama coding request or hardware benchmark was performed. Earlier numbers and model state in the original prototype report are historical records, not fresh evidence for this source revision.
 - The prior `Tk window instantiated` claim belongs to the earlier prototype and does not verify the current layout.
 
 ## Remaining release gates
 
-- Visually inspect the rebuilt UI at realistic Windows sizes/scaling and complete a disposable-project flow: choose root, hello, task, exact per-action approval, write, test, cancel, save, resume, and verify root isolation.
+- Complete a disposable-project UI flow: choose root, hello, task, exact per-action approval, write, test, cancel, save, resume, and verify root isolation. One layout screenshot was inspected; the interactive flow is still unverified because the Windows automation helper returned the wrong app screenshot.
 - Complete remaining event/UI lifecycle testing for startup, approval-dialog close, save/resume, and shutdown races; terminal-event persistence ordering has a mocked regression test but has not been exercised in the visible app.
 - Add Windows child-process tree containment and resource limits; direct command approval still runs with the user's Windows account and is not an OS sandbox.
 - Measure actual Ollama first-token latency, generation speed, allocated context, and peak RAM/VRAM under the approved model-preservation protocol.

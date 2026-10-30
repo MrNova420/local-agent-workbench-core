@@ -15,7 +15,7 @@ class ContextTests(unittest.TestCase):
     def test_compaction_keeps_system_and_recent_messages(self):
         manager=ContextManager(context=4096,reserve=1024);messages=[{'role':'system','content':'SYSTEM'}]
         messages += [{'role':'user','content':f'turn {i} '+'x'*400} for i in range(40)]
-        compacted=manager.compact(messages);self.assertEqual(compacted[0],messages[0]);self.assertTrue(any('automatically compacted' in str(m.get('content')) for m in compacted));self.assertEqual(compacted[-1],messages[-1])
+        compacted=manager.compact(messages);self.assertEqual(compacted[0],messages[0]);summary=next(m for m in compacted if 'automatically compacted' in str(m.get('content')));self.assertEqual(summary['role'],'user');self.assertEqual(compacted[-1],messages[-1])
     def test_budget_refuses_to_silently_lower_context(self):
         manager=ContextManager(context=4096,reserve=1024);huge=[{'role':'system','content':'s'},{'role':'user','content':'x'*50000}]
         with self.assertRaisesRegex(ValueError,'context was not reduced'):manager.compact(huge)
