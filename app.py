@@ -8,6 +8,7 @@ from telemetry import Telemetry
 from ui_events import EventBus
 from project_knowledge import ProjectKnowledge
 from mcp_support import MCPManager
+from turn_context import TurnContext
 
 APP=Path(os.environ.get('LOCALAPPDATA',Path.home()))/'LocalAgentDesk'
 SESSIONS=SessionStore(APP/'sessions')
@@ -27,15 +28,15 @@ class LocalAgentApp(tk.Tk):
   tk.Label(header,text='LOCAL AGENT DESK',bg=BG,fg=TEXT,font=('Segoe UI',15)).grid(row=0,column=1,sticky='w',padx=12,pady=(2,0));tk.Label(header,text='Private project development · Ollama runtime',bg=BG,fg=MUTED,font=('Segoe UI',9)).grid(row=1,column=1,sticky='w',padx=12)
   self.runtime_badge=tk.Label(header,text='●  Ollama checking',bg='#142236',fg=AMBER,padx=14,pady=8,font=('Segoe UI',9));self.runtime_badge.grid(row=0,column=2,rowspan=2,sticky='e')
   side=tk.Frame(self,bg=PANEL,highlightbackground=LINE,highlightthickness=1,width=310);side.grid(row=1,column=0,sticky='nsew',padx=(24,12),pady=(0,16));side.grid_propagate(False);side.columnconfigure(0,weight=1)
-  self._label(side,'WORKSPACE',0);self.path_label=tk.Label(side,text='No project selected',bg=PANEL,fg=MUTED,wraplength=260,justify='left');self.path_label.grid(row=1,column=0,sticky='ew',padx=18,pady=(8,8));self._button(side,'Choose project folder',self._choose_workspace,2)
+  self._label(side,'WORKSPACE',0);self.path_label=tk.Label(side,text='No project selected',bg=PANEL,fg=MUTED,wraplength=260,justify='left');self.path_label.grid(row=1,column=0,sticky='ew',padx=18,pady=(8,8));self.workspace_btn=self._button(side,'Choose project folder',self._choose_workspace,2)
   self._label(side,'MODEL',3);self.model_var=tk.StringVar(value=MODEL);self.model_combo=ttk.Combobox(side,textvariable=self.model_var,state='readonly');self.model_combo.grid(row=4,column=0,sticky='ew',padx=18,pady=(8,6));self.model_combo.bind('<<ComboboxSelected>>',lambda e:self._model_changed())
   self.model_note=tk.Label(side,text='Reasoning: model default · Context: 262,144',bg=PANEL,fg=MUTED,wraplength=260,justify='left');self.model_note.grid(row=5,column=0,sticky='w',padx=18,pady=(0,8))
   self._label(side,'RUN PROFILE',6);row=tk.Frame(side,bg=PANEL);row.grid(row=7,column=0,sticky='ew',padx=18,pady=(8,4));row.columnconfigure(1,weight=1);tk.Label(row,text='Context',bg=PANEL,fg=MUTED).grid(row=0,column=0,sticky='w');self.context_var=tk.StringVar(value='262144');self.context_entry=tk.Entry(row,textvariable=self.context_var,bg=PANEL2,fg=TEXT,insertbackground=TEXT,relief='flat',highlightthickness=1,highlightbackground=LINE,width=11);self.context_entry.grid(row=0,column=1,sticky='e',ipady=6)
-  row2=tk.Frame(side,bg=PANEL);row2.grid(row=8,column=0,sticky='ew',padx=18,pady=4);row2.columnconfigure(1,weight=1);tk.Label(row2,text='Output tokens',bg=PANEL,fg=MUTED).grid(row=0,column=0,sticky='w');self.tokens_var=tk.StringVar(value='4096');tk.Entry(row2,textvariable=self.tokens_var,bg=PANEL2,fg=TEXT,insertbackground=TEXT,relief='flat',highlightthickness=1,highlightbackground=LINE,width=11).grid(row=0,column=1,sticky='e',ipady=6)
-  row3=tk.Frame(side,bg=PANEL);row3.grid(row=9,column=0,sticky='ew',padx=18,pady=4);tk.Label(row3,text='Access',bg=PANEL,fg=MUTED).pack(side='left');self.access_var=tk.StringVar(value='ask');ttk.Combobox(row3,textvariable=self.access_var,values=['ask','edit','plan'],state='readonly',width=10).pack(side='right')
-  row4=tk.Frame(side,bg=PANEL);row4.grid(row=10,column=0,sticky='ew',padx=18,pady=4);tk.Label(row4,text='Approval',bg=PANEL,fg=MUTED).pack(side='left');self.approval_var=tk.StringVar(value='per-action');ttk.Combobox(row4,textvariable=self.approval_var,values=['per-action','per-task'],state='readonly',width=12).pack(side='right')
+  row2=tk.Frame(side,bg=PANEL);row2.grid(row=8,column=0,sticky='ew',padx=18,pady=4);row2.columnconfigure(1,weight=1);tk.Label(row2,text='Output tokens',bg=PANEL,fg=MUTED).grid(row=0,column=0,sticky='w');self.tokens_var=tk.StringVar(value='4096');self.tokens_entry=tk.Entry(row2,textvariable=self.tokens_var,bg=PANEL2,fg=TEXT,insertbackground=TEXT,relief='flat',highlightthickness=1,highlightbackground=LINE,width=11);self.tokens_entry.grid(row=0,column=1,sticky='e',ipady=6)
+  row3=tk.Frame(side,bg=PANEL);row3.grid(row=9,column=0,sticky='ew',padx=18,pady=4);tk.Label(row3,text='Access',bg=PANEL,fg=MUTED).pack(side='left');self.access_var=tk.StringVar(value='ask');self.access_combo=ttk.Combobox(row3,textvariable=self.access_var,values=['ask','edit','plan'],state='readonly',width=10);self.access_combo.pack(side='right')
+  row4=tk.Frame(side,bg=PANEL);row4.grid(row=10,column=0,sticky='ew',padx=18,pady=4);tk.Label(row4,text='Approval',bg=PANEL,fg=MUTED).pack(side='left');self.approval_var=tk.StringVar(value='per-action');self.approval_combo=ttk.Combobox(row4,textvariable=self.approval_var,values=['per-action','per-task'],state='readonly',width=12);self.approval_combo.pack(side='right')
   self._label(side,'LIVE RESOURCES',11);self.resource_label=tk.Label(side,text='Idle · model will load only when you send a task',bg=PANEL,fg=MUTED,justify='left',wraplength=270);self.resource_label.grid(row=12,column=0,sticky='ew',padx=18,pady=(8,8))
-  self._label(side,'SESSIONS',13);self.session_var=tk.StringVar();self.session_combo=ttk.Combobox(side,textvariable=self.session_var,state='readonly');self.session_combo.grid(row=14,column=0,sticky='ew',padx=18,pady=(8,5));self._button(side,'Resume selected session',self._resume_session,15);self._button(side,'New session',self._new_session,16)
+  self._label(side,'SESSIONS',13);self.session_var=tk.StringVar();self.session_combo=ttk.Combobox(side,textvariable=self.session_var,state='readonly');self.session_combo.grid(row=14,column=0,sticky='ew',padx=18,pady=(8,5));self.resume_btn=self._button(side,'Resume selected session',self._resume_session,15);self.new_session_btn=self._button(side,'New session',self._new_session,16)
   self._label(side,'LOCAL MCP',17);self.mcp_label=tk.Label(side,text='Local stdio servers · not connected',bg=PANEL,fg=MUTED);self.mcp_label.grid(row=18,column=0,sticky='w',padx=18,pady=(8,4));self._button(side,'Configure MCP servers',self._configure_mcp,19)
   main=tk.Frame(self,bg=BG);main.grid(row=1,column=1,sticky='nsew',padx=(0,24),pady=(0,16));main.rowconfigure(1,weight=1);main.columnconfigure(0,weight=1)
   toolbar=tk.Frame(main,bg=PANEL,highlightbackground=LINE,highlightthickness=1);toolbar.grid(row=0,column=0,sticky='ew',pady=(0,12));toolbar.columnconfigure(2,weight=1)
@@ -52,6 +53,7 @@ class LocalAgentApp(tk.Tk):
  def _append(self,role,title,body):
   self.chat.configure(state='normal');self.chat.insert('end',title+'\n',role);self.chat.insert('end',body+'\n\n','body');self.chat.see('end');self.chat.configure(state='disabled')
  def _choose_workspace(self):
+  if self.busy:return
   selected=filedialog.askdirectory(title='Select project folder',initialdir=str(self.workspace))
   if selected:self.workspace=Path(selected);self.path_label.configure(text=str(self.workspace),fg=TEXT);self.session_title.configure(text=self.workspace.name);self._new_session()
  def _refresh_runtime(self):
@@ -75,14 +77,18 @@ class LocalAgentApp(tk.Tk):
    except Exception as exc:self.events.emit({'type':'model_info_error','error':str(exc)})
   threading.Thread(target=work,daemon=True).start()
  def _new_session(self):
-  self.session_state=None;self.state=None;self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self.session_title.configure(text=self.workspace.name if self.workspace else 'New session');self._append('assistant','New session','Project selected. Set the model and context, then describe the task.')
+  if self.busy:return
+  self.session_state=None;self.state=None;self.session_var.set('');self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self.session_title.configure(text=self.workspace.name if self.workspace else 'New session');self._append('assistant','New session','Project selected. Set the model and context, then describe the task.')
  def _refresh_sessions(self):
-  rows=SESSIONS.list();self.session_rows=rows;self.session_combo.configure(values=[x['session_id'] for x in rows]);self.session_var.set(self.session_state.get('session_id','') if self.session_state else (rows[0]['session_id'] if rows else ''))
+  rows=SESSIONS.list();self.session_rows=rows;self.session_combo.configure(values=[x['session_id'] for x in rows]);self.session_var.set(self.session_state.get('session_id','') if self.session_state else '')
  def _resume_session(self):
+  if self.busy:return
   sid=self.session_var.get()
   if not sid:return
   try:
-   state=SESSIONS.load(sid);self.session_state=state;self.workspace=Path(state['workspace']);self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages")
+   state=SESSIONS.load(sid);workspace=Path(state['workspace']).resolve(strict=True)
+   if not workspace.is_dir():raise ValueError('The saved project folder is no longer available.')
+   self.session_state=state;self.workspace=workspace;self.path_label.configure(text=str(self.workspace),fg=TEXT);self.model_var.set(state['model']);self.context_var.set(str(state['context']));self.access_var.set(state.get('access','ask'));self.approval_var.set(state.get('approval_mode','per-action'));self.session_title.configure(text=sid);self.chat.configure(state='normal');self.chat.delete('1.0','end');self.chat.configure(state='disabled');self._append('assistant','Session resumed',f"{sid} · {len(state.get('messages',[]))} saved messages")
    for msg in state.get('messages',[]):
     if msg.get('role') in {'user','assistant'} and msg.get('content'):self._append(msg['role'],'You' if msg['role']=='user' else 'Agent',msg['content'])
   except Exception as exc:messagebox.showerror('Could not resume session',str(exc))
@@ -100,23 +106,48 @@ class LocalAgentApp(tk.Tk):
   if not model:messagebox.showerror('No model selected','No installed Ollama models were found. Install your model with Ollama, then refresh/reopen the app.');return
   if not self.session_state:self.session_state=SESSIONS.create(str(self.workspace),model,context)
   state=self.session_state;state.update(workspace=str(self.workspace),model=model,context=context,access=self.access_var.get(),approval_mode=self.approval_var.get(),max_tokens=tokens,temperature=0.2)
-  self._save();self._memory_warning_shown=False;self._append('user','You',prompt);self.prompt.delete('1.0','end');self._set_busy(True);self.started=time.monotonic();self.events.emit({'type':'phase','phase':'connecting'})
+  try:
+   turn=TurnContext.capture(workspace=self.workspace,model=model,context=context,access=self.access_var.get(),approval_mode=self.approval_var.get(),max_tokens=tokens,temperature=0.2,runtime_options=state.get('runtime_options',{}),prompt=prompt,session=state,mcp_tools=self.mcp_tools)
+  except Exception as exc:messagebox.showerror('Could not start task',str(exc));return
+  self.session_state=turn.session;state=turn.session;self.state=state
+  self._save();self._memory_warning_shown=False;self._append('user','You',prompt);self.prompt.delete('1.0','end');self._set_busy(True);self.started=time.monotonic();self.stop_event=threading.Event();self.events.emit({'type':'phase','phase':'connecting'})
   def approve(name,args):
    condition=threading.Condition();result={'value':False,'done':False};self.events.emit({'type':'approval_request','name':name,'arguments':args,'condition':condition,'result':result})
    with condition:
-    while not result['done'] and not self.stop_event.is_set():condition.wait(.25)
+    while not result['done'] and not turn_cancel.is_set():condition.wait(.25)
    return result['value']
+  turn_cancel=self.stop_event
   def run():
+   discovered=list(turn.mcp_tools)
    try:
+    if turn_cancel.is_set():self.events.emit({'type':'cancelled','elapsed':time.monotonic()-self.started});return
     if self.mcp.servers and not self.mcp_tools:
-     self.mcp_tools=self.mcp.run(self.mcp.discover())
-     self.events.emit({'type':'mcp_status','text':f'{len(self.mcp_tools)} local tools connected'})
+     discovered=self.mcp.run(self.mcp.discover())
+     self.mcp_tools=discovered
+     self.events.emit({'type':'mcp_status','text':f'{len(discovered)} local tools connected'})
+    else:discovered=list(turn.mcp_tools)
+    if turn_cancel.is_set():self.events.emit({'type':'cancelled','elapsed':time.monotonic()-self.started});return
    except Exception as exc:self.events.emit({'type':'mcp_status','text':f'MCP unavailable: {exc}'})
-   knowledge=ProjectKnowledge(self.workspace)
-   engine=AgentEngine(self.workspace,model,context,self.access_var.get(),self.approval_var.get(),self.events.emit,approve,runtime_options=state.get('runtime_options',{}),max_tokens=tokens,temperature=float(state.get('temperature',0.2)),project_instructions=knowledge.instructions(),mcp_tools=self.mcp_tools,mcp_call=lambda name,args:self.mcp.run(self.mcp.call(name,args)))
-   engine.state['messages']=state['messages'];self.engine=engine;new_messages=engine.run(prompt,state['messages']);state['messages']=new_messages;state.setdefault('turns',[]).append({'prompt':prompt,'at':time.time()});SESSIONS.save(state);self.events.emit({'type':'session_saved'});self.events.emit({'type':'turn_result','messages':new_messages})
-  self.stop_event=threading.Event();threading.Thread(target=run,name='agent-task',daemon=True).start()
- def _set_busy(self,value):self.busy=value;self.send_btn.configure(state='disabled' if value else 'normal');self.cancel_btn.configure(state='normal' if value else 'disabled');self.status.configure(text='● RUNNING' if value else '● READY',fg=AMBER if value else GREEN)
+   try:
+    knowledge=ProjectKnowledge(turn.workspace)
+    terminal={'kind':None}
+    def engine_event(event):
+     if event.get('type') in {'error','cancelled'}:terminal['kind']=event['type']
+     if event.get('type')=='complete':event={**event,'type':'generation_complete'}
+     self.events.emit(event)
+    engine=AgentEngine(turn.workspace,turn.model,turn.context,turn.access,turn.approval_mode,engine_event,approve,runtime_options=turn.runtime_options,max_tokens=turn.max_tokens,temperature=turn.temperature,project_instructions=knowledge.instructions(),mcp_tools=discovered,mcp_call=lambda name,args:self.mcp.run(self.mcp.call(name,args)))
+    self.engine=engine
+    if turn_cancel.is_set():engine.cancel()
+    new_messages=engine.run(turn.prompt,turn.session['messages']);turn.session['messages']=new_messages
+    if terminal['kind'] is None:
+     turn.session.setdefault('turns',[]).append({'prompt':turn.prompt,'at':time.time()});SESSIONS.save(turn.session);self.events.emit({'type':'session_saved'});self.events.emit({'type':'turn_result','messages':new_messages});self.events.emit({'type':'complete','elapsed':time.monotonic()-self.started})
+    else:SESSIONS.save(turn.session);self.events.emit({'type':'session_saved'})
+   except Exception as exc:self.events.emit({'type':'error','error':f'{type(exc).__name__}: {exc}'})
+  threading.Thread(target=run,name='agent-task',daemon=True).start()
+ def _set_busy(self,value):
+  self.busy=value;self.send_btn.configure(state='disabled' if value else 'normal');self.cancel_btn.configure(state='normal' if value else 'disabled');self.status.configure(text='● RUNNING' if value else '● READY',fg=AMBER if value else GREEN)
+  state='disabled' if value else 'normal'
+  for widget in (self.workspace_btn,self.model_combo,self.context_entry,self.tokens_entry,self.access_combo,self.approval_combo,self.session_combo,self.resume_btn,self.new_session_btn):widget.configure(state=state if not isinstance(widget,ttk.Combobox) else ('disabled' if value else 'readonly'))
  def _cancel(self):
   if self.engine:self.engine.cancel()
   if hasattr(self,'stop_event'):self.stop_event.set()
