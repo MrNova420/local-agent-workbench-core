@@ -24,14 +24,14 @@ The app never changes OpenCode configuration. It does not load a model on launch
 - Project instruction discovery (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, GitHub Copilot instructions) and on-demand project/user skill loading.
 - Query-ranked relevant file retrieval, search, previews, and copy snapshots honor root and nested `.gitignore` patterns and have explicit scan limits that disclose partial results. Conversation compaction uses a conservative byte-based budget that includes messages, tool definitions, and output reserve; it never changes the requested context, and may reject some requests early because it is not Ollama's model tokenizer.
 - Resumable JSON sessions under `%LOCALAPPDATA%\LocalAgentDesk\sessions`, with atomic writes and load-time schema/history validation.
-- Local stdio MCP configured in `%LOCALAPPDATA%\LocalAgentDesk\mcp.json`; optional official SDK with `python build.py --install-mcp`.
+- Local stdio and remote Streamable HTTP MCP are configured in `%LOCALAPPDATA%\LocalAgentDesk\mcp.json`; install the patched official SDK with `python build.py --install-mcp`. Remote endpoints require HTTPS except loopback; put credentials in environment variables and reference them as `${ENV:NAME}` rather than storing secret literals in configuration.
 - Read-only CPU/RAM/GPU and Ollama-loaded context telemetry.
 - Project file preview and an inspector for task plans, tool activity, and Git diffs.
 - CLI is not bundled in this fresh product; desktop app is the V1 application surface. No clouds or subagents in V1.
 
 ## Security and boundaries
 
-Project file tools resolve paths under the active workspace and reject symlinks. Copy mode excludes VCS/cache directories and links, applies only reviewable text changes, checks for source conflicts, and stages apply-back transactionally after explicit review. Shell strings are not accepted; commands use argv with `shell=False`. Command approvals explain commands run with your Windows account permissions. MCP servers execute local subprocesses specified by the user in the MCP config; add only commands you trust. MCP calls also ask for approval. Sessions store conversation content locally, potentially including code excerpts.
+Project file tools resolve paths under the active workspace and reject symlinks. Copy mode excludes VCS/cache directories and links, applies only reviewable text changes, checks for source conflicts, and stages apply-back transactionally after explicit review. Shell strings are not accepted; commands use argv with `shell=False`. Command approvals explain commands run with your Windows account permissions. MCP calls ask for approval, but stdio and remote servers can act beyond the selected project within their OS/network permissions; connect only servers you trust. The SDK minimum is pinned to the patched 1.30 release for redirect safety. Sessions store conversation content locally, potentially including code excerpts.
 
 ## Tests
 
@@ -46,7 +46,7 @@ flowchart LR
   UI --> E[Agent engine worker]
   E --> O[Ollama streaming adapter]
   E --> T[Project tool registry]
-  E --> M[Local stdio MCP manager]
+  E --> M[stdio and Streamable HTTP MCP manager]
   E --> C[Context retrieval and compaction]
   E --> S[Resumable sessions]
   UI --> H[Read-only hardware telemetry]
