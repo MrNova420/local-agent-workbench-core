@@ -1,6 +1,6 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
-import codecs, json, os, queue, re, threading, time, urllib.error, urllib.request, uuid
+import codecs, json, os, queue, re, socket, threading, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
@@ -354,6 +354,13 @@ class OllamaRuntime:
     def cancel(self):
         with self.lock:r=self.response
         if r:
+            sock=getattr(getattr(getattr(getattr(r,"fp",None),"raw",None),"_sock",None),"shutdown",None)
+            if sock:
+                try:
+                    sock(socket.SHUT_RDWR)
+                    return
+                except OSError:
+                    pass
             try:r.close()
             except OSError:pass
     def get(self,path:str,payload:dict|None=None,timeout:int=5)->dict:
