@@ -42,3 +42,10 @@ Current status: active development; **not approved for unrestricted real-project
 - Revisit packaging, diagnostic exports, and installation/updating before calling the app production-ready.
 
 See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for findings, architecture direction, and gates.
+
+## 2026-10-31 public beta handoff
+
+- Published as the public MIT-licensed `MrNova420/local-agent-workbench-core` repository. The Electron product lives in the paired `MrNova420/local-agent-workbench` repository and pins this engine at commit `ecbf2914740fdd2d2b4f04a49d9d22dab0ccdc34`.
+- The paired product's current local gates passed: 132 engine tests, 43 renderer tests, 38 sidecar tests, and TypeScript typecheck. Its Windows x64 `0.1.0-beta.1` installer/ZIP build and bundled-worker JSONL startup/ping/shutdown check also passed. This does not establish live model coding quality or full visible workflow acceptance.
+- GitHub Actions was triggered by publication but could not start a runner. GitHub's check annotation says the account is locked due to a billing issue; this is an account-level CI blocker, not a test failure. Local engine pytest passed on Python 3.12.10.
+- The historical `model-inspection.json` remains in prior commits to preserve history; it has been removed from the current tree and ignored. A targeted scan of reachable Git blobs found no high-confidence credential patterns. See the paired product acceptance log for scan scope and the disclosed machine-local model path.
