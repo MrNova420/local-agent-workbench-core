@@ -375,7 +375,7 @@ class OllamaRuntime:
         if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
         emit({"type":"inference_settings","model":state["model"],"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"request_options":payload["options"]})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
-        result={"message":{"role":"assistant","content":""}};calls={};request_started=time.monotonic();first_output=True
+        result={"message":{"role":"assistant","content":""}};calls={};request_started=time.monotonic();first_output=True;user_facing_output=False
         try:
             response=urllib.request.urlopen(req,timeout=None)
             with self.lock:self.response=response
@@ -387,7 +387,13 @@ class OllamaRuntime:
                 if not line:break
                 item=json.loads(line.decode());msg=item.get("message") or {};text=msg.get("content") or "";thinking=msg.get("thinking") or ""
                 if first_output and (text or thinking or msg.get("tool_calls")):
-                    first_output=False;emit({"type":"phase","phase":"generating","elapsed":time.monotonic()-request_started})
+                    first_output=False
+                    phase="generating" if text or msg.get("tool_calls") else "reasoning"
+                    user_facing_output=phase=="generating"
+                    emit({"type":"phase","phase":phase,"elapsed":time.monotonic()-request_started})
+                elif not user_facing_output and (text or msg.get("tool_calls")):
+                    user_facing_output=True
+                    emit({"type":"phase","phase":"generating","elapsed":time.monotonic()-request_started})
                 if thinking:result["message"]["thinking"]=result["message"].get("thinking","")+thinking;emit({"type":"thinking","text":thinking,"at":time.monotonic()})
                 if text:result["message"]["content"]+=text;emit({"type":"text","text":text,"at":time.monotonic()})
                 for idx,call in enumerate(msg.get("tool_calls") or []):
