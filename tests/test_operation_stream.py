@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 from desktop_engine import AgentEngine, ToolRegistry, Workspace
 
@@ -100,6 +101,42 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual([message.get("tool_call_id") for message in messages if message.get("role") == "tool"], ["call-1", "call-2"])
             self.assertIn("not executed", messages[-1]["content"].lower())
             self.assertTrue(any(event.get("type") == "stopped_after_operation" for event in events))
+
+    def test_explicit_build_task_continues_to_tools_after_plan_only_response(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            calls = []
+            responses = [
+                {"message": {"role": "assistant", "content": "I will create the page and then verify it."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call-write", "function": {"name": "write_file", "arguments": {"path": "index.html", "content": "<h1>Ready</h1>"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The page is ready."}},
+            ]
+            def stream(*_args):
+                calls.append("model")
+                return responses.pop(0)
+            engine.runtime.stream = stream
+
+            messages = engine.run("Build a simple website in this project.")
+
+            self.assertEqual(calls, ["model", "model", "model"])
+            self.assertEqual((Path(root) / "index.html").read_text(encoding="utf-8"), "<h1>Ready</h1>")
+            self.assertTrue(any(event.get("type") == "tool_done" and event.get("status") == "completed" for event in events))
+            self.assertTrue(any(event.get("type") == "complete" for event in events))
+            self.assertEqual(messages[-1]["content"], "The page is ready.")
+
+    def test_plan_only_request_does_not_force_a_tool_followup(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            calls = []
+            engine.runtime.stream = lambda *_args: (calls.append("model") or {"message": {"role": "assistant", "content": "Here is the plan."}})
+
+            engine.run("Plan only: describe how to build a simple website.")
+
+            self.assertEqual(calls, ["model"])
 
 
 if __name__ == "__main__":
