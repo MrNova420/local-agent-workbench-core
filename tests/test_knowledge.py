@@ -11,7 +11,7 @@ class KnowledgeTests(unittest.TestCase):
    root=Path(t);good=root/'.opencode/skills/release';good.mkdir(parents=True);(good/'SKILL.md').write_text('---\nname: release\ndescription: Prepare a release and changelog\n---\nSteps here',encoding='utf8')
    (good/'references').mkdir();(good/'references/checklist.md').write_text('release checklist',encoding='utf8')
    bad=root/'.agents/skills/Invalid_Name';bad.mkdir(parents=True);(bad/'SKILL.md').write_text('---\nname: Invalid_Name\ndescription: bad\n---\nno',encoding='utf8')
-   k=ProjectKnowledge(root);skills=k.skills();self.assertEqual([s['name'] for s in skills],['release']);self.assertIn('Prepare a release',k.skill_catalog(skills));self.assertIn('Steps here',k.load_skill('release',skills));self.assertEqual(k.read_skill_resource('release','references/checklist.md',skills),'release checklist')
+   k=ProjectKnowledge(root);skills=k.skills([root/'.opencode/skills',root/'.agents/skills']);self.assertEqual([s['name'] for s in skills],['release']);self.assertIn('Prepare a release',k.skill_catalog(skills));self.assertIn('Steps here',k.load_skill('release',skills));self.assertEqual(k.read_skill_resource('release','references/checklist.md',skills),'release checklist')
    with self.assertRaisesRegex(ValueError,'without'):
     k.read_skill_resource('release','../outside.txt',skills)
 if __name__=='__main__':unittest.main()

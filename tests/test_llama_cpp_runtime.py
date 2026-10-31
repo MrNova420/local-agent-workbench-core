@@ -67,7 +67,7 @@ def test_slot_metrics_expose_token_counts_without_prompt_text(tmp_path):
                                  "n_prompt_tokens": 100, "n_prompt_tokens_cache": 72,
                                  "n_prompt_tokens_processed": 28, "n_decoded": 5,
                                  "context_tokens_in_slot": 105}]
-    assert "prompt" not in json.dumps(metrics)
+    assert "must not leak" not in json.dumps(metrics)
 
 
 def test_server_refuses_existing_external_endpoint_and_never_claims_ownership(tmp_path):

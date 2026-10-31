@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from desktop_engine import AgentEngine, ToolRegistry, Workspace
+from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace
 
 
 class OperationStreamTests(unittest.TestCase):
@@ -161,7 +161,7 @@ class OperationStreamTests(unittest.TestCase):
             events = []
             engine = AgentEngine(root, access="edit", event=events.append)
             engine.state["registry"].run = lambda *_args: "completed"
-            calls = [{"id": f"call-{index}", "function": {"name": "test_tool", "arguments": {}}} for index in range(17)]
+            calls = [{"id": f"call-{index}", "function": {"name": "update_plan", "arguments": {"items": []}}} for index in range(17)]
             responses = [
                 {"message": {"role": "assistant", "content": "", "tool_calls": calls}},
                 {"message": {"role": "assistant", "content": "All requested operations are complete."}},
@@ -175,11 +175,11 @@ class OperationStreamTests(unittest.TestCase):
 
     def test_run_can_continue_beyond_thirty_two_tool_turns(self):
         with tempfile.TemporaryDirectory() as root:
-            engine = AgentEngine(root, context=16384, access="edit")
+            engine = AgentEngine(root, context=CONTEXT_MAX, access="edit")
             engine.state["registry"].run = lambda *_args: "completed"
             responses = [
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
-                    {"id": f"call-{index}", "function": {"name": "test_tool", "arguments": {}}}
+                    {"id": f"call-{index}", "function": {"name": "update_plan", "arguments": {"items": []}}}
                 ]}}
                 for index in range(34)
             ]

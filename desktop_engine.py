@@ -209,10 +209,10 @@ class ToolRegistry:
                 scanned+=1
                 relative=p.relative_to(base).as_posix()
                 if "/" in pattern:
-                    matched=fnmatch.fnmatchcase(relative.casefold(),pattern.casefold())
-                    if pattern.startswith("**/"):matched=matched or fnmatch.fnmatchcase(relative.casefold(),pattern[3:].casefold())
-                else:matched=fnmatch.fnmatchcase(p.name.casefold(),pattern.casefold())
-                if matched:
+                    is_match=fnmatch.fnmatchcase(relative.casefold(),pattern.casefold())
+                    if pattern.startswith("**/"):is_match=is_match or fnmatch.fnmatchcase(relative.casefold(),pattern[3:].casefold())
+                else:is_match=fnmatch.fnmatchcase(p.name.casefold(),pattern.casefold())
+                if is_match:
                     if matched<offset:matched+=1;continue
                     if len(matches)<limit:matches.append(p.relative_to(self.workspace.root).as_posix())
                     else:has_more=True;break

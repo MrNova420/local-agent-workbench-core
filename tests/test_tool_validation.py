@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from desktop_engine import AgentEngine, _normalize_tool_history, _validate_tool_arguments
+from desktop_engine import AgentEngine, CONTEXT_MAX, _normalize_tool_history, _validate_tool_arguments
 
 
 class ToolValidationTests(unittest.TestCase):
@@ -25,8 +25,8 @@ class ToolValidationTests(unittest.TestCase):
 
     def test_invalid_file_tool_arguments_never_reach_the_write(self):
         with tempfile.TemporaryDirectory() as folder:
-            root=Path(folder);engine=AgentEngine(root,context=8192,max_tokens=128,access="edit");responses=[
-                {"message":{"role":"assistant","tool_calls":[{"id":"call-1","function":{"name":"write_file","arguments":{"path":"x.txt","content":"must not write","extra":true}}}]}},
+            root=Path(folder);engine=AgentEngine(root,context=CONTEXT_MAX,access="edit");responses=[
+                {"message":{"role":"assistant","tool_calls":[{"id":"call-1","function":{"name":"write_file","arguments":{"path":"x.txt","content":"must not write","extra":True}}}]}},
                 {"message":{"role":"assistant","content":"The invalid arguments were rejected."}},
             ]
             engine.runtime.stream=lambda *args,**kwargs:responses.pop(0)
@@ -41,7 +41,7 @@ class ToolValidationTests(unittest.TestCase):
             def readline(self):return next(self.lines,b"")
             def close(self):pass
         with tempfile.TemporaryDirectory() as folder:
-            engine=AgentEngine(Path(folder),context=8192,max_tokens=128,access="edit")
+            engine=AgentEngine(Path(folder),context=CONTEXT_MAX,access="edit")
             first=Response({"role":"assistant","tool_calls":[{"id":"provider-call-id","function":{"name":"write_file","arguments":{"path":"result.txt","content":"created"}}}]})
             second=Response({"role":"assistant","content":"File created."})
             with patch("urllib.request.urlopen",side_effect=[first,second]) as open_url:
