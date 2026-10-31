@@ -214,7 +214,7 @@ class MCPManager:
             raise ValueError("headers must be an object.")
         import re
         result = {}
-        sensitive = {"authorization", "proxy-authorization", "x-api-key", "api-key"}
+        sensitive = {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key", "x-auth-token", "token"}
         pattern = re.compile(r"\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}")
         for key, raw in value.items():
             if not isinstance(key, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", key) or not isinstance(raw, str):
