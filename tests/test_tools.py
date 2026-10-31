@@ -47,6 +47,28 @@ class ToolTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as t:
    (Path(t)/'a.py').write_text('ok');tools=ToolRegistry(Workspace(t),lambda *_:True)
    self.assertEqual(tools.run('read_file',{'path':'a.py'}),'ok')
+
+ def test_git_inspection_refuses_parent_repository_outside_selected_root(self):
+  import subprocess
+  from pathlib import Path
+  import tempfile
+  with tempfile.TemporaryDirectory() as directory:
+   parent=Path(directory);subprocess.run(['git','init','-q',str(parent)],check=True)
+   child=parent/'child';child.mkdir()
+   tools=ToolRegistry(Workspace(child),lambda *_:True)
+   self.assertEqual(tools.run('git_status',{}),'No Git repository rooted at the selected project.')
+   self.assertEqual(tools.run('git_diff',{}),'No Git repository rooted at the selected project.')
+
+ def test_git_status_and_log_are_available_only_at_project_root(self):
+  import subprocess
+  from pathlib import Path
+  import tempfile
+  with tempfile.TemporaryDirectory() as directory:
+   root=Path(directory);subprocess.run(['git','init','-q',str(root)],check=True)
+   subprocess.run(['git','-C',str(root),'-c','user.name=Agent','-c','user.email=agent@example.invalid','commit','--allow-empty','-m','initial'],check=True,capture_output=True)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   self.assertIn('## ',tools.run('git_status',{}))
+   self.assertIn('initial',tools.run('git_log',{'limit':10}))
  def test_read_file_supports_line_ranges_and_files_over_old_cap(self):
   with tempfile.TemporaryDirectory() as t:
    content=''.join(f'{i:06}\n' for i in range(60000));(Path(t)/'large.txt').write_text(content)

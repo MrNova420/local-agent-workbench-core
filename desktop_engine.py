@@ -115,7 +115,9 @@ class ToolRegistry:
           self._schema("read_file", "Read a project file; optional 1-based line bounds let you inspect large files in sections", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("update_plan", "Create or update the current task checklist", {"items":{"type":"array","items":{"type":"object"}}}, ["items"]),
           self._schema("skill", "List or load a project/user skill", {"action":{"type":"string","enum":["list","load"]},"name":{"type":"string"}}, ["action"]),
+          self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
+          self._schema("git_log", "Show recent commit subjects for this project when it is the Git repository root", {"limit":{"type":"integer","minimum":1,"maximum":100}}, []),
           self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
           self._schema("apply_patch", "Apply a unified diff in the active workspace, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
@@ -125,10 +127,19 @@ class ToolRegistry:
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
         return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required,"additionalProperties":False}}}
     def run(self, name: str, args: dict) -> str:
-        if name == "git_diff":
+        if name in {"git_status", "git_diff", "git_log"}:
             import subprocess
             try:
-                r=subprocess.run(["git","diff","--no-ext-diff","--"],cwd=self.workspace.root,capture_output=True,text=True,timeout=10,check=False,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+                root=subprocess.run(["git","rev-parse","--show-toplevel"],cwd=self.workspace.root,capture_output=True,text=True,timeout=10,check=False,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+                if root.returncode != 0 or Path(root.stdout.strip()).resolve() != self.workspace.root:
+                    return "No Git repository rooted at the selected project."
+                if name == "git_status":argv=["git","status","--short","--branch"]
+                elif name == "git_log":
+                    limit=args.get("limit",10)
+                    if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=100:return "Invalid limit: expected an integer from 1 to 100."
+                    argv=["git","log",f"-{limit}","--oneline","--decorate"]
+                else:argv=["git","diff","--no-ext-diff","--"]
+                r=subprocess.run(argv,cwd=self.workspace.root,capture_output=True,text=True,timeout=10,check=False,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
                 return (r.stdout+r.stderr) or "No tracked changes."
             except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
         if name == "update_plan":
