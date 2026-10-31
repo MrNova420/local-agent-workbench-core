@@ -1,6 +1,7 @@
-import unittest,threading
+import unittest,threading,tempfile
+from pathlib import Path
 from unittest.mock import patch
-from desktop_engine import OllamaRuntime, RequestCancelled
+from desktop_engine import AgentEngine, OllamaRuntime, RequestCancelled
 class CancelTests(unittest.TestCase):
  def test_cancel_between_stream_chunks_ends_only_request(self):
   class Response:
@@ -16,5 +17,15 @@ class CancelTests(unittest.TestCase):
    if line:cancel.set()
    return line
   with patch('urllib.request.urlopen',return_value=Response()),patch.object(Response,'readline',read):
-   with self.assertRaises(RequestCancelled):runtime.stream(state,[],cancel,lambda e:None)
+   with self.assertRaises(RequestCancelled) as raised:runtime.stream(state,[],cancel,lambda e:None)
+  self.assertEqual(raised.exception.partial_message,{'role':'assistant','content':'first'})
+ def test_agent_engine_keeps_partial_assistant_message_when_cancelled(self):
+  class PartialRuntime:
+   def stream(self,*_args):raise RequestCancelled('Cancelled',partial_message={'role':'assistant','content':'partial reply'})
+  with tempfile.TemporaryDirectory() as root:
+   engine=AgentEngine(Path(root),access='plan')
+   engine.runtime=PartialRuntime();events=[];engine.event=events.append
+   messages=engine.run('do a task',[])
+  self.assertEqual(messages[-1],{'role':'assistant','content':'partial reply'})
+  self.assertTrue(any(event.get('type')=='cancelled' for event in events))
 if __name__=='__main__':unittest.main()

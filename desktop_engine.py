@@ -12,7 +12,9 @@ CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 
-class RequestCancelled(Exception): pass
+class RequestCancelled(Exception):
+ def __init__(self,message='Cancelled',partial_message:dict|None=None):
+  super().__init__(message);self.partial_message=partial_message
 
 class Workspace:
     def __init__(self, root: Path | str, access: str = "ask"):
@@ -306,7 +308,9 @@ class OllamaRuntime:
             response=urllib.request.urlopen(req,timeout=None)
             with self.lock:self.response=response
             while True:
-                if cancel.is_set():raise RequestCancelled("Cancelled")
+                if cancel.is_set():
+                    partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
+                    raise RequestCancelled("Cancelled",{"role":"assistant",**partial} if partial else None)
                 line=response.readline()
                 if not line:break
                 item=json.loads(line.decode());msg=item.get("message") or {};text=msg.get("content") or "";thinking=msg.get("thinking") or ""
@@ -322,6 +326,9 @@ class OllamaRuntime:
                     elif isinstance(args,dict):slot["function"]["arguments"]=args
                 for key in ("done","total_duration","load_duration","prompt_eval_count","eval_count","prompt_eval_duration","eval_duration"):
                     if key in item:result[key]=item[key]
+            if cancel.is_set():
+                partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
+                raise RequestCancelled("Cancelled",{"role":"assistant",**partial} if partial else None)
             if calls:result["message"]["tool_calls"]=[calls[i] for i in sorted(calls)]
             return result
         finally:
@@ -389,7 +396,12 @@ class AgentEngine:
                             msgs.append({"role":"tool","tool_call_id":pending.get("id",f"call-{pending_index}"),"content":"Cancelled before this tool action ran."})
                         raise RequestCancelled()
             raise RuntimeError("Reached the per-turn 32-step tool-call limit")
-        except (RequestCancelled,MCPRequestCancelled):self.event({"type":"cancelled","elapsed":time.monotonic()-start})
+        except RequestCancelled as exc:
+            partial=exc.partial_message
+            if isinstance(partial,dict) and any(partial.get(key) for key in ("content","thinking")):
+                msgs.append({"role":"assistant",**{key:partial[key] for key in ("content","thinking") if partial.get(key)}})
+            self.event({"type":"cancelled","elapsed":time.monotonic()-start})
+        except MCPRequestCancelled:self.event({"type":"cancelled","elapsed":time.monotonic()-start})
         except Exception as exc:self.event({"type":"error","error":f"{type(exc).__name__}: {exc}"})
         return msgs
 
