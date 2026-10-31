@@ -2,6 +2,22 @@ import unittest
 from desktop_engine import AgentEngine, OllamaRuntime, RequestCancelled
 
 class RuntimeTests(unittest.TestCase):
+    def test_ollama_preload_keeps_the_selected_context_without_reasoning_or_output_overrides(self):
+        import json
+        from unittest.mock import patch
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return b'{"done":true}'
+        runtime=OllamaRuntime()
+        with patch('urllib.request.urlopen', return_value=Response()) as open_url:
+            runtime.preload('mock:latest', 65536, '30m')
+        request=open_url.call_args.args[0]
+        payload=json.loads(request.data)
+        self.assertEqual(request.full_url,'http://127.0.0.1:11434/api/generate')
+        self.assertEqual(payload,{'model':'mock:latest','prompt':'','stream':False,'keep_alive':'30m','options':{'num_ctx':65536}})
+        self.assertIsNone(open_url.call_args.kwargs['timeout'])
+
     def test_cancel_closes_current_response_without_stop_api(self):
         class Fake:
             closed=False

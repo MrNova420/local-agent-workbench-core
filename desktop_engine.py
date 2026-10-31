@@ -632,6 +632,13 @@ class OllamaRuntime:
     def models(self)->list[str]:return [x.get("name","") for x in self.get("/api/tags").get("models",[]) if x.get("name")]
     def model_info(self,model:str)->dict:return self.get("/api/show",{"model":model})
     def loaded(self)->list[dict]:return self.get("/api/ps").get("models",[])
+    def preload(self,model:str,context:int,keep_alive:str)->dict:
+        """Warm one Ollama model using its selected context, without generating a reply."""
+        if not isinstance(context,int) or isinstance(context,bool) or context<1024:
+            raise ValueError("Preload context must be an integer of at least 1,024 tokens.")
+        payload={"model":model,"prompt":"","stream":False,"keep_alive":keep_alive,"options":{"num_ctx":context}}
+        request=urllib.request.Request(self.base_url+"/api/generate",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json"},method="POST")
+        with urllib.request.urlopen(request,timeout=None) as response:return json.loads(response.read().decode())
     def stream(self,state:dict,messages:list[dict],cancel:threading.Event,emit:Callable[[dict],None])->dict:
         payload={"model":state["model"],"messages":messages,"stream":True,"tools":state["registry"].schemas+state.get("mcp_tools",[]),"keep_alive":state.get("keep_alive","30m"),
                  "options":{"temperature":state["temperature"],"num_ctx":state["context"],"num_predict":state["max_tokens"],**state.get("runtime_options",{})}}
