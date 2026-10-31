@@ -117,7 +117,7 @@ class DisposableWorkspaceTests(unittest.TestCase):
                 apply_reviewed_changes(source, changes)
             self.assertEqual((source / "notes.md").stat().st_size, 600_000)
 
-    def test_oversized_copy_file_is_not_misreported_as_a_deletion(self):
+    def test_large_copy_file_can_be_reviewed_and_applied(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             source = base / "source"
@@ -125,12 +125,15 @@ class DisposableWorkspaceTests(unittest.TestCase):
             (source / "main.py").write_text("base\n")
             working = base / "store" / "project"
             manifest = create_disposable_workspace(source, working)
-            (working / "main.py").write_bytes(b"x" * 600_000)
+            large_content = "x" * 600_000
+            (working / "main.py").write_text(large_content)
 
             changes = review_changes(source, working, manifest)
 
-            self.assertEqual(changes[0]["action"], "unsupported")
-            self.assertTrue(changes[0]["conflict"])
+            self.assertEqual(changes[0]["action"], "write")
+            self.assertFalse(changes[0]["conflict"])
+            self.assertEqual(apply_reviewed_changes(source, changes), ["main.py"])
+            self.assertEqual((source / "main.py").read_text(), large_content)
 
     def test_baseline_hashes_match_the_copy_even_if_source_changes_mid_copy(self):
         with tempfile.TemporaryDirectory() as temp:

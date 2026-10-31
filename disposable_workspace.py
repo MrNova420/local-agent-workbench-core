@@ -16,7 +16,6 @@ REVIEWABLE_SUFFIXES = {
     ".json", ".md", ".txt", ".toml", ".yaml", ".yml", ".xml", ".shader",
     ".glsl", ".html", ".css", ".rs", ".go", ".ini", ".cfg", ".ps1", ".bat",
 }
-MAX_REVIEW_FILE_BYTES = 500_000
 
 
 def _digest(path: Path) -> str:
@@ -25,7 +24,7 @@ def _digest(path: Path) -> str:
 
 def _reviewable(path: Path) -> bool:
     try:
-        return path.suffix.casefold() in REVIEWABLE_SUFFIXES and path.stat().st_size <= MAX_REVIEW_FILE_BYTES
+        return path.suffix.casefold() in REVIEWABLE_SUFFIXES and path.is_file()
     except OSError:
         return False
 
@@ -122,7 +121,7 @@ def review_changes(source: Path | str, working: Path | str, manifest: dict[str, 
                 candidate = _safe_path(working_root, relative)
                 if candidate.exists() and not _reviewable(candidate):
                     action, content = "unsupported", None
-                    unsupported_reason = "Copy target is not a reviewable UTF-8 text file or exceeds the review limit."
+                    unsupported_reason = "Copy target is not a reviewable UTF-8 text file."
                 else:
                     action, content = "delete", None
             except (OSError, ValueError) as exc:
@@ -186,8 +185,6 @@ def apply_reviewed_changes(source: Path | str, changes: list[dict[str, Any]]) ->
         content = change.get("content")
         if action not in {"write", "delete"} or (action == "write" and not isinstance(content, str)):
             raise ValueError(f"Invalid reviewed change for {relative}")
-        if action == "write" and len(content.encode("utf-8")) > MAX_REVIEW_FILE_BYTES:
-            raise ValueError(f"File exceeds review limit: {relative}")
         plans.append((relative, target, action, content, exists))
 
     staged: list[tuple[Path, Path | None]] = []

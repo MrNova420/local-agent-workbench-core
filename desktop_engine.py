@@ -87,7 +87,7 @@ class ToolRegistry:
         self.schemas = [
           self._schema("list_files", "List project files", {"path":{"type":"string"},"pattern":{"type":"string"}}, []),
           self._schema("search_files", "Search project text", {"query":{"type":"string"}}, ["query"]),
-          self._schema("read_file", "Read a project file", {"path":{"type":"string"}}, ["path"]),
+          self._schema("read_file", "Read a project file; optional 1-based line bounds let you inspect large files in sections", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("update_plan", "Create or update the current task checklist", {"items":{"type":"array","items":{"type":"object"}}}, ["items"]),
           self._schema("skill", "List or load a project/user skill", {"action":{"type":"string","enum":["list","load"]},"name":{"type":"string"}}, ["action"]),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
@@ -144,12 +144,19 @@ class ToolRegistry:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
             if self.workspace.access == "ask" and not self.approval(name,args): return "Denied by user."
             path=self.workspace.resolve(args["path"]);content=args["content"]
-            if len(content.encode("utf8"))>300000: return "File exceeds 300 KB limit."
             path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content,encoding="utf8",newline="\n");return "Wrote " + args["path"]
         if name == "read_file":
             p=self.workspace.resolve(args["path"])
-            if p.stat().st_size>300000: return "File exceeds 300 KB limit."
-            return p.read_text(encoding="utf8")
+            start=args.get("start_line",1);end=args.get("end_line")
+            if not isinstance(start,int) or isinstance(start,bool) or start<1:return "Invalid start_line: expected a positive 1-based line number."
+            if end is not None and (not isinstance(end,int) or isinstance(end,bool) or end<start):return "Invalid end_line: expected a line number greater than or equal to start_line."
+            with p.open("r",encoding="utf8") as handle:
+                if start==1 and end is None:return handle.read()
+                selected=[]
+                for line_number,line in enumerate(handle,1):
+                    if line_number>=start:selected.append(line)
+                    if end is not None and line_number>=end:break
+                return "".join(selected) if selected else f"Requested lines {start}-{end or 'end'} are beyond end of file."
         if name in {"apply_patch", "run_command"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
             if name == "apply_patch":

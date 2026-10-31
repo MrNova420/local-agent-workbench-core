@@ -26,6 +26,17 @@ class ToolTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as t:
    (Path(t)/'a.py').write_text('ok');tools=ToolRegistry(Workspace(t),lambda *_:True)
    self.assertEqual(tools.run('read_file',{'path':'a.py'}),'ok')
+ def test_read_file_supports_line_ranges_and_files_over_old_cap(self):
+  with tempfile.TemporaryDirectory() as t:
+   content=''.join(f'{i:06}\n' for i in range(60000));(Path(t)/'large.txt').write_text(content)
+   tools=ToolRegistry(Workspace(t),lambda *_:True)
+   self.assertEqual(tools.run('read_file',{'path':'large.txt','start_line':4,'end_line':6}),'000003\n000004\n000005\n')
+   self.assertEqual(tools.run('read_file',{'path':'large.txt'}),content)
+ def test_write_file_accepts_files_over_old_cap(self):
+  with tempfile.TemporaryDirectory() as t:
+   content='x'*600000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
+   self.assertEqual(tools.run('write_file',{'path':'large.txt','content':content}),'Wrote large.txt')
+   self.assertEqual((Path(t)/'large.txt').read_text(),content)
  def test_direct_write_requires_approval(self):
   with tempfile.TemporaryDirectory() as t:
    tools=ToolRegistry(Workspace(t,'ask'),lambda *_:False)
