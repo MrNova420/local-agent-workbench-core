@@ -8,6 +8,17 @@ from desktop_engine import CONTEXT_MAX, MODEL
 
 
 class SessionValidationTests(unittest.TestCase):
+    def test_auto_approval_and_reasoning_choice_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(directory, MODEL, CONTEXT_MAX)
+            state.update(approval_mode="auto", reasoning="high", max_tokens=1000000)
+            store.save(state)
+            loaded = store.load(state["session_id"])
+            self.assertEqual(loaded["approval_mode"], "auto")
+            self.assertEqual(loaded["reasoning"], "high")
+            self.assertEqual(loaded["max_tokens"], 1000000)
+
     def test_load_rejects_malformed_message_history(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SessionStore(Path(directory) / "sessions")

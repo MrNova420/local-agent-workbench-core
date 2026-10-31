@@ -298,6 +298,8 @@ class OllamaRuntime:
     def stream(self,state:dict,messages:list[dict],cancel:threading.Event,emit:Callable[[dict],None])->dict:
         payload={"model":state["model"],"messages":messages,"stream":True,"tools":state["registry"].schemas+state.get("mcp_tools",[]),"keep_alive":state.get("keep_alive","30m"),
                  "options":{"temperature":state["temperature"],"num_ctx":state["context"],"num_predict":state["max_tokens"],**state.get("runtime_options",{})}}
+        if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
+        emit({"type":"inference_settings","model":state["model"],"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"request_options":payload["options"]})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};request_started=time.monotonic();first_output=True
         try:
@@ -307,9 +309,10 @@ class OllamaRuntime:
                 if cancel.is_set():raise RequestCancelled("Cancelled")
                 line=response.readline()
                 if not line:break
-                item=json.loads(line.decode());msg=item.get("message") or {};text=msg.get("content") or ""
-                if first_output and (text or msg.get("tool_calls")):
+                item=json.loads(line.decode());msg=item.get("message") or {};text=msg.get("content") or "";thinking=msg.get("thinking") or ""
+                if first_output and (text or thinking or msg.get("tool_calls")):
                     first_output=False;emit({"type":"phase","phase":"generating","elapsed":time.monotonic()-request_started})
+                if thinking:result["message"]["thinking"]=result["message"].get("thinking","")+thinking;emit({"type":"thinking","text":thinking,"at":time.monotonic()})
                 if text:result["message"]["content"]+=text;emit({"type":"text","text":text,"at":time.monotonic()})
                 for idx,call in enumerate(msg.get("tool_calls") or []):
                     slot=calls.setdefault(idx,{"id":f"call-{idx}","type":"function","function":{"name":"","arguments":""}});fn=call.get("function") or {}
@@ -332,6 +335,7 @@ class AgentEngine:
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event()
         self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event),"mcp_tools":self.mcp_tools,"messages":[]}
     def _approval(self,name:str,args:Any)->bool:
+        if self.approval_mode=="auto":return True
         if self.approval_mode=="per-task" and self.approved_task:return True
         ok=self.approve(name,args)
         if ok and self.approval_mode=="per-task":self.approved_task=True
