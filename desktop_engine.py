@@ -709,8 +709,10 @@ class AgentEngine:
                 if self.cancel_event.is_set():raise RequestCancelled()
                 if self.stop_after_operation.is_set():
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
-                tools=self.state["registry"].schemas+self.mcp_tools;msgs=self.context.compact(msgs,tools,self.state["max_tokens"],self.event);self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
-                result=self.runtime.stream(self.state,msgs,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
+                tools=self.state["registry"].schemas+self.mcp_tools
+                request_messages=self.context.compact(msgs,tools,self.state["max_tokens"],self.event)
+                self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
+                result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
                 calls=msg.get("tool_calls") or []
                 if calls:
                     self.event({"type":"tool_batch","assistantMessage":{"role":"assistant",**msg},"calls":[
