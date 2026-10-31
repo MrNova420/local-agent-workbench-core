@@ -119,7 +119,7 @@ class ToolRegistry:
           self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
           self._schema("apply_patch", "Apply a unified diff in the active workspace, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
-          self._schema("run_command", "Run an argv command in project; requires approval", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer"}}, ["argv"]),
+          self._schema("run_command", "Run an argv command in project; requires approval. The exact command ['pwd'] returns the selected project root on every platform. Other commands are launched directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer"}}, ["argv"]),
         ]
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
@@ -152,6 +152,8 @@ class ToolRegistry:
                     else:has_more=True;break
             if scanned>=20000 and not has_more:scan_capped=True
             result="\n".join(matches)
+            if not result and not has_more and not scan_capped:
+                result=f"No project files found under '{args.get('path', '.')}'. The directory is empty or contains only ignored files."
             if has_more:
                 result+="\n\n" if result else ""
                 if limit==1200:result+="[File listing capped at 1,200 entries; results may be incomplete.] "
@@ -341,6 +343,7 @@ class ToolRegistry:
         argv=args.get("argv")
         if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv): return "argv must be a non-empty string list."
         if any(x in {"&&","||",";","|",">","<"} for x in argv): return "Shell operators are not accepted."
+        if len(argv)==1 and argv[0].casefold()=="pwd":return str(self.workspace.root)
         try:
             limit=max(1,min(3600,int(args.get("timeout_seconds",120))))
             process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))

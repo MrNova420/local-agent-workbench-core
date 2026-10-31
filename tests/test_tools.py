@@ -23,6 +23,10 @@ class ToolTests(unittest.TestCase):
    second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':2})
    self.assertIn('a.py',first);self.assertIn('b.py',first);self.assertIn('next offset 2',first.casefold())
    self.assertIn('c.py',second);self.assertIn('d.py',second);self.assertNotIn('a.py',second)
+ def test_empty_directory_listing_returns_an_explicit_result(self):
+  with tempfile.TemporaryDirectory() as t:
+   result=ToolRegistry(Workspace(t),lambda *_:True).run('list_files',{'path':'.'})
+   self.assertIn('no project files found',result.casefold())
  def test_search_pages_through_matches_with_next_offset(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t);(root/'matches.py').write_text('needle one\nneedle two\nneedle three\nneedle four\n',encoding='utf-8')
@@ -70,6 +74,10 @@ class ToolTests(unittest.TestCase):
    approvals=[];tools=ToolRegistry(Workspace(t,'copy'),lambda *args:approvals.append(args) or False)
    self.assertEqual(tools.run('run_command',{'argv':['python','-c','print(1)']}),'Denied by user.')
    self.assertEqual([entry[0] for entry in approvals],['run_command'])
+ def test_pwd_returns_the_selected_project_root_on_windows(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t).resolve();tools=ToolRegistry(Workspace(root),lambda *_:True)
+   self.assertEqual(tools.run('run_command',{'argv':['pwd']}),str(root))
  def test_copy_mode_applies_patch_inside_workspace_without_source_approval(self):
   with tempfile.TemporaryDirectory() as t:
    path=Path(t)/'a.txt';path.write_text('old\n');approvals=[]
