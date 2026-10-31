@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,16 +50,13 @@ class TelemetryWindowsTests(unittest.TestCase):
             getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
-    @patch(
-        "subprocess.Popen",
-        return_value=SimpleNamespace(communicate=lambda timeout=None: ("", ""), returncode=0),
-    )
+    @patch("subprocess.Popen", wraps=subprocess.Popen)
     def test_approved_command_suppresses_console_window(self, popen):
         with tempfile.TemporaryDirectory() as root:
             registry = ToolRegistry(Workspace(Path(root)), lambda *_: True)
             registry.run(
                 "run_command",
-                {"argv": ["python", "-c", "pass"], "timeout_seconds": 10},
+                {"argv": [sys.executable, "-c", "pass"], "timeout_seconds": 10},
             )
 
         self.assertEqual(

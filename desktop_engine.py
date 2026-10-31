@@ -1,6 +1,6 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
-import json, os, re, threading, time, urllib.error, urllib.request
+import codecs, json, os, queue, re, threading, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
@@ -60,7 +60,7 @@ class ToolRegistry:
             import subprocess
             try:
                 r=subprocess.run(["git","diff","--no-ext-diff","--"],cwd=self.workspace.root,capture_output=True,text=True,timeout=10,check=False,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
-                return (r.stdout+r.stderr)[:20000] or "No tracked changes."
+                return (r.stdout+r.stderr) or "No tracked changes."
             except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
         if name == "update_plan":
             self.plan=args.get("items",[]);self.event({"type":"plan","items":self.plan});return "Plan updated."
@@ -88,7 +88,7 @@ class ToolRegistry:
                     lines=p.read_text(encoding="utf8").splitlines();bytes_read+=size
                 except (OSError,UnicodeError): continue
                 for i,line in enumerate(lines,1):
-                    if query in line.casefold(): hits.append(f"{p.relative_to(self.workspace.root).as_posix()}:{i}: {line[:400]}")
+                    if query in line.casefold(): hits.append(f"{p.relative_to(self.workspace.root).as_posix()}:{i}: {line}")
                     if len(hits)>=100:hit_limit=True;break
                 if hit_limit:break
             result="\n".join(hits) or "No matches."
@@ -217,21 +217,52 @@ class ToolRegistry:
         if any(x in {"&&","||",";","|",">","<"} for x in argv): return "Shell operators are not accepted."
         try:
             limit=max(1,min(3600,int(args.get("timeout_seconds",120))))
-            process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+            process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
             deadline=time.monotonic()+limit
-            while True:
-                if self.cancel_event.is_set():
-                    process.terminate()
-                    try:process.communicate(timeout=2)
-                    except subprocess.TimeoutExpired:process.kill();process.communicate()
-                    return "Command cancelled by user."
-                if time.monotonic()>=deadline:
-                    process.kill();stdout,stderr=process.communicate()
-                    return (stdout+"\n"+stderr+f"\n[command timed out after {limit}s]")[:12000]
+            chunks={"stdout":[],"stderr":[]};output:queue.Queue=queue.Queue();readers=[]
+            def pump(name,pipe):
+                decoder=codecs.getincrementaldecoder("utf-8")("replace")
                 try:
-                    stdout,stderr=process.communicate(timeout=min(.2,max(.01,deadline-time.monotonic())))
-                    return (stdout+"\n"+stderr+f"\n[exit {process.returncode}]")[:12000]
-                except subprocess.TimeoutExpired:continue
+                    while True:
+                        raw=os.read(pipe.fileno(),4096)
+                        if not raw:break
+                        text=decoder.decode(raw)
+                        if text:output.put((name,text))
+                    tail=decoder.decode(b"",final=True)
+                    if tail:output.put((name,tail))
+                finally:output.put((name,None))
+            for name,pipe in (("stdout",process.stdout),("stderr",process.stderr)):
+                reader=threading.Thread(target=pump,args=(name,pipe),daemon=True);reader.start();readers.append(reader)
+            remaining=len(readers);stopped=False;timed_out=False;terminate_at=None
+            while remaining:
+                now=time.monotonic()
+                if not stopped and self.cancel_event.is_set():
+                    stopped=True;terminate_at=now+2
+                    try:process.terminate()
+                    except OSError:pass
+                elif not stopped and now>=deadline:
+                    stopped=True;timed_out=True;terminate_at=now+2
+                    try:process.kill()
+                    except OSError:pass
+                elif stopped and terminate_at is not None and now>=terminate_at and process.poll() is None:
+                    try:process.kill()
+                    except OSError:pass
+                    terminate_at=None
+                try:name,text=output.get(timeout=.05)
+                except queue.Empty:continue
+                if text is None:remaining-=1;continue
+                chunks[name].append(text)
+                self.event({"type":"operation_output","stream":name,"text":text,"at":time.time()})
+            for reader in readers:reader.join(timeout=1)
+            for pipe in (process.stdout,process.stderr):
+                if pipe:pipe.close()
+            if process.poll() is None:
+                try:process.wait(timeout=2)
+                except subprocess.TimeoutExpired:process.kill();process.wait()
+            result="".join(chunks["stdout"])+"\n"+"".join(chunks["stderr"])
+            if timed_out:return result+f"\n[command timed out after {limit}s]"
+            if self.cancel_event.is_set():return result+"\n[command cancelled by user]"
+            return result+f"\n[exit {process.returncode}]"
         except (OSError,ValueError) as exc: return f"Command error: {exc}"
 
 class ContextManager:
@@ -386,7 +417,12 @@ class AgentEngine:
                     elif self.cancel_event.is_set():out="Cancelled before this tool action ran."
                     elif args_error:out=args_error
                     else:
-                        self.event({"type":"tool_start","name":name,"arguments":args})
+                        operation_id=uuid.uuid4().hex
+                        operation_started=time.time()
+                        registry=self.state["registry"]
+                        previous_event=registry.event
+                        registry.event=lambda event,op=operation_id:self.event({**event,"operationId":op})
+                        self.event({"type":"tool_start","operationId":operation_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
                         try:
                             if name.startswith("mcp__") and self.mcp_call:
                                 if not self._approval(name,args):out="Denied by user."
@@ -394,7 +430,12 @@ class AgentEngine:
                             else:out=self.state["registry"].run(name,args)
                         except MCPRequestCancelled:out="Cancelled during MCP action."
                         except Exception as exc:out=f"Tool error: {type(exc).__name__}: {exc}"
-                    self.event({"type":"tool_done","name":name,"result":str(out)[:12000]})
+                        finally:registry.event=previous_event
+                        affected=[]
+                        if name in {"read_file","write_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
+                        elif name=="apply_patch":
+                            affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
+                        self.event({"type":"tool_done","operationId":operation_id,"name":name,"result":str(out),"status":"completed","affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
                     msgs.append({"role":"tool","tool_call_id":call.get("id",f"call-{index}"),"content":str(out)})
                     if self.cancel_event.is_set():
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
