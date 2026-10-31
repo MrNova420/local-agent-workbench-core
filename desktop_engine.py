@@ -2,6 +2,7 @@
 from __future__ import annotations
 import codecs, copy, json, os, queue, re, socket, tempfile, threading, time, urllib.error, urllib.request, uuid
 from pathlib import Path
+from urllib.parse import unquote
 from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled
@@ -49,14 +50,27 @@ def _asks_for_clarification(content:str)->bool:
     folded=content.casefold()
     return any(phrase in folded for phrase in ("could you clarify","which framework do you prefer","which framework should","what would you like me to","please provide more detail","need more information before","before i begin, please","before i start, please"))
 
-def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: int = 0) -> str | None:
+def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: int = 0, _root_schema: dict | None = None) -> str | None:
     """Fail closed on malformed tool arguments using the JSON Schema keywords we support."""
     if not isinstance(schema, dict):
         return f"{path} has an invalid tool schema."
     if _depth >= 64:
         return f"{path} exceeds the supported tool-schema nesting depth."
+    root_schema=_root_schema or schema
     if "$ref" in schema:
-        return f"{path} uses a JSON Schema reference that this runtime cannot resolve safely."
+        reference=schema["$ref"]
+        if not isinstance(reference,str) or (reference!="#" and not reference.startswith("#/")):
+            return f"{path} uses an external or invalid JSON Schema reference; only local references are supported."
+        target:Any=root_schema
+        pointer=unquote(reference[1:])
+        for raw_part in pointer.split("/")[1:] if pointer else []:
+            part=raw_part.replace("~1","/").replace("~0","~")
+            if isinstance(target,dict) and part in target:target=target[part]
+            elif isinstance(target,list) and part.isdigit() and int(part)<len(target):target=target[int(part)]
+            else:return f"{path} references a missing JSON Schema definition."
+        if not isinstance(target,dict):return f"{path} references a non-object JSON Schema definition."
+        merged={**target,**{key:item for key,item in schema.items() if key!="$ref"}}
+        return _validate_tool_arguments(value,merged,path,_depth+1,root_schema)
     if "type" in schema and not (isinstance(schema["type"],str) or isinstance(schema["type"],list) and bool(schema["type"]) and all(isinstance(kind,str) for kind in schema["type"])):
         return f"{path} has an invalid type tool schema."
     for keyword in ("required", "enum", "allOf", "anyOf", "oneOf"):
@@ -82,7 +96,7 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
             continue
         if not branches or not all(isinstance(row, dict) for row in branches):
             return f"{path} has an invalid {keyword} tool schema."
-        errors = [_validate_tool_arguments(value, branch, path, _depth + 1) for branch in branches]
+        errors = [_validate_tool_arguments(value, branch, path, _depth + 1, root_schema) for branch in branches]
         valid = sum(error is None for error in errors)
         if keyword == "allOf" and valid != len(branches):
             return next(error for error in errors if error is not None)
@@ -93,7 +107,7 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
     if "not" in schema:
         if not isinstance(schema["not"], dict):
             return f"{path} has an invalid not tool schema."
-        if _validate_tool_arguments(value, schema["not"], path, _depth + 1) is None:
+        if _validate_tool_arguments(value, schema["not"], path, _depth + 1, root_schema) is None:
             return f"{path} matches a forbidden tool argument shape."
 
     expected=schema.get("type")
@@ -153,7 +167,7 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
                 if additional is False:return f"{path}.{key} is not an accepted argument."
                 if isinstance(additional,dict):matched_schemas.append(additional)
             for child_schema in matched_schemas:
-                error=_validate_tool_arguments(item,child_schema,f"{path}.{key}",_depth+1)
+                error=_validate_tool_arguments(item,child_schema,f"{path}.{key}",_depth+1,root_schema)
                 if error:return error
 
     if isinstance(value,list):
@@ -165,17 +179,17 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
         item_schema=schema.get("items")
         if isinstance(item_schema,dict):
             for index,item in enumerate(value):
-                error=_validate_tool_arguments(item,item_schema,f"{path}[{index}]",_depth+1)
+                error=_validate_tool_arguments(item,item_schema,f"{path}[{index}]",_depth+1,root_schema)
                 if error:return error
         elif isinstance(item_schema,list):
             for index,(item,child_schema) in enumerate(zip(value,item_schema)):
-                error=_validate_tool_arguments(item,child_schema,f"{path}[{index}]",_depth+1)
+                error=_validate_tool_arguments(item,child_schema,f"{path}[{index}]",_depth+1,root_schema)
                 if error:return error
             additional=schema.get("additionalItems",True)
             if additional is False and len(value)>len(item_schema):return f"{path} contains items that are not accepted."
             if isinstance(additional,dict):
                 for index,item in enumerate(value[len(item_schema):],len(item_schema)):
-                    error=_validate_tool_arguments(item,additional,f"{path}[{index}]",_depth+1)
+                    error=_validate_tool_arguments(item,additional,f"{path}[{index}]",_depth+1,root_schema)
                     if error:return error
     return None
 

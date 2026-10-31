@@ -40,8 +40,15 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIsNone(_validate_tool_arguments("plan",union))
         self.assertIsNone(_validate_tool_arguments(3,union))
         self.assertIn("exactly one",_validate_tool_arguments(True,union))
-        self.assertIn("cannot resolve",_validate_tool_arguments({}, {"$ref":"#/$defs/args"}))
+        self.assertIn("missing JSON Schema definition",_validate_tool_arguments({}, {"$ref":"#/$defs/args"}))
         self.assertIn("unsupported JSON Schema type",_validate_tool_arguments("x", {"type":"unrecognized"}))
+
+    def test_json_schema_validation_resolves_local_definition_references_only(self):
+        schema={"type":"object","$defs":{"name":{"type":"string","minLength":3}},
+                "properties":{"name":{"$ref":"#/$defs/name"}},"required":["name"]}
+        self.assertIsNone(_validate_tool_arguments({"name":"Ember"},schema))
+        self.assertIn("at least 3",_validate_tool_arguments({"name":"Ry"},schema))
+        self.assertIn("external",_validate_tool_arguments("x", {"$ref":"https://example.com/schema.json"}))
 
     def test_invalid_file_tool_arguments_never_reach_the_write(self):
         with tempfile.TemporaryDirectory() as folder:
