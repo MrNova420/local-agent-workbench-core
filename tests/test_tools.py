@@ -14,6 +14,23 @@ class ToolTests(unittest.TestCase):
    tools=ToolRegistry(Workspace(root),lambda *_:True)
    result=tools.run('list_files',{'path':'.','pattern':'*.txt'})
    self.assertIn('[File listing capped at 1,200 entries; results may be incomplete.]',result)
+ def test_file_listing_pages_through_matches_without_restarting_at_first_page(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for name in ('a.py','b.py','c.py','d.py'):(root/name).write_text(name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   first=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':2})
+   second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':2})
+   self.assertIn('a.py',first);self.assertIn('b.py',first);self.assertIn('next offset 2',first.casefold())
+   self.assertIn('c.py',second);self.assertIn('d.py',second);self.assertNotIn('a.py',second)
+ def test_search_pages_through_matches_with_next_offset(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'matches.py').write_text('needle one\nneedle two\nneedle three\nneedle four\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   page=tools.run('search_files',{'query':'needle','offset':2,'limit':1})
+   self.assertIn('matches.py:3: needle three',page)
+   self.assertNotIn('matches.py:1:',page)
+   self.assertIn('next offset 3',page.casefold())
  def test_workspace_rejects_path_escape(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)/'project';root.mkdir();ws=Workspace(root)

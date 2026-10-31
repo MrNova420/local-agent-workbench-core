@@ -24,6 +24,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str) -> str:
         "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in the write_file tool arguments, not in a chat message. "
         "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
+        "When list_files or search_files says more results are available, continue with its exact next offset when needed; do not assume the first page is complete. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
     )
@@ -88,8 +89,8 @@ class ToolRegistry:
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
         self.schemas = [
-          self._schema("list_files", "List project files", {"path":{"type":"string"},"pattern":{"type":"string"}}, []),
-          self._schema("search_files", "Search project text", {"query":{"type":"string"}}, ["query"]),
+          self._schema("list_files", "List a page of project files. Default page size is 1,200; when more results exist, continue with the returned offset and limit.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
+          self._schema("search_files", "Search project text. Default page size is 100; when more results exist, continue with the returned offset and limit.", {"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
           self._schema("read_file", "Read a project file; optional 1-based line bounds let you inspect large files in sections", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("update_plan", "Create or update the current task checklist", {"items":{"type":"array","items":{"type":"object"}}}, ["items"]),
           self._schema("skill", "List or load a project/user skill", {"action":{"type":"string","enum":["list","load"]},"name":{"type":"string"}}, ["action"]),
@@ -117,16 +118,32 @@ class ToolRegistry:
             return knowledge.load_skill(args.get("name",""),skills)
         if name == "list_files":
             base = self.workspace.resolve(args.get("path", ".")); pattern = args.get("pattern", "*")
+            offset=args.get("offset",0);limit=args.get("limit",1200)
+            if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
+            if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=1200:return "Invalid limit: expected an integer from 1 to 1,200."
             import fnmatch
-            matches=[]
+            matches=[];matched=0;scanned=0;has_more=False;scan_capped=False
             for p in iter_project_files(base,max_files=20000):
-                if fnmatch.fnmatch(p.name,pattern):matches.append(p.relative_to(self.workspace.root).as_posix())
-                if len(matches)>=1200:break
+                scanned+=1
+                if fnmatch.fnmatch(p.name,pattern):
+                    if matched<offset:matched+=1;continue
+                    if len(matches)<limit:matches.append(p.relative_to(self.workspace.root).as_posix())
+                    else:has_more=True;break
+            if scanned>=20000 and not has_more:scan_capped=True
             result="\n".join(matches)
-            if len(matches)>=1200:result+="\n\n[File listing capped at 1,200 entries; results may be incomplete.]"
+            if has_more:
+                result+="\n\n" if result else ""
+                if limit==1200:result+="[File listing capped at 1,200 entries; results may be incomplete.] "
+                result+=f"More results are available. Next offset {offset+len(matches)}; continue with limit {limit}."
+            elif scan_capped:
+                result+="\n\n" if result else ""
+                result+="[File listing scan capped at 20,000 files; results may be incomplete. Narrow the path or pattern.]"
             return result
         if name == "search_files":
-            query = str(args.get("query", "")).strip().casefold(); hits=[];scanned=0;bytes_read=0;capped=False;hit_limit=False
+            query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;capped=False;has_more=False
+            offset=args.get("offset",0);limit=args.get("limit",100)
+            if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
+            if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=100:return "Invalid limit: expected an integer from 1 to 100."
             if not query:return "Search query must not be empty."
             for p in iter_project_files(self.workspace.root,max_files=self.search_file_limit):
                 scanned+=1
@@ -137,12 +154,15 @@ class ToolRegistry:
                     lines=p.read_text(encoding="utf8").splitlines();bytes_read+=size
                 except (OSError,UnicodeError): continue
                 for i,line in enumerate(lines,1):
-                    if query in line.casefold(): hits.append(f"{p.relative_to(self.workspace.root).as_posix()}:{i}: {line}")
-                    if len(hits)>=100:hit_limit=True;break
-                if hit_limit:break
+                    if query in line.casefold():
+                        if offset>0:offset-=1;continue
+                        if len(hits)<limit:hits.append(f"{p.relative_to(self.workspace.root).as_posix()}:{i}: {line}")
+                        else:has_more=True;break
+                if has_more:break
             result="\n".join(hits) or "No matches."
             if scanned>=self.search_file_limit:capped=True
-            if capped or hit_limit:result+=f"\n\n[Search results capped at {len(hits)} hits, {scanned} files, or {bytes_read:,} bytes; results may be incomplete.]"
+            if has_more:result+=f"\n\nMore results are available. Next offset {args.get('offset',0)+len(hits)}; continue with limit {limit}."
+            if capped:result+=f"\n\n[Search scan capped at {scanned} files or {bytes_read:,} bytes; results may be incomplete. Narrow the query or project path.]"
             return result
         if name in {"write_file", "edit_file"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
