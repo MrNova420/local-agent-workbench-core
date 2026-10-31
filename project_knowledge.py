@@ -139,7 +139,7 @@ class ProjectKnowledge:
         if not match:
             raise ValueError("Unknown or unavailable skill")
         rel = Path(relative)
-        if not relative or rel.is_absolute() or ".." in rel.parts:
+        if not relative or rel.is_absolute() or rel.drive or rel.root or ".." in rel.parts:
             raise ValueError("Use a skill-relative resource path without '..'")
         base = Path(match["path"]).resolve(strict=True).parent
         target = base
