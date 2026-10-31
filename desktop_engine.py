@@ -331,6 +331,11 @@ class OllamaRuntime:
                 raise RequestCancelled("Cancelled",{"role":"assistant",**partial} if partial else None)
             if calls:result["message"]["tool_calls"]=[calls[i] for i in sorted(calls)]
             return result
+        except Exception as exc:
+            if cancel.is_set():
+                partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
+                raise RequestCancelled("Cancelled",{"role":"assistant",**partial} if partial else None) from exc
+            raise
         finally:
             with self.lock:self.response=None
             try:response.close()

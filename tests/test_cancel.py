@@ -28,4 +28,21 @@ class CancelTests(unittest.TestCase):
    messages=engine.run('do a task',[])
   self.assertEqual(messages[-1],{'role':'assistant','content':'partial reply'})
   self.assertTrue(any(event.get('type')=='cancelled' for event in events))
+ def test_stream_close_during_read_preserves_partial_reply(self):
+  entered_read=threading.Event();closed=threading.Event();cancel=threading.Event();errors=[]
+  class Response:
+   def __init__(self):self.lines=iter([b'{"message":{"content":"first"}}\n'])
+   def readline(self):
+    line=next(self.lines,None)
+    if line:return line
+    entered_read.set();closed.wait(1);raise ConnectionResetError('stream closed')
+   def close(self):closed.set()
+  runtime=OllamaRuntime();state={'model':'mock','registry':type('R',(),{'schemas':[]})(),'temperature':0.2,'context':4096,'max_tokens':12}
+  def run():
+   try:runtime.stream(state,[],cancel,lambda _event:None)
+   except Exception as exc:errors.append(exc)
+  with patch('urllib.request.urlopen',return_value=Response()):
+   thread=threading.Thread(target=run);thread.start();self.assertTrue(entered_read.wait(1));cancel.set();runtime.cancel();thread.join(1)
+  self.assertEqual(len(errors),1);self.assertIsInstance(errors[0],RequestCancelled)
+  self.assertEqual(errors[0].partial_message,{'role':'assistant','content':'first'})
 if __name__=='__main__':unittest.main()
