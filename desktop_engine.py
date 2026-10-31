@@ -263,7 +263,7 @@ class ToolRegistry:
             return f"Patch transaction rolled back: {exc}"
         return "Updated: "+", ".join(name for name,_,_,_ in plans)
     def _command(self,args:dict)->str:
-        import subprocess
+        import subprocess,psutil
         argv=args.get("argv")
         if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv): return "argv must be a non-empty string list."
         if any(x in {"&&","||",";","|",">","<"} for x in argv): return "Shell operators are not accepted."
@@ -271,7 +271,32 @@ class ToolRegistry:
             limit=max(1,min(3600,int(args.get("timeout_seconds",120))))
             process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
             deadline=time.monotonic()+limit
-            chunks={"stdout":[],"stderr":[]};output:queue.Queue=queue.Queue();readers=[]
+            chunks={"stdout":[],"stderr":[]};output:queue.Queue=queue.Queue();readers=[];known_descendants={};last_tree_scan=0.0;drain_deadline=None;incomplete_output=False
+            def scan_descendants():
+                try:
+                    for child in psutil.Process(process.pid).children(recursive=True):known_descendants[child.pid]=child
+                except (psutil.Error,OSError):pass
+            def terminate_tree():
+                scan_descendants()
+                try:root_process=psutil.Process(process.pid)
+                except (psutil.Error,OSError):root_process=None
+                targets=list(known_descendants.values())
+                if root_process is not None:targets.append(root_process)
+                for child in reversed(targets):
+                    try:
+                        if child.is_running():child.terminate()
+                    except (psutil.Error,OSError):pass
+                try:
+                    if process.poll() is None:process.terminate()
+                except OSError:pass
+                try:_,alive=psutil.wait_procs(targets,timeout=1.0)
+                except (psutil.Error,OSError):alive=[]
+                for child in alive:
+                    try:child.kill()
+                    except (psutil.Error,OSError):pass
+                try:
+                    if process.poll() is None:process.kill()
+                except OSError:pass
             def pump(name,pipe):
                 decoder=codecs.getincrementaldecoder("utf-8")("replace")
                 try:
@@ -288,18 +313,17 @@ class ToolRegistry:
             remaining=len(readers);stopped=False;timed_out=False;terminate_at=None
             while remaining:
                 now=time.monotonic()
+                if now-last_tree_scan>=0.05:
+                    scan_descendants();last_tree_scan=now
                 if not stopped and self.cancel_event.is_set():
-                    stopped=True;terminate_at=now+2
-                    try:process.terminate()
-                    except OSError:pass
+                    stopped=True;terminate_at=now+1;drain_deadline=now+5;terminate_tree()
                 elif not stopped and now>=deadline:
-                    stopped=True;timed_out=True;terminate_at=now+2
-                    try:process.kill()
-                    except OSError:pass
+                    stopped=True;timed_out=True;terminate_at=now+1;drain_deadline=now+5;terminate_tree()
                 elif stopped and terminate_at is not None and now>=terminate_at and process.poll() is None:
-                    try:process.kill()
-                    except OSError:pass
+                    terminate_tree()
                     terminate_at=None
+                if stopped and drain_deadline is not None and now>=drain_deadline and remaining:
+                    incomplete_output=True;break
                 try:name,text=output.get(timeout=.05)
                 except queue.Empty:continue
                 if text is None:remaining-=1;continue
@@ -312,6 +336,7 @@ class ToolRegistry:
                 try:process.wait(timeout=2)
                 except subprocess.TimeoutExpired:process.kill();process.wait()
             result="".join(chunks["stdout"])+"\n"+"".join(chunks["stderr"])
+            if incomplete_output:result+="\n[command process tree was stopped, but an output pipe did not close; remaining output may be incomplete]"
             if timed_out:return result+f"\n[command timed out after {limit}s]"
             if self.cancel_event.is_set():return result+"\n[command cancelled by user]"
             return result+f"\n[exit {process.returncode}]"
