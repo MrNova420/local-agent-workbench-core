@@ -56,6 +56,7 @@ class TurnContext:
     context: int
     access: str
     approval_mode: str
+    harness_profile: str
     max_tokens: int
     temperature: float
     runtime_options: dict[str, Any]
@@ -72,6 +73,7 @@ class TurnContext:
         context: int,
         access: str,
         approval_mode: str,
+        harness_profile: str = "standard",
         max_tokens: int,
         temperature: float,
         runtime_options: dict[str, Any],
@@ -85,6 +87,7 @@ class TurnContext:
             context=int(context),
             access=str(access),
             approval_mode=str(approval_mode),
+            harness_profile=harness_profile if harness_profile in {"standard", "small-model"} else "standard",
             max_tokens=int(max_tokens),
             temperature=float(temperature),
             runtime_options=deepcopy(runtime_options),
