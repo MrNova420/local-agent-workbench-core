@@ -712,7 +712,13 @@ class AgentEngine:
             size=self.context.estimate(json.dumps({"messages":base_messages,"tools":tools},ensure_ascii=False,separators=(",",":")))
             if size<=self.context.budget(self.state["max_tokens"]):selected=candidate
             else:omitted=True
-        if omitted:update_description("\n".join(f"- {item['name']}: {item['description']}" for item in selected)+("\n" if selected else "")+"Additional skills are available; call skill with action=list to inspect the full catalog.")
+        if omitted:
+            while True:
+                update_description("\n".join(f"- {item['name']}: {item['description']}" for item in selected)+("\n" if selected else "")+"Additional skills are available; call skill with action=list to inspect the full catalog.")
+                size=self.context.estimate(json.dumps({"messages":base_messages,"tools":tools},ensure_ascii=False,separators=(",",":")))
+                if size<=self.context.budget(self.state["max_tokens"]) or not selected:break
+                selected.pop()
+            if not selected:update_description("")
         else:update_description("\n".join(f"- {item['name']}: {item['description']}" for item in selected))
         return tools
     def run(self,prompt:str,messages:list[dict]|None=None)->list[dict]:
