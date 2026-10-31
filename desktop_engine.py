@@ -77,6 +77,20 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$") -> str |
             if error:return error
     return None
 
+def _normalize_tool_history(messages: list[dict]) -> None:
+    """Migrate persisted pre-protocol tool results to Ollama's native tool_name shape."""
+    names_by_id={}
+    for message in messages:
+        if message.get("role")=="assistant":
+            for call in message.get("tool_calls") or []:
+                call_id=call.get("id")
+                name=(call.get("function") or {}).get("name")
+                if call_id and name:names_by_id[str(call_id)]=name
+        elif message.get("role")=="tool":
+            call_id=message.pop("tool_call_id",None)
+            if not message.get("tool_name") and call_id:
+                message["tool_name"]=names_by_id.get(str(call_id),"unknown_tool")
+
 def _announces_pending_action(content:str)->bool:
     folded=content.casefold()
     return re.search(r"\b(?:i will|i'll|i am going to|i’m going to|i'm going to|let me|next,? i(?:'ll| will))\s+(?:now\s+)?(?:create|build|implement|write|edit|modify|add|fix|run|test|verify|check|update)\b",folded) is not None
@@ -684,6 +698,7 @@ class AgentEngine:
         }[self.workspace.access]
         system={"role":"system","content":agent_system_prompt(access_policy,self.project_instructions,self.harness_profile)}
         msgs=messages if messages is not None else []
+        _normalize_tool_history(msgs)
         if msgs and msgs[0].get("role")=="system":msgs[0]=system
         else:msgs.insert(0,system)
         retrieved=self.context.retrieve(self.workspace.root,prompt)
