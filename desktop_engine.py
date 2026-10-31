@@ -158,8 +158,8 @@ class ToolRegistry:
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills()
         self.schemas = [
-          self._schema("list_files", "List a page of project files. Default page size is 1,200; when more results exist, continue with the returned offset and limit.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
-          self._schema("search_files", "Search project text. Default page size is 100; when more results exist, continue with the returned offset and limit.", {"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
+          self._schema("list_files", "List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; continue with the returned offset and limit when more results exist.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
+          self._schema("search_files", "Search project text for a literal substring. Use path and include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Default page size is 100; continue with the returned offset and limit when more results exist.", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
           self._schema("read_file", "Read a project file; optional 1-based line bounds let you inspect large files in sections", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("update_plan", "Create or update the current task checklist", {"items":{"type":"array","items":{"type":"object"}}}, ["items"]),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
@@ -207,7 +207,12 @@ class ToolRegistry:
             matches=[];matched=0;scanned=0;has_more=False;scan_capped=False
             for p in iter_project_files(base,max_files=20000):
                 scanned+=1
-                if fnmatch.fnmatch(p.name,pattern):
+                relative=p.relative_to(base).as_posix()
+                if "/" in pattern:
+                    matched=fnmatch.fnmatchcase(relative.casefold(),pattern.casefold())
+                    if pattern.startswith("**/"):matched=matched or fnmatch.fnmatchcase(relative.casefold(),pattern[3:].casefold())
+                else:matched=fnmatch.fnmatchcase(p.name.casefold(),pattern.casefold())
+                if matched:
                     if matched<offset:matched+=1;continue
                     if len(matches)<limit:matches.append(p.relative_to(self.workspace.root).as_posix())
                     else:has_more=True;break
@@ -224,14 +229,22 @@ class ToolRegistry:
                 result+="[File listing scan capped at 20,000 files; results may be incomplete. Narrow the path or pattern.]"
             return result
         if name == "search_files":
+            search_root=self.workspace.resolve(args.get("path","."));include=str(args.get("include","*")).strip() or "*"
             query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;capped=False;has_more=False
             offset=args.get("offset",0);limit=args.get("limit",100)
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
             if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=100:return "Invalid limit: expected an integer from 1 to 100."
             if not query:return "Search query must not be empty."
-            for p in iter_project_files(self.workspace.root,max_files=self.search_file_limit):
+            import fnmatch
+            for p in iter_project_files(search_root,max_files=self.search_file_limit):
                 scanned+=1
                 if p.suffix.casefold() not in TEXT_EXT:continue
+                relative=p.relative_to(search_root).as_posix()
+                if "/" in include:
+                    matched=fnmatch.fnmatchcase(relative.casefold(),include.casefold())
+                    if include.startswith("**/"):matched=matched or fnmatch.fnmatchcase(relative.casefold(),include[3:].casefold())
+                else:matched=fnmatch.fnmatchcase(p.name.casefold(),include.casefold())
+                if not matched:continue
                 try:
                     size=p.stat().st_size
                     if bytes_read+size>self.search_byte_limit:capped=True;break

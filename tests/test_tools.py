@@ -35,6 +35,17 @@ class ToolTests(unittest.TestCase):
    self.assertIn('matches.py:3: needle three',page)
    self.assertNotIn('matches.py:1:',page)
    self.assertIn('next offset 3',page.casefold())
+ def test_glob_patterns_cover_nested_files_and_search_can_scope_by_directory(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'src/nested').mkdir(parents=True);(root/'docs').mkdir()
+   (root/'src/nested/page.tsx').write_text('const target = true',encoding='utf8')
+   (root/'docs/page.tsx').write_text('unrelated',encoding='utf8')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   listed=tools.run('list_files',{'pattern':'src/**/*.tsx'})
+   found=tools.run('search_files',{'query':'target','path':'src','include':'**/*.tsx'})
+   self.assertIn('src/nested/page.tsx',listed)
+   self.assertIn('src/nested/page.tsx:1:',found)
+   self.assertNotIn('docs/page.tsx',listed)
  def test_workspace_rejects_path_escape(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)/'project';root.mkdir();ws=Workspace(root)
