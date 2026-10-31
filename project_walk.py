@@ -9,7 +9,7 @@ from pathspec import GitIgnoreSpec
 
 DEFAULT_IGNORED = {
     ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
-    ".pytest_cache", "dist", "build", "target", "Library", "Temp",
+    ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp",
 }
 
 

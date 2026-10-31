@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
 CONTEXT_MAX = 262_144
-IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", "dist", "build", "target", "Library", "Temp"}
+IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 
 class RequestCancelled(Exception):
@@ -266,12 +266,15 @@ class ToolRegistry:
         except (OSError,ValueError) as exc: return f"Command error: {exc}"
 
 class ContextManager:
-    def __init__(self, context: int=CONTEXT_MAX, reserve:int=8192,scan_file_limit:int=5000,scan_bytes_limit:int=128*1024*1024): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
+    def __init__(self, context: int=CONTEXT_MAX, reserve:int=512,scan_file_limit:int=5000,scan_bytes_limit:int=128*1024*1024): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
     @property
     def input_budget(self): return max(1024,self.context-self.reserve)
     def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens+1024))
     @staticmethod
-    def estimate(text:str)->int: return max(1,len(text.encode("utf8")))
+    def estimate(text:str)->int:
+        # UTF-8 bytes are not tokens. Two bytes per token is deliberately
+        # conservative for prose and compact JSON tool schemas.
+        return max(1,(len(text.encode("utf8"))+1)//2)
     def retrieve(self,root:Path,prompt:str,limit:int=18_000)->str:
         terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}; ranked=[];examined=0;bytes_read=0;capped=False
         if not terms:return ""

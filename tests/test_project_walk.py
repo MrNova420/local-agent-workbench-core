@@ -7,6 +7,13 @@ from project_walk import iter_project_files
 
 
 class ProjectWalkTests(unittest.TestCase):
+    def test_private_workbench_metadata_and_sessions_are_never_project_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); private=root/".agent-workbench"/"sessions";private.mkdir(parents=True)
+            (private/"session.json").write_text("private",encoding="utf-8")
+            (root/"main.py").write_text("source",encoding="utf-8")
+            self.assertEqual({path.relative_to(root).as_posix() for path in iter_project_files(root)}, {"main.py"})
+
     def test_honors_nested_gitignore_rules_and_reinclusions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
