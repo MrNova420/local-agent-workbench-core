@@ -43,6 +43,12 @@ Current status: active development; **not approved for unrestricted real-project
 
 See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for findings, architecture direction, and gates.
 
+## 2026-10-31 shared-engine handoff
+
+- Hardened structured tool-argument validation in `desktop_engine.py`: malformed or unknown schema types now fail closed; common JSON Schema composition, constants, numeric/string/array constraints, object patterns, and schema-valued `additionalProperties` are checked. Unresolved `$ref` schemas return an explicit unsupported-schema error instead of being treated as valid.
+- Added regression cases for nested MCP-like schemas, constraints, composition, references, and unknown types. These checks are intentionally queued for the final verification phase; no test suite or package build was run for this handoff.
+- Paired Electron source must update `core-revision.txt` to the resulting commit before packaging. The package has not yet incorporated or verified this change.
+
 ## 2026-10-31 public beta handoff
 
 - Published as the public MIT-licensed `MrNova420/local-agent-workbench-core` repository. The Electron product lives in the paired `MrNova420/local-agent-workbench` repository and pins this engine at commit `ecbf2914740fdd2d2b4f04a49d9d22dab0ccdc34`.

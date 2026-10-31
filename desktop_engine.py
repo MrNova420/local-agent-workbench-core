@@ -49,34 +49,134 @@ def _asks_for_clarification(content:str)->bool:
     folded=content.casefold()
     return any(phrase in folded for phrase in ("could you clarify","which framework do you prefer","which framework should","what would you like me to","please provide more detail","need more information before","before i begin, please","before i start, please"))
 
-def _validate_tool_arguments(value: Any, schema: dict, path: str = "$") -> str | None:
-    """Validate the JSON Schema subset used by built-in and MCP function tools."""
+def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: int = 0) -> str | None:
+    """Fail closed on malformed tool arguments using the JSON Schema keywords we support."""
+    if not isinstance(schema, dict):
+        return f"{path} has an invalid tool schema."
+    if _depth >= 64:
+        return f"{path} exceeds the supported tool-schema nesting depth."
+    if "$ref" in schema:
+        return f"{path} uses a JSON Schema reference that this runtime cannot resolve safely."
+    if "type" in schema and not (isinstance(schema["type"],str) or isinstance(schema["type"],list) and bool(schema["type"]) and all(isinstance(kind,str) for kind in schema["type"])):
+        return f"{path} has an invalid type tool schema."
+    for keyword in ("required", "enum", "allOf", "anyOf", "oneOf"):
+        if keyword in schema and not isinstance(schema[keyword],list):return f"{path} has an invalid {keyword} tool schema."
+    for keyword in ("minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"):
+        constraint=schema.get(keyword)
+        if constraint is not None and (not isinstance(constraint,int) or isinstance(constraint,bool) or constraint<0):return f"{path} has an invalid {keyword} tool schema."
+    for keyword in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"):
+        constraint=schema.get(keyword)
+        if constraint is not None and (not isinstance(constraint,(int,float)) or isinstance(constraint,bool)):return f"{path} has an invalid {keyword} tool schema."
+    if "pattern" in schema and (not isinstance(schema["pattern"],str) or len(schema["pattern"])>512):return f"{path} has an invalid pattern tool schema."
+    if "items" in schema and not isinstance(schema["items"],(dict,list)):return f"{path} has an invalid items tool schema."
+    if "uniqueItems" in schema and not isinstance(schema["uniqueItems"],bool):return f"{path} has an invalid uniqueItems tool schema."
+    if "additionalProperties" in schema and not isinstance(schema["additionalProperties"],(bool,dict)):return f"{path} has an invalid additionalProperties tool schema."
+    if "additionalItems" in schema and not isinstance(schema["additionalItems"],(bool,dict)):return f"{path} has an invalid additionalItems tool schema."
+
+    # Composition is useful in MCP schemas and must be validated before the
+    # ordinary type/property checks. Preserve the child error for actionable
+    # feedback without echoing potentially large or sensitive argument values.
+    for keyword in ("allOf", "anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if branches is None:
+            continue
+        if not branches or not all(isinstance(row, dict) for row in branches):
+            return f"{path} has an invalid {keyword} tool schema."
+        errors = [_validate_tool_arguments(value, branch, path, _depth + 1) for branch in branches]
+        valid = sum(error is None for error in errors)
+        if keyword == "allOf" and valid != len(branches):
+            return next(error for error in errors if error is not None)
+        if keyword == "anyOf" and valid == 0:
+            return f"{path} does not match any accepted tool argument shape."
+        if keyword == "oneOf" and valid != 1:
+            return f"{path} must match exactly one accepted tool argument shape."
+    if "not" in schema:
+        if not isinstance(schema["not"], dict):
+            return f"{path} has an invalid not tool schema."
+        if _validate_tool_arguments(value, schema["not"], path, _depth + 1) is None:
+            return f"{path} matches a forbidden tool argument shape."
+
     expected=schema.get("type")
     if expected:
         expected_types=expected if isinstance(expected,list) else [expected]
         checks={"object":lambda v:isinstance(v,dict),"array":lambda v:isinstance(v,list),"string":lambda v:isinstance(v,str),"integer":lambda v:isinstance(v,int) and not isinstance(v,bool),"number":lambda v:isinstance(v,(int,float)) and not isinstance(v,bool),"boolean":lambda v:isinstance(v,bool),"null":lambda v:v is None}
-        if not any(kind not in checks or checks[kind](value) for kind in expected_types):
+        unknown = [kind for kind in expected_types if kind not in checks]
+        if unknown:
+            return f"{path} uses unsupported JSON Schema type(s): {', '.join(map(str, unknown))}."
+        if not any(checks[kind](value) for kind in expected_types):
             return f"{path} must be {' or '.join(expected_types)}."
-    if "enum" in schema and value not in schema["enum"]:
-        return f"{path} must be one of {', '.join(map(str,schema['enum']))}."
+    if "const" in schema and value != schema["const"]:
+        return f"{path} must equal the required constant."
+    if "enum" in schema:
+        choices = schema["enum"]
+        if not isinstance(choices, list) or value not in choices:
+            return f"{path} must be one of {', '.join(map(str, choices)) if isinstance(choices, list) else 'the schema-defined values'}."
+
     if isinstance(value,(int,float)) and not isinstance(value,bool):
         if "minimum" in schema and value<schema["minimum"]:return f"{path} must be at least {schema['minimum']}."
         if "maximum" in schema and value>schema["maximum"]:return f"{path} must be at most {schema['maximum']}."
+        if "exclusiveMinimum" in schema and isinstance(schema["exclusiveMinimum"],(int,float)) and not isinstance(schema["exclusiveMinimum"],bool) and value<=schema["exclusiveMinimum"]:return f"{path} must be greater than {schema['exclusiveMinimum']}."
+        if "exclusiveMaximum" in schema and isinstance(schema["exclusiveMaximum"],(int,float)) and not isinstance(schema["exclusiveMaximum"],bool) and value>=schema["exclusiveMaximum"]:return f"{path} must be less than {schema['exclusiveMaximum']}."
+        if "multipleOf" in schema:
+            divisor=schema["multipleOf"]
+            if not isinstance(divisor,(int,float)) or isinstance(divisor,bool) or divisor<=0:return f"{path} has an invalid multipleOf tool schema."
+            quotient=value/divisor
+            if abs(quotient-round(quotient))>1e-9:return f"{path} must be a multiple of {divisor}."
+
+    if isinstance(value,str):
+        if "minLength" in schema and len(value)<schema["minLength"]:return f"{path} must contain at least {schema['minLength']} characters."
+        if "maxLength" in schema and len(value)>schema["maxLength"]:return f"{path} must contain at most {schema['maxLength']} characters."
+        if "pattern" in schema:
+            try:matched=re.search(schema["pattern"],value)
+            except (TypeError,re.error):return f"{path} has an invalid pattern tool schema."
+            if not matched:return f"{path} does not match the required pattern."
+
     if isinstance(value,dict):
-        for key in schema.get("required",[]):
+        if "minProperties" in schema and len(value)<schema["minProperties"]:return f"{path} must contain at least {schema['minProperties']} properties."
+        if "maxProperties" in schema and len(value)>schema["maxProperties"]:return f"{path} must contain at most {schema['maxProperties']} properties."
+        required=schema.get("required",[])
+        if not all(isinstance(key,str) for key in required):return f"{path} has an invalid required tool schema."
+        for key in required:
             if key not in value:return f"{path}.{key} is required."
         properties=schema.get("properties",{})
-        if schema.get("additionalProperties") is False:
-            extra=next((key for key in value if key not in properties),None)
-            if extra is not None:return f"{path}.{extra} is not an accepted argument."
+        patterns=schema.get("patternProperties",{})
+        if not isinstance(properties,dict) or not isinstance(patterns,dict) or any(not isinstance(pattern,str) or len(pattern)>512 for pattern in patterns):return f"{path} has an invalid object tool schema."
         for key,item in value.items():
-            if key in properties:
-                error=_validate_tool_arguments(item,properties[key],f"{path}.{key}")
+            matched_schemas=[]
+            if key in properties:matched_schemas.append(properties[key])
+            for pattern,child_schema in patterns.items():
+                try:matches=re.search(pattern,key)
+                except (TypeError,re.error):return f"{path} has an invalid patternProperties tool schema."
+                if matches:matched_schemas.append(child_schema)
+            if not matched_schemas:
+                additional=schema.get("additionalProperties",True)
+                if additional is False:return f"{path}.{key} is not an accepted argument."
+                if isinstance(additional,dict):matched_schemas.append(additional)
+            for child_schema in matched_schemas:
+                error=_validate_tool_arguments(item,child_schema,f"{path}.{key}",_depth+1)
                 if error:return error
-    if isinstance(value,list) and isinstance(schema.get("items"),dict):
-        for index,item in enumerate(value):
-            error=_validate_tool_arguments(item,schema["items"],f"{path}[{index}]")
-            if error:return error
+
+    if isinstance(value,list):
+        if "minItems" in schema and len(value)<schema["minItems"]:return f"{path} must contain at least {schema['minItems']} items."
+        if "maxItems" in schema and len(value)>schema["maxItems"]:return f"{path} must contain at most {schema['maxItems']} items."
+        if schema.get("uniqueItems") is True:
+            encoded=[json.dumps(item,sort_keys=True,ensure_ascii=False,separators=(",",":")) for item in value]
+            if len(encoded)!=len(set(encoded)):return f"{path} must contain unique items."
+        item_schema=schema.get("items")
+        if isinstance(item_schema,dict):
+            for index,item in enumerate(value):
+                error=_validate_tool_arguments(item,item_schema,f"{path}[{index}]",_depth+1)
+                if error:return error
+        elif isinstance(item_schema,list):
+            for index,(item,child_schema) in enumerate(zip(value,item_schema)):
+                error=_validate_tool_arguments(item,child_schema,f"{path}[{index}]",_depth+1)
+                if error:return error
+            additional=schema.get("additionalItems",True)
+            if additional is False and len(value)>len(item_schema):return f"{path} contains items that are not accepted."
+            if isinstance(additional,dict):
+                for index,item in enumerate(value[len(item_schema):],len(item_schema)):
+                    error=_validate_tool_arguments(item,additional,f"{path}[{index}]",_depth+1)
+                    if error:return error
     return None
 
 def _normalize_tool_history(messages: list[dict]) -> None:

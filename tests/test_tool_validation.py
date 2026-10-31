@@ -23,6 +23,26 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIn("must be integer",_validate_tool_arguments({"items":[],"limit":True},schema))
         self.assertIn("not an accepted argument",_validate_tool_arguments({"items":[],"surprise":1},schema))
 
+    def test_json_schema_validation_covers_strings_arrays_and_object_schemas(self):
+        schema={"type":"object","properties":{
+            "name":{"type":"string","minLength":2,"maxLength":8,"pattern":"^[a-z]+$"},
+            "tags":{"type":"array","minItems":1,"maxItems":3,"uniqueItems":True,"items":{"type":"string"}},
+            "metadata":{"type":"object","additionalProperties":{"type":"integer"}},
+        },"additionalProperties":False}
+        self.assertIsNone(_validate_tool_arguments({"name":"ember","tags":["rye"],"metadata":{"count":2}},schema))
+        self.assertIn("at least 2",_validate_tool_arguments({"name":"x","tags":["rye"]},schema))
+        self.assertIn("pattern",_validate_tool_arguments({"name":"Ember","tags":["rye"]},schema))
+        self.assertIn("unique",_validate_tool_arguments({"name":"ember","tags":["rye","rye"]},schema))
+        self.assertIn("must be integer",_validate_tool_arguments({"name":"ember","tags":["rye"],"metadata":{"count":"2"}},schema))
+
+    def test_json_schema_validation_covers_composition_and_rejects_unresolved_refs(self):
+        union={"oneOf":[{"type":"string","const":"plan"},{"type":"integer","minimum":1}]}
+        self.assertIsNone(_validate_tool_arguments("plan",union))
+        self.assertIsNone(_validate_tool_arguments(3,union))
+        self.assertIn("exactly one",_validate_tool_arguments(True,union))
+        self.assertIn("cannot resolve",_validate_tool_arguments({}, {"$ref":"#/$defs/args"}))
+        self.assertIn("unsupported JSON Schema type",_validate_tool_arguments("x", {"type":"unrecognized"}))
+
     def test_invalid_file_tool_arguments_never_reach_the_write(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);engine=AgentEngine(root,context=CONTEXT_MAX,access="edit");responses=[
