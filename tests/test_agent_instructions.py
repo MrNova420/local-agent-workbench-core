@@ -11,14 +11,16 @@ def test_agent_prompt_uses_structured_tools_to_start_actions_and_trigger_approva
     assert "Project-specific guidance" in prompt
 
 
-def test_small_model_workflow_adds_stepwise_tool_guidance_without_inference_settings():
+def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_limit():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="small-model")
 
-    assert "one project operation at a time" in prompt
-    assert "inspect the result" in prompt
+    assert "group independent read-only operations when useful" in prompt.casefold()
+    assert "choose action sizes that fit the task" in prompt.casefold()
+    assert "do not skip required project work or validation" in prompt.casefold()
+    assert "inspect results" in prompt.casefold()
 
 
 def test_standard_workflow_remains_general():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="standard")
 
-    assert "one project operation at a time" not in prompt
+    assert "group independent read-only operations when useful" not in prompt.casefold()

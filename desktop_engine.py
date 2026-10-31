@@ -18,7 +18,7 @@ class RequestCancelled(Exception):
 
 def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard") -> str:
     profile_guidance = (
-        "Small-model workflow: work in short, explicit steps. Make one project operation at a time, inspect the result, then choose the next operation. Prefer focused reads and edits, keep tool arguments concise, and verify each changed file before reporting completion. Do not skip project requirements or validation.\n\n"
+        "Small-model workflow: break complex work into manageable steps while completing the full request. Group independent read-only operations when useful; choose action sizes that fit the task and model reliability. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Do not skip required project work or validation.\n\n"
         if harness_profile == "small-model" else ""
     )
     return (
@@ -592,7 +592,7 @@ class AgentEngine:
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
         start=time.monotonic();continuation_attempted=False;completed_project_change=False;implementation_requested=_requests_implementation(prompt)
         try:
-            for step in range(33):
+            while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
                 if self.stop_after_operation.is_set():
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
@@ -625,8 +625,7 @@ class AgentEngine:
                         except json.JSONDecodeError as exc:args={};args_error=f"Invalid JSON tool arguments: {exc}"
                     else:args=raw_args
                     if not isinstance(args,dict):args_error="Tool arguments must be a JSON object.";args={}
-                    if index>=16:out="Not executed: maximum of 16 tool actions per model response; retry with a smaller batch."
-                    elif self.cancel_event.is_set():out="Cancelled before this tool action ran."
+                    if self.cancel_event.is_set():out="Cancelled before this tool action ran."
                     elif args_error:out=args_error
                     else:
                         operation_id=uuid.uuid4().hex
@@ -660,7 +659,6 @@ class AgentEngine:
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             msgs.append({"role":"tool","tool_call_id":pending.get("id",f"call-{pending_index}"),"content":"Cancelled before this tool action ran."})
                         raise RequestCancelled()
-            raise RuntimeError("Reached the per-turn 32-step tool-call limit")
         except RequestCancelled as exc:
             partial=exc.partial_message
             if isinstance(partial,dict) and any(partial.get(key) for key in ("content","thinking")):

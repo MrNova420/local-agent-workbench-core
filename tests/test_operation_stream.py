@@ -138,6 +138,41 @@ class OperationStreamTests(unittest.TestCase):
 
             self.assertEqual(calls, ["model"])
 
+    def test_executes_more_than_sixteen_model_requested_tool_actions(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            engine.state["registry"].run = lambda *_args: "completed"
+            calls = [{"id": f"call-{index}", "function": {"name": "test_tool", "arguments": {}}} for index in range(17)]
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": calls}},
+                {"message": {"role": "assistant", "content": "All requested operations are complete."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Complete the requested project work.")
+
+            completed = [event for event in events if event.get("type") == "tool_done" and event.get("status") == "completed"]
+            self.assertEqual(len(completed), 17)
+
+    def test_run_can_continue_beyond_thirty_two_tool_turns(self):
+        with tempfile.TemporaryDirectory() as root:
+            engine = AgentEngine(root, context=16384, access="edit")
+            engine.state["registry"].run = lambda *_args: "completed"
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": f"call-{index}", "function": {"name": "test_tool", "arguments": {}}}
+                ]}}
+                for index in range(34)
+            ]
+            responses.append({"message": {"role": "assistant", "content": "Verified after 34 operations."}})
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            messages = engine.run("Handle these 34 project operations in order.")
+
+            self.assertEqual(messages[-1]["content"], "Verified after 34 operations.")
+            self.assertEqual(responses, [])
+
 
 if __name__ == "__main__":
     unittest.main()
