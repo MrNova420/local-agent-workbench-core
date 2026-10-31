@@ -90,6 +90,7 @@ class ToolRegistry:
           self._schema("read_file", "Read a project file", {"path":{"type":"string"}}, ["path"]),
           self._schema("update_plan", "Create or update the current task checklist", {"items":{"type":"array","items":{"type":"object"}}}, ["items"]),
           self._schema("skill", "List or load a project/user skill", {"action":{"type":"string","enum":["list","load"]},"name":{"type":"string"}}, ["action"]),
+          self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
           self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("apply_patch", "Apply a unified diff in the active workspace, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
           self._schema("run_command", "Run an argv command in project; requires approval", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer"}}, ["argv"]),
@@ -117,7 +118,9 @@ class ToolRegistry:
             for p in iter_project_files(base,max_files=20000):
                 if fnmatch.fnmatch(p.name,pattern):matches.append(p.relative_to(self.workspace.root).as_posix())
                 if len(matches)>=1200:break
-            return "\n".join(matches)
+            result="\n".join(matches)
+            if len(matches)>=1200:result+="\n\n[File listing capped at 1,200 entries; results may be incomplete.]"
+            return result
         if name == "search_files":
             query = str(args.get("query", "")).strip().casefold(); hits=[];scanned=0;bytes_read=0;capped=False;hit_limit=False
             if not query:return "Search query must not be empty."

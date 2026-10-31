@@ -2,6 +2,18 @@ import unittest,tempfile
 from pathlib import Path
 from desktop_engine import Workspace,ToolRegistry
 class ToolTests(unittest.TestCase):
+ def test_advertised_tools_include_git_diff(self):
+  with tempfile.TemporaryDirectory() as t:
+   tools=ToolRegistry(Workspace(t),lambda *_:True)
+   names={schema['function']['name'] for schema in tools.schemas}
+   self.assertIn('git_diff',names)
+ def test_file_listing_discloses_result_cap(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for i in range(1201):(root/f'{i:04}.txt').write_text('x')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   result=tools.run('list_files',{'path':'.','pattern':'*.txt'})
+   self.assertIn('[File listing capped at 1,200 entries; results may be incomplete.]',result)
  def test_workspace_rejects_path_escape(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)/'project';root.mkdir();ws=Workspace(root)
