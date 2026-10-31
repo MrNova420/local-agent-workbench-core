@@ -223,8 +223,12 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "cancelled"
     if folded.startswith(("tool error:", "command error:", "unknown tool:")):
         return "failed"
-    if name != "read_file" and folded.startswith("invalid "):
+    if folded.startswith("invalid "):
         return "failed"
+    if folded.startswith(("git diff unavailable:", "no git repository rooted", "requested lines ")):
+        return "failed"
+    if "results may be incomplete" in folded or "remaining output may be incomplete" in folded:
+        return "partial"
     if name == "apply_patch":
         return "completed" if text.startswith("Updated: ") else "failed"
     if name == "write_file":

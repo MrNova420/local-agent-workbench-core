@@ -49,6 +49,11 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Added regression cases for nested MCP-like schemas, constraints, composition, local and unresolved references, and unknown types. These checks are intentionally queued for the final verification phase; no test suite or package build was run for this handoff.
 - Paired Electron source must update `core-revision.txt` to the resulting commit before packaging. The package has not yet incorporated or verified this change.
 
+### Operation outcome reporting
+
+- Tool result mapping now distinguishes incomplete file/search scans as `partial`, treats invalid line-range reads and Git inspection failures as `failed`, and no longer counts those failed reads as post-change verification evidence.
+- Added engine and renderer regression cases for partial scans, failed inspections, and successful empty search. These remain queued for final verification; the packaged UI has not yet incorporated this status styling.
+
 ## 2026-10-31 public beta handoff
 
 - Published as the public MIT-licensed `MrNova420/local-agent-workbench-core` repository. The Electron product lives in the paired `MrNova420/local-agent-workbench` repository and pins this engine at commit `ecbf2914740fdd2d2b4f04a49d9d22dab0ccdc34`.
