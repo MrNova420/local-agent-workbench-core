@@ -6,6 +6,8 @@ from concurrent.futures import TimeoutError as FutureTimeout
 import json
 import os
 import threading
+from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
@@ -88,13 +90,51 @@ class MCPManager:
         self.errors.clear()
         found = []
         for name, cfg in self.servers.items():
-            if not isinstance(cfg, dict) or not cfg.get("command"):
-                self.errors[name] = "Invalid server configuration: command is required."
+            if not isinstance(cfg, dict):
+                self.errors[name] = "Invalid server configuration: expected an object."
                 continue
-            manager = stdio_client(StdioServerParameters(
-                command=cfg["command"], args=cfg.get("args", []),
-                env={**os.environ, **cfg.get("env", {})},
-            ))
+            transport = cfg.get("transport", "stdio")
+            if transport == "stdio":
+                if not cfg.get("command"):
+                    self.errors[name] = "Invalid stdio configuration: command is required."
+                    continue
+                server_env = cfg.get("env", {})
+                if not isinstance(server_env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in server_env.items()):
+                    self.errors[name] = "Invalid stdio configuration: env must map strings to strings."
+                    continue
+                try:
+                    server_env = self._resolved_headers(server_env)
+                except ValueError as exc:
+                    self.errors[name] = f"Invalid stdio environment: {exc}"
+                    continue
+                manager = stdio_client(StdioServerParameters(
+                    command=cfg["command"], args=cfg.get("args", []),
+                    env=server_env,
+                ))
+            elif transport == "streamable-http":
+                try:
+                    url = self._validated_http_url(cfg.get("url"))
+                    headers = self._resolved_headers(cfg.get("headers", {}))
+                    timeout = float(cfg.get("timeoutSeconds", 30))
+                    read_timeout = float(cfg.get("readTimeoutSeconds", 300))
+                    if not 0 < timeout <= 3600 or not 0 < read_timeout <= 86400:
+                        raise ValueError("MCP HTTP timeouts must be positive (connect up to 1 hour, response up to 24 hours).")
+                    from mcp.client.streamable_http import streamable_http_client
+                    import httpx
+                    @asynccontextmanager
+                    async def http_transport():
+                        async with httpx.AsyncClient(headers=headers,
+                                                     timeout=httpx.Timeout(timeout, read=read_timeout),
+                                                     follow_redirects=False) as client:
+                            async with streamable_http_client(url, http_client=client) as streams:
+                                yield streams
+                    manager = http_transport()
+                except (ImportError, TypeError, ValueError) as exc:
+                    self.errors[name] = f"Invalid Streamable HTTP configuration: {exc}"
+                    continue
+            else:
+                self.errors[name] = f"Unsupported MCP transport: {transport}"
+                continue
             session = None
             streams = None
             manager_entered = False
@@ -140,9 +180,10 @@ class MCPManager:
     async def call(self, name: str, args: dict[str, Any]):
         server, tool = self.tools[name]
         result = await self.clients[server][0].call_tool(tool, args)
-        return "\n".join(c.text for c in result.content if getattr(c, "text", None)) or json.dumps([
+        output = "\n".join(c.text for c in result.content if getattr(c, "text", None)) or json.dumps([
             getattr(c, "model_dump", lambda: {})() for c in result.content
         ])
+        return ("Tool error: " if getattr(result, "isError", False) else "") + output
 
     async def close(self):
         clients, self.clients = list(self.clients.values()), {}
@@ -152,6 +193,45 @@ class MCPManager:
                 await session.__aexit__(None, None, None)
             finally:
                 await manager.__aexit__(None, None, None)
+
+    @staticmethod
+    def _validated_http_url(value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("url is required.")
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Use an HTTPS endpoint without embedded credentials.")
+        loopback = parsed.hostname.casefold() in {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme == "http" and not loopback:
+            raise ValueError("HTTPS is required for remote MCP servers; cleartext HTTP is allowed only on loopback.")
+        if parsed.fragment:
+            raise ValueError("Endpoint URLs must not contain fragments.")
+        return value
+
+    @staticmethod
+    def _resolved_headers(value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            raise ValueError("headers must be an object.")
+        import re
+        result = {}
+        sensitive = {"authorization", "proxy-authorization", "x-api-key", "api-key"}
+        pattern = re.compile(r"\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}")
+        for key, raw in value.items():
+            if not isinstance(key, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", key) or not isinstance(raw, str):
+                raise ValueError("header names and values must be strings with valid header names.")
+            if "\r" in raw or "\n" in raw:
+                raise ValueError("header values cannot contain line breaks.")
+            matches = list(pattern.finditer(raw))
+            if key.casefold() in sensitive and not matches:
+                raise ValueError(f"Sensitive header '{key}' must use an environment reference like ${{ENV:WORKBENCH_MCP_TOKEN}}.")
+            resolved = raw
+            for match in matches:
+                secret = os.environ.get(match.group(1))
+                if secret is None:
+                    raise ValueError(f"Environment variable '{match.group(1)}' is not set.")
+                resolved = resolved.replace(match.group(0), secret)
+            result[key] = resolved
+        return result
 
     def shutdown(self):
         if self.loop is None or not self.loop.is_running():

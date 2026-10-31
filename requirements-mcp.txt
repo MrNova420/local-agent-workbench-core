@@ -1,2 +1,2 @@
 # Optional MCP client support via the official Python SDK
-mcp>=1.12,<2
+mcp>=1.30,<2
