@@ -29,7 +29,7 @@ Current status: active development; **not approved for unrestricted real-project
 
 ## Not verified here
 
-- Visually inspected the rebuilt source at 1,580×990: the three-column project/conversation/inspector layout rendered, with no project selected and the model reasoning left at model default. The folder picker opened. UI automation then returned a Codex screenshot while reporting the app HWND; interaction was stopped before folder selection. The test process was closed, the older StableTest window was left untouched, and no inference or project write was submitted. A fresh empty fixture remains at `C:\Users\kayde\Documents\Codex\2026-10-30\fi\work\local-agent-desk-userflow-empty`.
+- Visually inspected the rebuilt source at 1,580×990: the three-column project/conversation/inspector layout rendered, with no project selected and the model reasoning left at model default. The folder picker opened. UI automation then returned a Codex screenshot while reporting the app HWND; interaction was stopped before folder selection. The test process was closed, the older StableTest window was left untouched, and no inference or project write was submitted. A fresh empty fixture remains at `%USERPROFILE%\Documents\Codex\2026-10-30\fi\work\local-agent-desk-userflow-empty`.
 - No live Ollama coding request or hardware benchmark was performed. Earlier numbers and model state in the original prototype report are historical records, not fresh evidence for this source revision.
 - The prior `Tk window instantiated` claim belongs to the earlier prototype and does not verify the current layout.
 
