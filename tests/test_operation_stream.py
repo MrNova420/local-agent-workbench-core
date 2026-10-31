@@ -6,6 +6,42 @@ from desktop_engine import AgentEngine, ToolRegistry, Workspace
 
 
 class OperationStreamTests(unittest.TestCase):
+    def _run_one_tool(self, tool_name, arguments, tool_runner=None):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            if tool_runner is not None:
+                engine.state["registry"].run = tool_runner
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call-1", "function": {"name": tool_name, "arguments": arguments}}
+                ]}},
+                {"message": {"role": "assistant", "content": "Finished."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+            engine.run("Run one tool")
+            return next(event for event in events if event.get("type") == "tool_done")
+
+    def test_invalid_patch_is_recorded_as_failed_activity(self):
+        event = self._run_one_tool("apply_patch", {"patch": "no diff here"})
+
+        self.assertEqual(event["status"], "failed")
+        self.assertIn("Invalid unified diff", event["result"])
+
+    def test_tool_exception_is_recorded_as_failed_activity(self):
+        def explode(*_args):
+            raise OSError("disk unavailable")
+
+        event = self._run_one_tool("write_file", {"path": "x.txt", "content": "x"}, explode)
+
+        self.assertEqual(event["status"], "failed")
+        self.assertIn("Tool error: OSError", event["result"])
+
+    def test_error_like_file_contents_remain_completed(self):
+        event = self._run_one_tool("read_file", {"path": "x.txt"}, lambda *_: "Invalid unified diff is an example")
+
+        self.assertEqual(event["status"], "completed")
+
     def test_command_streams_unicode_output_and_returns_all_output(self):
         with tempfile.TemporaryDirectory() as root:
             events = []

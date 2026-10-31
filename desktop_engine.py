@@ -16,6 +16,37 @@ class RequestCancelled(Exception):
  def __init__(self,message='Cancelled',partial_message:dict|None=None):
   super().__init__(message);self.partial_message=partial_message
 
+def _tool_activity_status(name: str, result: str) -> str:
+    """Map known tool outcomes to truthful states without inspecting file contents."""
+    text = str(result)
+    folded = text.casefold().strip()
+    if folded.startswith("denied by user"):
+        return "denied"
+    if folded.startswith("blocked:"):
+        return "blocked"
+    if folded.startswith(("cancelled", "canceled")):
+        return "cancelled"
+    if folded.startswith(("tool error:", "command error:", "unknown tool:")):
+        return "failed"
+    if name != "read_file" and folded.startswith("invalid "):
+        return "failed"
+    if name == "apply_patch":
+        return "completed" if text.startswith("Updated: ") else "failed"
+    if name == "write_file":
+        return "completed" if text.startswith("Wrote ") else "failed"
+    if name == "run_command":
+        if "[command cancelled by user]" in folded:
+            return "cancelled"
+        if "[command timed out after " in folded:
+            return "failed"
+        match = re.search(r"\[exit (-?\d+)\]\s*$", folded)
+        if match:
+            return "completed" if int(match.group(1)) == 0 else "failed"
+        return "failed"
+    if name == "search_files" and folded.startswith("search query must not be empty"):
+        return "failed"
+    return "completed"
+
 class Workspace:
     def __init__(self, root: Path | str, access: str = "ask"):
         self.root = Path(root).resolve(strict=True)
@@ -451,7 +482,8 @@ class AgentEngine:
                         if name in {"read_file","write_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
                         elif name=="apply_patch":
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
-                        self.event({"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":"completed","affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
+                        status = _tool_activity_status(name, str(out))
+                        self.event({"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
                     msgs.append({"role":"tool","tool_call_id":call.get("id",f"call-{index}"),"content":str(out)})
                     if self.stop_after_operation.is_set():
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
