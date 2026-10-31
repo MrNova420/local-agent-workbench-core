@@ -32,6 +32,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "When list_files or search_files says more results are available, continue with its exact next offset when needed; do not assume the first page is complete. "
         "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
+        "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
     )
 
@@ -739,7 +740,7 @@ class AgentEngine:
         remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
         retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining)
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
-        start=time.monotonic();continuation_attempted=False;completed_project_change=False;implementation_requested=_requests_implementation(prompt)
+        start=time.monotonic();continuation_attempted=False;verification_continuation_attempted=False;completed_project_change=False;verification_steps=[];implementation_requested=_requests_implementation(prompt)
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -760,13 +761,22 @@ class AgentEngine:
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
                     content=str(msg.get("content", ""))
-                    unfinished=implementation_requested and self.workspace.access!="plan" and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content))
-                    if unfinished and not continuation_attempted:
-                        continuation_attempted=True
-                        msgs[0]["content"] += "\n\nThis request requires an actual project change. Continue now using the available structured tools; the previous assistant response was only a plan/progress note, not completion. Use the normal access and approval rules. If a real blocker prevents work, state that blocker instead of asking for approval in prose."
-                        self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":"implementation task returned without completing its next project action"})
+                    unfinished=implementation_requested and self.workspace.access!="plan" and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or not verification_steps)
+                    can_continue=(not completed_project_change and not continuation_attempted) or (completed_project_change and not verification_steps and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted)
+                    if unfinished and can_continue:
+                        if completed_project_change:
+                            verification_continuation_attempted=True
+                            continuation="Project changes exist but no successful post-change inspection/check has run. Continue by inspecting the changed files or diff and running the relevant project check if one exists and is approved. Do not claim it passed unless the tool result confirms it. If this cannot be done, explain why."
+                            reason="implementation changes returned without a successful post-change inspection/check"
+                        else:
+                            continuation_attempted=True
+                            continuation="This request requires an actual project change. Continue now using the available structured tools; the previous assistant response was only a plan/progress note, not completion. Use the normal access and approval rules. If a real blocker prevents work, state that blocker instead of asking for approval in prose."
+                            reason="implementation task returned without completing its next project action"
+                        msgs[0]["content"] += "\n\n"+continuation
+                        self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
-                    self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result});return msgs
+                    verification={"status":"check_ran" if verification_steps else "not_verified","steps":verification_steps}
+                    self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"verification":verification});return msgs
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
                     args_error=None
@@ -809,6 +819,8 @@ class AgentEngine:
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
                         status = _tool_activity_status(name, str(out))
                         if name in {"write_file","edit_file","apply_patch"} and status=="completed":completed_project_change=True
+                        if completed_project_change and status=="completed" and name in {"read_file","git_diff","run_command","run_shell"}:
+                            verification_steps.append({"tool":name,"result":"completed"})
                         self.event({"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
                     msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":str(out)})
                     if self.stop_after_operation.is_set():

@@ -98,7 +98,7 @@ class OperationStreamTests(unittest.TestCase):
             messages = engine.run("Write both")
 
             self.assertEqual(calls, ["model", "tool"])
-            self.assertEqual([message.get("tool_call_id") for message in messages if message.get("role") == "tool"], ["call-1", "call-2"])
+            self.assertEqual([message.get("tool_name") for message in messages if message.get("role") == "tool"], ["write_file", "write_file"])
             self.assertIn("not executed", messages[-1]["content"].lower())
             self.assertTrue(any(event.get("type") == "stopped_after_operation" for event in events))
 
@@ -112,6 +112,9 @@ class OperationStreamTests(unittest.TestCase):
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
                     {"id": "call-write", "function": {"name": "write_file", "arguments": {"path": "index.html", "content": "<h1>Ready</h1>"}}}
                 ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call-inspect", "function": {"name": "read_file", "arguments": {"path": "index.html"}}}
+                ]}},
                 {"message": {"role": "assistant", "content": "The page is ready."}},
             ]
             def stream(*_args):
@@ -121,10 +124,12 @@ class OperationStreamTests(unittest.TestCase):
 
             messages = engine.run("Build a simple website in this project.")
 
-            self.assertEqual(calls, ["model", "model", "model"])
+            self.assertEqual(calls, ["model", "model", "model", "model"])
             self.assertEqual((Path(root) / "index.html").read_text(encoding="utf-8"), "<h1>Ready</h1>")
             self.assertTrue(any(event.get("type") == "tool_done" and event.get("status") == "completed" for event in events))
             self.assertTrue(any(event.get("type") == "complete" for event in events))
+            completion=next(event for event in events if event.get("type")=="complete")
+            self.assertEqual(completion["verification"]["status"],"check_ran")
             self.assertEqual(messages[-1]["content"], "The page is ready.")
 
     def test_plan_only_request_does_not_force_a_tool_followup(self):
