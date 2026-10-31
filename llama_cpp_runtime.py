@@ -47,6 +47,39 @@ class LlamaCppServer:
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, AttributeError):
             return None
 
+    def _slot_metrics(self) -> dict[str, Any]:
+        """Read public llama-server slot counters without exposing prompt text."""
+        try:
+            with urllib.request.urlopen(self.base_url + "/slots", timeout=0.5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if not isinstance(data, list):
+                return {"available": False, "slots": []}
+            slots = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                next_token = item.get("next_token")
+                if isinstance(next_token, list):
+                    next_token = next_token[0] if next_token else {}
+                if not isinstance(next_token, dict):
+                    next_token = {}
+                fields = ("n_ctx", "n_prompt_tokens", "n_prompt_tokens_cache",
+                          "n_prompt_tokens_processed")
+                values = {key: item.get(key) for key in fields
+                          if isinstance(item.get(key), int) and not isinstance(item.get(key), bool)}
+                decoded = next_token.get("n_decoded")
+                if isinstance(decoded, int) and not isinstance(decoded, bool):
+                    values["n_decoded"] = decoded
+                cache = values.get("n_prompt_tokens_cache")
+                processed = values.get("n_prompt_tokens_processed")
+                if isinstance(cache, int) and isinstance(processed, int) and isinstance(decoded, int):
+                    values["context_tokens_in_slot"] = cache + processed + decoded
+                slots.append({"id": item.get("id"), "is_processing": item.get("is_processing") is True,
+                              **values})
+            return {"available": True, "slots": slots, "sampled_at": time.time()}
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            return {"available": False, "slots": []}
+
     def load(self, binary: Path | str, model: Path | str, context: int, reasoning: bool | str | None,
              cancel: threading.Event, emit: Callable[[dict[str, Any]], None]) -> None:
         exe, gguf = Path(binary).resolve(strict=True), Path(model).resolve(strict=True)
@@ -115,7 +148,7 @@ class LlamaCppServer:
                 proc.wait(timeout=3)
         return True
 
-    def status(self) -> dict[str, Any]:
+    def status(self, include_slot_metrics: bool = False) -> dict[str, Any]:
         with self.lock:
             live = bool(self.owned and self.proc and self.proc.poll() is None)
             model = str(self.model) if live and self.model else None
@@ -124,7 +157,8 @@ class LlamaCppServer:
         effective = self._effective_context() if live else None
         return {"running": live, "owned": live, "model": model, "context": context,
                 "effective_context": effective, "reasoning": self.reasoning if live else None,
-                "binary": binary, "base_url": self.base_url if live else None}
+                "binary": binary, "base_url": self.base_url if live else None,
+                "slot_metrics": self._slot_metrics() if live and include_slot_metrics else None}
 
     def shutdown(self) -> None:
         self.stop()
@@ -189,6 +223,25 @@ class LlamaCppRuntime:
                     usage = item["usage"]
                     if isinstance(usage.get("completion_tokens"), int):
                         result["eval_count"] = usage["completion_tokens"]
+                    if isinstance(usage.get("prompt_tokens"), int):
+                        result["prompt_eval_count"] = usage["prompt_tokens"]
+                    prompt_details = usage.get("prompt_tokens_details")
+                    cached_tokens = prompt_details.get("cached_tokens") if isinstance(prompt_details, dict) else None
+                    if isinstance(cached_tokens, int):
+                        result["prompt_eval_cached_count"] = cached_tokens
+                timings = item.get("timings")
+                if isinstance(timings, dict):
+                    cache_tokens = timings.get("cache_n")
+                    prompt_tokens = timings.get("prompt_n")
+                    if isinstance(cache_tokens, int) and isinstance(prompt_tokens, int):
+                        result["prompt_eval_count"] = cache_tokens + prompt_tokens
+                        result["prompt_eval_cached_count"] = cache_tokens
+                    if isinstance(timings.get("prompt_ms"), (int, float)):
+                        result["prompt_eval_duration"] = int(timings["prompt_ms"] * 1_000_000)
+                    if isinstance(timings.get("predicted_n"), int):
+                        result["eval_count"] = timings["predicted_n"]
+                    if isinstance(timings.get("predicted_ms"), (int, float)):
+                        result["eval_duration"] = int(timings["predicted_ms"] * 1_000_000)
                 for choice in item.get("choices", []):
                     delta = choice.get("delta") or {}
                     text = delta.get("content") or ""
