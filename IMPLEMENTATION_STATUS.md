@@ -45,8 +45,8 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 
 ## 2026-10-31 shared-engine handoff
 
-- Hardened structured tool-argument validation in `desktop_engine.py`: malformed or unknown schema types/keywords now fail closed; common JSON Schema composition, JSON-correct constants/enums/numeric equality, numeric/string/array constraints, object patterns, schema-valued `additionalProperties`, and local JSON Pointer references are checked. External, missing, or non-object references return an explicit unsupported-schema error instead of being treated as valid.
-- Added regression cases for nested MCP-like schemas, constraints, composition, local and unresolved references, JSON type edge cases, unsupported keywords, and unknown types. These checks are intentionally queued for the final verification phase; no test suite or package build was run for this handoff.
+- Hardened structured tool-argument validation in `desktop_engine.py`: malformed or unknown schema types/keywords now fail closed; common JSON Schema composition, JSON-correct constants/enums/numeric equality, non-finite number rejection, numeric/string/array constraints, object patterns, schema-valued `additionalProperties`, and local JSON Pointer references are checked. External, missing, or non-object references return an explicit unsupported-schema error instead of being treated as valid.
+- Added regression cases for nested MCP-like schemas, constraints, composition, local and unresolved references, JSON type edge cases, non-finite numbers, unsupported keywords, and unknown types. These checks are intentionally queued for the final verification phase; no test suite or package build was run for this handoff.
 - Paired Electron source must update `core-revision.txt` to the resulting commit before packaging. The package has not yet incorporated or verified this change.
 
 ### Operation outcome reporting

@@ -66,6 +66,7 @@ def _json_value_key(value: Any) -> Any:
 
 def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: int = 0, _root_schema: dict | None = None) -> str | None:
     """Fail closed on malformed tool arguments using the JSON Schema keywords we support."""
+    if isinstance(value,float) and not math.isfinite(value):return f"{path} is not a finite JSON number."
     if not isinstance(schema, dict):
         return f"{path} has an invalid tool schema."
     if _depth >= 64:

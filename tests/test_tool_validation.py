@@ -56,6 +56,7 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIn("one of",_validate_tool_arguments(True,{"enum":[1]}))
         self.assertIn("unsupported JSON Schema keyword",_validate_tool_arguments({"name":"x"},{"type":"object","propertyNames":{"type":"string"}}))
         self.assertIn("unique",_validate_tool_arguments([1,1.0],{"type":"array","uniqueItems":True}))
+        self.assertIn("finite JSON number",_validate_tool_arguments(float("nan"),{"type":"number"}))
 
     def test_invalid_file_tool_arguments_never_reach_the_write(self):
         with tempfile.TemporaryDirectory() as folder:
