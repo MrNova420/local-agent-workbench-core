@@ -26,7 +26,32 @@ class ContextTests(unittest.TestCase):
     def test_compaction_keeps_system_and_recent_messages(self):
         manager=ContextManager(context=4096,reserve=1024);messages=[{'role':'system','content':'SYSTEM'}]
         messages += [{'role':'user','content':f'turn {i} '+'x'*400} for i in range(40)]
-        compacted=manager.compact(messages);self.assertEqual(compacted[0],messages[0]);summary=next(m for m in compacted if 'automatically compacted' in str(m.get('content')));self.assertEqual(summary['role'],'user');self.assertEqual(compacted[-1],messages[-1])
+        events=[];compacted=manager.compact(messages,on_compact=events.append);self.assertEqual(compacted[0],messages[0]);notice=next(m for m in compacted if 'earlier complete conversation turn(s) were omitted' in str(m.get('content')));self.assertEqual(notice['role'],'user');self.assertEqual(compacted[-1],messages[-1]);self.assertGreater(events[0]['omittedTurns'],0)
+        self.assertEqual(len(messages),41,'request compaction must not mutate the canonical session history')
+    def test_compaction_preserves_tool_call_and_result_pairs(self):
+        manager=ContextManager(context=4096,reserve=1024)
+        messages=[{'role':'system','content':'SYSTEM'}]
+        messages += [{'role':'user','content':f'old turn {i} '+'x'*300} for i in range(40)]
+        messages += [{'role':'assistant','tool_calls':[{'id':'c1','function':{'name':'read_file','arguments':{'path':'src/a.py'}}}]},{'role':'tool','tool_name':'read_file','content':'result '+('z'*400)}]
+        messages += [{'role':'user','content':'current '+('y'*400)}]
+        compacted=manager.compact(messages)
+        assistant=next(m for m in compacted if m.get('tool_calls'))
+        result=next(m for m in compacted if m.get('role')=='tool')
+        self.assertEqual(assistant['tool_calls'][0]['function']['name'],result['tool_name'])
+    def test_request_skills_fit_available_budget_and_full_catalog_stays_callable(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from desktop_engine import AgentEngine
+        with TemporaryDirectory() as directory:
+            engine=AgentEngine(Path(directory),context=8192,max_tokens=512)
+            engine.state['registry'].skill_rows=[{'name':f'skill-{i}','description':('Workflow guidance '*40)} for i in range(100)]
+            base=[{'role':'system','content':'system instructions'},{'role':'user','content':'task about skill-42'}]
+            tools=engine._tools_for_request(base)
+            description=next(t['function']['description'] for t in tools if t['function']['name']=='skill')
+            size=engine.context.estimate(__import__('json').dumps({'messages':base,'tools':tools},ensure_ascii=False,separators=(',',':')))
+            self.assertLessEqual(size,engine.context.budget(512))
+            if 'Additional skills are available' in description:
+                self.assertIn('action=list',description)
     def test_budget_refuses_to_silently_lower_context(self):
         manager=ContextManager(context=4096,reserve=1024);huge=[{'role':'system','content':'s'},{'role':'user','content':'x'*50000}]
         with self.assertRaisesRegex(ValueError,'context was not reduced'):manager.compact(huge)

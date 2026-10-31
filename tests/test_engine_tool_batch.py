@@ -25,10 +25,11 @@ class EngineToolBatchTests(unittest.TestCase):
                 return batches.pop(0)
 
             engine.runtime.stream = stream
-            engine.run("Make a plan")
+            full_history=engine.run("Make a plan")
             tool_messages = [m for m in captured["messages"] if m.get("role") == "tool"]
             self.assertEqual(len(tool_messages), 17)
-            self.assertEqual(len({m["tool_call_id"] for m in tool_messages}), 17)
+            self.assertTrue(all(m["tool_name"] == "update_plan" for m in tool_messages))
+            self.assertEqual(len([m for m in full_history if m.get("role") == "tool"]), 17)
 
 
 if __name__ == "__main__":
