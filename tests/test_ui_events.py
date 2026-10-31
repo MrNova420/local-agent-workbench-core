@@ -15,4 +15,10 @@ class EventTests(unittest.TestCase):
   events=bus.drain()
   self.assertEqual([event['type'] for event in events],['session_saved','error'])
   self.assertIsNone(relay.terminal_event)
+ def test_safe_stop_event_is_persisted_before_it_is_released(self):
+  bus=EventBus();relay=AgentEventRelay(bus.emit);event={'type':'stopped_after_operation','elapsed':3.2}
+  relay(event)
+  self.assertEqual(relay.terminal_event,event);self.assertEqual(bus.drain(),[])
+  bus.emit({'type':'session_saved'});relay.emit_terminal_after_persist()
+  self.assertEqual([row['type'] for row in bus.drain()],['session_saved','stopped_after_operation'])
 if __name__=='__main__':unittest.main()

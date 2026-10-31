@@ -42,6 +42,26 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(started["operationId"], completed["operationId"])
             self.assertEqual(completed["result"], result_text)
             self.assertEqual(next(message["content"] for message in messages if message.get("role") == "tool"), result_text)
+            self.assertEqual(started["toolCallId"], "call-1")
+
+    def test_finish_after_active_tool_stops_before_the_next_model_call(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            calls = []
+            engine.state["registry"].run = lambda *_: (engine.finish_after_operation(), calls.append("tool"), "saved")[2]
+            responses = [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call-1", "function": {"name": "write_file", "arguments": {"path": "x", "content": "saved"}}},
+                {"id": "call-2", "function": {"name": "write_file", "arguments": {"path": "y", "content": "pending"}}},
+            ]}}]
+            engine.runtime.stream = lambda *_args: (calls.append("model"), responses.pop(0))[1]
+
+            messages = engine.run("Write both")
+
+            self.assertEqual(calls, ["model", "tool"])
+            self.assertEqual([message.get("tool_call_id") for message in messages if message.get("role") == "tool"], ["call-1", "call-2"])
+            self.assertIn("not executed", messages[-1]["content"].lower())
+            self.assertTrue(any(event.get("type") == "stopped_after_operation" for event in events))
 
 
 if __name__ == "__main__":

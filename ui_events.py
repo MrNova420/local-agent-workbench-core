@@ -17,7 +17,7 @@ class AgentEventRelay:
  def __init__(self,emit):self._emit=emit;self._terminal=None
  def __call__(self,event:dict[str,Any]):
   kind=event.get('type')
-  if kind in {'error','cancelled'}:
+  if kind in {'error','cancelled','stopped_after_operation'}:
    self._terminal=dict(event)
    return
   if kind=='complete':event={**event,'type':'generation_complete'}

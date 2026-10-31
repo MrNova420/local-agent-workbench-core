@@ -375,7 +375,7 @@ class OllamaRuntime:
 class AgentEngine:
     def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.mcp_tools=mcp_tools or [];self.mcp_call=mcp_call
-        self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event()
+        self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event),"mcp_tools":self.mcp_tools,"messages":[]}
     def _approval(self,name:str,args:Any)->bool:
         if self.approval_mode=="auto":return True
@@ -384,6 +384,7 @@ class AgentEngine:
         if ok and self.approval_mode=="per-task":self.approved_task=True
         return ok
     def cancel(self):self.cancel_event.set();self.runtime.cancel()
+    def finish_after_operation(self):self.stop_after_operation.set()
     def run(self,prompt:str,messages:list[dict]|None=None)->list[dict]:
         access_policy={
             "plan":"Read-only: do not request project writes or commands.",
@@ -401,9 +402,15 @@ class AgentEngine:
         try:
             for step in range(33):
                 if self.cancel_event.is_set():raise RequestCancelled()
+                if self.stop_after_operation.is_set():
+                    self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 tools=self.state["registry"].schemas+self.mcp_tools;msgs=self.context.compact(msgs,tools,self.state["max_tokens"]);self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 result=self.runtime.stream(self.state,msgs,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
                 calls=msg.get("tool_calls") or []
+                if calls and self.stop_after_operation.is_set():
+                    for index,call in enumerate(calls):
+                        msgs.append({"role":"tool","tool_call_id":call.get("id",f"call-{index}"),"content":"Not executed: the user chose to stop after the current operation."})
+                    self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result});return msgs
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
@@ -422,7 +429,8 @@ class AgentEngine:
                         registry=self.state["registry"]
                         previous_event=registry.event
                         registry.event=lambda event,op=operation_id:self.event({**event,"operationId":op})
-                        self.event({"type":"tool_start","operationId":operation_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
+                        tool_call_id=call.get("id",f"call-{index}")
+                        self.event({"type":"tool_start","operationId":operation_id,"toolCallId":tool_call_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
                         try:
                             if name.startswith("mcp__") and self.mcp_call:
                                 if not self._approval(name,args):out="Denied by user."
@@ -435,8 +443,12 @@ class AgentEngine:
                         if name in {"read_file","write_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
                         elif name=="apply_patch":
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
-                        self.event({"type":"tool_done","operationId":operation_id,"name":name,"result":str(out),"status":"completed","affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
+                        self.event({"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":"completed","affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
                     msgs.append({"role":"tool","tool_call_id":call.get("id",f"call-{index}"),"content":str(out)})
+                    if self.stop_after_operation.is_set():
+                        for pending_index,pending in enumerate(calls[index+1:],start=index+1):
+                            msgs.append({"role":"tool","tool_call_id":pending.get("id",f"call-{pending_index}"),"content":"Not executed: the user chose to stop after the active operation."})
+                        self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                     if self.cancel_event.is_set():
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             msgs.append({"role":"tool","tool_call_id":pending.get("id",f"call-{pending_index}"),"content":"Cancelled before this tool action ran."})
