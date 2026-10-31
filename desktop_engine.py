@@ -407,6 +407,11 @@ class AgentEngine:
                 tools=self.state["registry"].schemas+self.mcp_tools;msgs=self.context.compact(msgs,tools,self.state["max_tokens"]);self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 result=self.runtime.stream(self.state,msgs,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
                 calls=msg.get("tool_calls") or []
+                if calls:
+                    self.event({"type":"tool_batch","assistantMessage":{"role":"assistant",**msg},"calls":[
+                        {"id":call.get("id",f"call-{index}"),"name":(call.get("function") or {}).get("name","")}
+                        for index,call in enumerate(calls)
+                    ]})
                 if calls and self.stop_after_operation.is_set():
                     for index,call in enumerate(calls):
                         msgs.append({"role":"tool","tool_call_id":call.get("id",f"call-{index}"),"content":"Not executed: the user chose to stop after the current operation."})

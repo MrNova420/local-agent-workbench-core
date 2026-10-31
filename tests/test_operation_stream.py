@@ -39,10 +39,12 @@ class OperationStreamTests(unittest.TestCase):
 
             started = next(event for event in events if event.get("type") == "tool_start")
             completed = next(event for event in events if event.get("type") == "tool_done")
+            batch = next(event for event in events if event.get("type") == "tool_batch")
             self.assertEqual(started["operationId"], completed["operationId"])
             self.assertEqual(completed["result"], result_text)
             self.assertEqual(next(message["content"] for message in messages if message.get("role") == "tool"), result_text)
             self.assertEqual(started["toolCallId"], "call-1")
+            self.assertEqual(batch["calls"], [{"id": "call-1", "name": "read_file"}])
 
     def test_finish_after_active_tool_stops_before_the_next_model_call(self):
         with tempfile.TemporaryDirectory() as root:
