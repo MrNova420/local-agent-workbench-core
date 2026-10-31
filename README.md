@@ -30,4 +30,4 @@ Unstable beta development dependency. The desktop repository pins the compatible
 
 ## License
 
-License selection is pending. Until a license file is added, all rights are reserved despite public source visibility.
+Licensed under the MIT License; see [`LICENSE`](LICENSE).
