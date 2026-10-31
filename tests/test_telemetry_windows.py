@@ -13,6 +13,32 @@ class TelemetryWindowsTests(unittest.TestCase):
     @patch("telemetry.shutil.which", return_value="nvidia-smi")
     @patch(
         "telemetry.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="NVIDIA GeForce GTX 1650 SUPER, 7, 3656, 4096, 7.20\n"),
+    )
+    def test_gpu_snapshot_exposes_utilization_memory_and_power(self, run, _which):
+        snapshot = Telemetry().snapshot()
+
+        self.assertEqual(
+            snapshot["gpu_stats"],
+            {
+                "name": "NVIDIA GeForce GTX 1650 SUPER",
+                "utilization_percent": 7,
+                "memory_used_mib": 3656,
+                "memory_total_mib": 4096,
+                "power_w": 7.2,
+            },
+        )
+
+    @patch("telemetry.shutil.which", return_value="nvidia-smi")
+    @patch("telemetry.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=""))
+    def test_empty_gpu_probe_reports_unavailable_instead_of_failing_snapshot(self, _run, _which):
+        snapshot = Telemetry().snapshot()
+
+        self.assertIsNone(snapshot["gpu_stats"])
+
+    @patch("telemetry.shutil.which", return_value="nvidia-smi")
+    @patch(
+        "telemetry.subprocess.run",
         return_value=SimpleNamespace(returncode=0, stdout="NVIDIA GeForce, 1, 4096, 0\n"),
     )
     def test_gpu_probe_suppresses_console_window(self, run, _which):
