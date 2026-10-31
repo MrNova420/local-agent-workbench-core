@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 from pathlib import Path
 
@@ -131,4 +132,28 @@ class ProjectKnowledge:
         _, body = _frontmatter(text)
         # Keep all instructions: silent clipping can remove required workflow steps.
         header = f"Skill: {name}\nDescription: {match['description']}\nSource: {match['source']}\n"
-        return header + "\n" + body
+        return header + f"Related text resources can be read with skill(action=read, name={name!r}, path=<relative path>).\n\n" + body
+
+    def read_skill_resource(self, name: str, relative: str, skills: list[dict[str, str]]) -> str:
+        match = next((skill for skill in skills if skill["name"] == name), None)
+        if not match:
+            raise ValueError("Unknown or unavailable skill")
+        rel = Path(relative)
+        if not relative or rel.is_absolute() or ".." in rel.parts:
+            raise ValueError("Use a skill-relative resource path without '..'")
+        base = Path(match["path"]).resolve(strict=True).parent
+        target = base
+        for part in rel.parts:
+            if part in {"", "."}:
+                continue
+            target = target / part
+            is_junction = getattr(os.path, "isjunction", lambda value: False)
+            if target.is_symlink() or is_junction(target):
+                raise ValueError("Skill resource links are not allowed")
+        target = target.resolve(strict=True)
+        if not target.is_relative_to(base) or not target.is_file():
+            raise ValueError("Skill resource must be a file inside that skill folder")
+        try:
+            return target.read_text(encoding="utf8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"Could not read skill resource: {exc}") from exc
