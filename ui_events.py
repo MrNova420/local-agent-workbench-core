@@ -24,6 +24,8 @@ class AgentEventRelay:
   self._emit(event)
  @property
  def has_terminal(self):return self._terminal is not None
+ @property
+ def terminal_event(self):return dict(self._terminal) if self._terminal is not None else None
  def emit_terminal_after_persist(self):
   event,self._terminal=self._terminal,None
   if event is not None:self._emit(event)
