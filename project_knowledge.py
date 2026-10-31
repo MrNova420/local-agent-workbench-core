@@ -90,7 +90,7 @@ class ProjectKnowledge:
                     path = folder / "SKILL.md"
                     if not folder.is_dir() or folder.is_symlink() or not path.is_file() or path.is_symlink():
                         continue
-                    if not SKILL_NAME.fullmatch(folder.name):
+                    if len(folder.name)>64 or not SKILL_NAME.fullmatch(folder.name):
                         continue
                     try:
                         resolved = path.resolve(strict=True)
@@ -107,7 +107,7 @@ class ProjectKnowledge:
                     if not description:
                         description = next((line.strip().lstrip("# ") for line in body.splitlines() if line.strip()), "Reusable project instructions")
                     if len(description) > 1024:
-                        description = description[:1024]
+                        continue
                     found.setdefault(folder.name, {
                         "name": folder.name, "description": description,
                         "path": str(resolved), "source": "project" if any(resolved.is_relative_to(root.resolve()) for root in project_roots if root.exists()) else "user",
