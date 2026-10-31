@@ -143,6 +143,19 @@ class OperationStreamTests(unittest.TestCase):
 
             self.assertEqual(calls, ["model"])
 
+    def test_denied_action_is_not_retried_by_implementation_continuation(self):
+        with tempfile.TemporaryDirectory() as root:
+            engine=AgentEngine(root,access="ask",approve=lambda *_:False)
+            responses=[
+                {"message":{"role":"assistant","content":"","tool_calls":[{"id":"denied-write","function":{"name":"write_file","arguments":{"path":"no.txt","content":"no"}}}]}},
+                {"message":{"role":"assistant","content":"The file action was denied, so no change was made."}},
+            ]
+            calls=[]
+            engine.runtime.stream=lambda *_args:(calls.append("model") or responses.pop(0))
+            engine.run("Build a small project file.")
+            self.assertEqual(calls,["model","model"])
+            self.assertFalse((Path(root)/"no.txt").exists())
+
     def test_executes_more_than_sixteen_model_requested_tool_actions(self):
         with tempfile.TemporaryDirectory() as root:
             events = []

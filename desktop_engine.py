@@ -33,6 +33,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
+        "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
     )
 
@@ -741,7 +742,7 @@ class AgentEngine:
         remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
         retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining)
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
-        start=time.monotonic();continuation_attempted=False;verification_continuation_attempted=False;completed_project_change=False;verification_steps=[];implementation_requested=_requests_implementation(prompt)
+        start=time.monotonic();continuation_attempted=False;verification_continuation_attempted=False;completed_project_change=False;action_denied=False;verification_steps=[];implementation_requested=_requests_implementation(prompt)
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -762,7 +763,7 @@ class AgentEngine:
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
                     content=str(msg.get("content", ""))
-                    unfinished=implementation_requested and self.workspace.access!="plan" and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or not verification_steps)
+                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or not verification_steps)
                     can_continue=(not completed_project_change and not continuation_attempted) or (completed_project_change and not verification_steps and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted)
                     if unfinished and can_continue:
                         if completed_project_change:
@@ -777,7 +778,7 @@ class AgentEngine:
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
                     verification={"status":"check_ran" if verification_steps else "not_verified","steps":verification_steps}
-                    self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"verification":verification});return msgs
+                    self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification});return msgs
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
                     args_error=None
@@ -819,6 +820,7 @@ class AgentEngine:
                         elif name=="apply_patch":
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
                         status = _tool_activity_status(name, str(out))
+                        if status=="denied":action_denied=True
                         if name in {"write_file","edit_file","apply_patch"} and status=="completed":completed_project_change=True
                         if completed_project_change and status=="completed" and name in {"read_file","git_diff","run_command","run_shell"}:
                             verification_steps.append({"tool":name,"result":"completed"})
