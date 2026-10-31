@@ -12,6 +12,17 @@ class ContextTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root=Path(tmp);(root/'src.py').write_text('def stream ollama reasoning setting',encoding='utf8');(root/'other.md').write_text('unrelated meadow notes',encoding='utf8')
             got=ContextManager().retrieve(root,'ollama stream');self.assertIn('src.py',got);self.assertNotIn('other.md',got)
+    def test_retrieval_returns_line_numbered_match_even_when_it_is_deep_in_a_file(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp);lines=[f"unrelated line {i}" for i in range(800)];lines[700]="def target_feature(): return 42"
+            (root/'src.py').write_text("\n".join(lines),encoding='utf8')
+            got=ContextManager().retrieve(root,'target_feature')
+            self.assertIn('src.py',got)
+            self.assertIn('701:',got)
+            self.assertIn('def target_feature(): return 42',got)
+            self.assertNotIn('unrelated line 0',got)
     def test_compaction_keeps_system_and_recent_messages(self):
         manager=ContextManager(context=4096,reserve=1024);messages=[{'role':'system','content':'SYSTEM'}]
         messages += [{'role':'user','content':f'turn {i} '+'x'*400} for i in range(40)]

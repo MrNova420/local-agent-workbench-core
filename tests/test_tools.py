@@ -64,6 +64,29 @@ class ToolTests(unittest.TestCase):
    approvals=[];tools=ToolRegistry(Workspace(t,'edit'),lambda *args:approvals.append(args) or False)
    self.assertEqual(tools.run('write_file',{'path':'x','content':'draft'}),'Wrote x')
    self.assertEqual(approvals,[])
+ def test_edit_file_replaces_one_exact_match_without_rewriting_unrelated_text(self):
+  with tempfile.TemporaryDirectory() as t:
+   path=Path(t)/'app.py';path.write_text('alpha = 1\nbeta = 2\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
+   result=tools.run('edit_file',{'path':'app.py','old_text':'beta = 2','new_text':'beta = 3'})
+   self.assertEqual(result,'Edited app.py')
+   self.assertEqual(path.read_text(encoding='utf-8'),'alpha = 1\nbeta = 3\n')
+ def test_edit_file_rejects_missing_or_ambiguous_match_without_changing_file(self):
+  with tempfile.TemporaryDirectory() as t:
+   path=Path(t)/'app.py';path.write_text('value = 1\nvalue = 1\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
+   missing=tools.run('edit_file',{'path':'app.py','old_text':'absent','new_text':'changed'})
+   ambiguous=tools.run('edit_file',{'path':'app.py','old_text':'value = 1','new_text':'value = 2'})
+   self.assertIn('not found',missing)
+   self.assertIn('2 matches',ambiguous)
+   self.assertEqual(path.read_text(encoding='utf-8'),'value = 1\nvalue = 1\n')
+ def test_edit_file_requires_approval_in_ask_mode(self):
+  with tempfile.TemporaryDirectory() as t:
+   path=Path(t)/'app.py';path.write_text('value = 1\n',encoding='utf-8');calls=[]
+   tools=ToolRegistry(Workspace(t,'ask'),lambda name,args:calls.append(name) and False)
+   self.assertEqual(tools.run('edit_file',{'path':'app.py','old_text':'value = 1','new_text':'value = 2'}),'Denied by user.')
+   self.assertEqual(calls,['edit_file'])
+   self.assertEqual(path.read_text(encoding='utf-8'),'value = 1\n')
  def test_approved_patch_prompts_once(self):
   with tempfile.TemporaryDirectory() as t:
    p=Path(t)/'a.txt';p.write_text('old\n');calls=[]

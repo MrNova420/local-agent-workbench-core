@@ -1,6 +1,6 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
-import codecs, json, os, queue, re, socket, threading, time, urllib.error, urllib.request, uuid
+import codecs, json, os, queue, re, socket, tempfile, threading, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
@@ -23,6 +23,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str) -> str:
         "Tool and approval protocol: perform project operations by calling the structured tools provided to you. Do not narrate an intended tool call and then stop. "
         "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in the write_file tool arguments, not in a chat message. "
+        "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
     )
@@ -45,6 +46,8 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "completed" if text.startswith("Updated: ") else "failed"
     if name == "write_file":
         return "completed" if text.startswith("Wrote ") else "failed"
+    if name == "edit_file":
+        return "completed" if text.startswith("Edited ") else "failed"
     if name == "run_command":
         if "[command cancelled by user]" in folded:
             return "cancelled"
@@ -92,6 +95,7 @@ class ToolRegistry:
           self._schema("skill", "List or load a project/user skill", {"action":{"type":"string","enum":["list","load"]},"name":{"type":"string"}}, ["action"]),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
           self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
+          self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
           self._schema("apply_patch", "Apply a unified diff in the active workspace, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
           self._schema("run_command", "Run an argv command in project; requires approval", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer"}}, ["argv"]),
         ]
@@ -140,11 +144,28 @@ class ToolRegistry:
             if scanned>=self.search_file_limit:capped=True
             if capped or hit_limit:result+=f"\n\n[Search results capped at {len(hits)} hits, {scanned} files, or {bytes_read:,} bytes; results may be incomplete.]"
             return result
-        if name == "write_file":
+        if name in {"write_file", "edit_file"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
             if self.workspace.access == "ask" and not self.approval(name,args): return "Denied by user."
-            path=self.workspace.resolve(args["path"]);content=args["content"]
-            path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content,encoding="utf8",newline="\n");return "Wrote " + args["path"]
+            path=self.workspace.resolve(args["path"])
+            if name == "write_file":
+                content=args["content"]
+                if not isinstance(content,str):return "Invalid content: expected text."
+                self._atomic_write(path,content.encode("utf-8"))
+                return "Wrote " + args["path"]
+            old_text=args.get("old_text");new_text=args.get("new_text");replace_all=args.get("replace_all",False)
+            if not isinstance(old_text,str) or not old_text:return "Invalid old_text: provide a non-empty exact string to replace."
+            if not isinstance(new_text,str):return "Invalid new_text: expected text."
+            if not isinstance(replace_all,bool):return "Invalid replace_all: expected true or false."
+            if old_text==new_text:return "No change: old_text and new_text are identical."
+            try:original=path.read_bytes().decode("utf-8")
+            except (OSError,UnicodeError) as exc:return f"Could not read {args['path']}: {exc}"
+            matches=original.count(old_text)
+            if matches==0:return f"Edit target not found in {args['path']}; file was not changed."
+            if matches>1 and not replace_all:return f"Edit target is ambiguous in {args['path']} ({matches} matches); include more surrounding text or set replace_all to true. File was not changed."
+            updated=original.replace(old_text,new_text) if replace_all else original.replace(old_text,new_text,1)
+            self._atomic_write(path,updated.encode("utf-8"))
+            return "Edited " + args["path"]
         if name == "read_file":
             p=self.workspace.resolve(args["path"])
             start=args.get("start_line",1);end=args.get("end_line")
@@ -167,6 +188,18 @@ class ToolRegistry:
             if not self.approval(name,args): return "Denied by user."
             return self._command(args)
         return f"Unknown tool: {name}"
+    @staticmethod
+    def _atomic_write(path:Path,data:bytes)->None:
+        path.parent.mkdir(parents=True,exist_ok=True)
+        temp_path=None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
+                temp_path=Path(handle.name);handle.write(data);handle.flush();os.fsync(handle.fileno())
+            os.replace(temp_path,path)
+        finally:
+            if temp_path is not None:
+                try:temp_path.unlink(missing_ok=True)
+                except OSError:pass
     def _patch(self, patch: str) -> str:
         import os,re,tempfile
         lines=patch.splitlines(keepends=True);i=0;plans=[];seen=set()
@@ -353,24 +386,48 @@ class ContextManager:
         # conservative for prose and compact JSON tool schemas.
         return max(1,(len(text.encode("utf8"))+1)//2)
     def retrieve(self,root:Path,prompt:str,limit:int=18_000)->str:
-        terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}; ranked=[];examined=0;bytes_read=0;capped=False
+        stop_words={"about","after","also","and","are","but","can","could","does","from","have","into","like","make","need","please","that","the","this","want","with","would"}
+        terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}-stop_words; ranked=[];examined=0;bytes_read=0;capped=False
         if not terms:return ""
         for p in iter_project_files(root,max_files=self.scan_file_limit):
             examined+=1
             if p.suffix.casefold() not in TEXT_EXT:continue
             try:
                 size=p.stat().st_size
-                if size>80000:continue
                 if bytes_read+size>self.scan_bytes_limit:capped=True;break
-                content=p.read_text(encoding="utf8")
+                bytes_read+=size
+                path_tokens={word.casefold() for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",p.relative_to(root).as_posix())}
+                path_score=20*len(terms & path_tokens)
+                matching_lines={};content_score=0;capturing_until=0;recent=[];match_count=0
+                with p.open("r",encoding="utf8") as handle:
+                    for line_number,line in enumerate(handle,1):
+                        folded=line.casefold();line_terms={term for term in terms if term in folded}
+                        if line_terms:
+                            match_count+=1;content_score+=min(8,len(line_terms)*2)
+                            for previous_number,previous_line in recent:matching_lines[previous_number]=previous_line
+                            matching_lines[line_number]=line.rstrip("\r\n");capturing_until=max(capturing_until,line_number+4)
+                        elif line_number<=capturing_until:
+                            matching_lines[line_number]=line.rstrip("\r\n")
+                        recent.append((line_number,line.rstrip("\r\n")))
+                        if len(recent)>4:recent.pop(0)
             except (OSError,UnicodeError):continue
-            bytes_read+=size
-            rel=p.relative_to(root).as_posix(); low=content.casefold(); score=sum(low.count(t) for t in terms)+3*sum(t in rel.casefold() for t in terms)
-            if score:ranked.append((score,rel,content))
+            rel=p.relative_to(root).as_posix();score=path_score+content_score
+            if score:
+                excerpts=[];line_numbers=sorted(matching_lines)
+                if line_numbers:
+                    start=previous=line_numbers[0]
+                    for number in line_numbers[1:]:
+                        if number>previous+1:
+                            excerpts.append((start,previous));start=number
+                        previous=number
+                    excerpts.append((start,previous))
+                snippets="\n…\n".join("\n".join(f"{number}: {matching_lines[number]}" for number in range(start,end+1)) for start,end in excerpts)
+                if match_count>len(excerpts):snippets+=f"\n[Showing {len(excerpts)} matching excerpt groups from {match_count} matching lines.]"
+                ranked.append((score,rel,snippets))
         if examined>=self.scan_file_limit:capped=True
         used=0; out=[]
-        for _,rel,content in sorted(ranked,key=lambda x:(-x[0],x[1].casefold())):
-            block=f"--- relevant file: {rel} ---\n{content[:12000]}"; size=self.estimate(block)
+        for score,rel,snippets in sorted(ranked,key=lambda x:(-x[0],x[1].casefold())):
+            block=f"--- relevant file: {rel} (relevance {score}) ---\n{snippets or '[Path matched the task; inspect this file with read_file.]'}"; size=self.estimate(block)
             if used+size>limit:continue
             out.append(block);used+=size
         result="\n\n".join(out)
@@ -538,7 +595,7 @@ class AgentEngine:
                         except Exception as exc:out=f"Tool error: {type(exc).__name__}: {exc}"
                         finally:registry.event=previous_event
                         affected=[]
-                        if name in {"read_file","write_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
+                        if name in {"read_file","write_file","edit_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
                         elif name=="apply_patch":
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
                         status = _tool_activity_status(name, str(out))
