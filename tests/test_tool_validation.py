@@ -50,6 +50,13 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIn("at least 3",_validate_tool_arguments({"name":"Ry"},schema))
         self.assertIn("external",_validate_tool_arguments("x", {"$ref":"https://example.com/schema.json"}))
 
+    def test_json_schema_uses_json_type_equality_and_fails_closed_on_unknown_keywords(self):
+        self.assertIsNone(_validate_tool_arguments(2.0,{"type":"integer"}))
+        self.assertIn("constant",_validate_tool_arguments(True,{"const":1}))
+        self.assertIn("one of",_validate_tool_arguments(True,{"enum":[1]}))
+        self.assertIn("unsupported JSON Schema keyword",_validate_tool_arguments({"name":"x"},{"type":"object","propertyNames":{"type":"string"}}))
+        self.assertIn("unique",_validate_tool_arguments([1,1.0],{"type":"array","uniqueItems":True}))
+
     def test_invalid_file_tool_arguments_never_reach_the_write(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);engine=AgentEngine(root,context=CONTEXT_MAX,access="edit");responses=[

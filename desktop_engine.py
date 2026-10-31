@@ -1,6 +1,8 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
 import codecs, copy, json, os, queue, re, socket, tempfile, threading, time, urllib.error, urllib.request, uuid
+from decimal import Decimal, InvalidOperation
+import math
 from pathlib import Path
 from urllib.parse import unquote
 from project_knowledge import ProjectKnowledge
@@ -50,12 +52,27 @@ def _asks_for_clarification(content:str)->bool:
     folded=content.casefold()
     return any(phrase in folded for phrase in ("could you clarify","which framework do you prefer","which framework should","what would you like me to","please provide more detail","need more information before","before i begin, please","before i start, please"))
 
+def _json_value_key(value: Any) -> Any:
+    """Canonical JSON equality key (unlike Python, true is not the number 1)."""
+    if isinstance(value,bool):return ("boolean",value)
+    if value is None:return ("null",)
+    if isinstance(value,(int,float)):
+        try:return ("number",Decimal(str(value)).normalize())
+        except InvalidOperation:return ("invalid-number",str(value))
+    if isinstance(value,str):return ("string",value)
+    if isinstance(value,list):return ("array",tuple(_json_value_key(item) for item in value))
+    if isinstance(value,dict):return ("object",tuple(sorted((str(key),_json_value_key(item)) for key,item in value.items())))
+    return (type(value).__name__,repr(value))
+
 def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: int = 0, _root_schema: dict | None = None) -> str | None:
     """Fail closed on malformed tool arguments using the JSON Schema keywords we support."""
     if not isinstance(schema, dict):
         return f"{path} has an invalid tool schema."
     if _depth >= 64:
         return f"{path} exceeds the supported tool-schema nesting depth."
+    supported={"$ref","$schema","$id","$comment","$defs","definitions","title","description","default","examples","deprecated","readOnly","writeOnly","type","enum","const","allOf","anyOf","oneOf","not","required","properties","patternProperties","additionalProperties","additionalItems","items","minLength","maxLength","pattern","minimum","maximum","exclusiveMinimum","exclusiveMaximum","multipleOf","minItems","maxItems","uniqueItems","minProperties","maxProperties"}
+    unsupported=sorted(set(schema)-supported)
+    if unsupported:return f"{path} uses unsupported JSON Schema keyword(s): {', '.join(unsupported)}."
     root_schema=_root_schema or schema
     if "$ref" in schema:
         reference=schema["$ref"]
@@ -113,17 +130,17 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
     expected=schema.get("type")
     if expected:
         expected_types=expected if isinstance(expected,list) else [expected]
-        checks={"object":lambda v:isinstance(v,dict),"array":lambda v:isinstance(v,list),"string":lambda v:isinstance(v,str),"integer":lambda v:isinstance(v,int) and not isinstance(v,bool),"number":lambda v:isinstance(v,(int,float)) and not isinstance(v,bool),"boolean":lambda v:isinstance(v,bool),"null":lambda v:v is None}
+        checks={"object":lambda v:isinstance(v,dict),"array":lambda v:isinstance(v,list),"string":lambda v:isinstance(v,str),"integer":lambda v:isinstance(v,int) and not isinstance(v,bool) or isinstance(v,float) and math.isfinite(v) and v.is_integer(),"number":lambda v:isinstance(v,int) and not isinstance(v,bool) or isinstance(v,float) and math.isfinite(v),"boolean":lambda v:isinstance(v,bool),"null":lambda v:v is None}
         unknown = [kind for kind in expected_types if kind not in checks]
         if unknown:
             return f"{path} uses unsupported JSON Schema type(s): {', '.join(map(str, unknown))}."
         if not any(checks[kind](value) for kind in expected_types):
             return f"{path} must be {' or '.join(expected_types)}."
-    if "const" in schema and value != schema["const"]:
+    if "const" in schema and _json_value_key(value) != _json_value_key(schema["const"]):
         return f"{path} must equal the required constant."
     if "enum" in schema:
         choices = schema["enum"]
-        if not isinstance(choices, list) or value not in choices:
+        if not isinstance(choices, list) or not any(_json_value_key(value)==_json_value_key(choice) for choice in choices):
             return f"{path} must be one of {', '.join(map(str, choices)) if isinstance(choices, list) else 'the schema-defined values'}."
 
     if isinstance(value,(int,float)) and not isinstance(value,bool):
@@ -174,7 +191,7 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
         if "minItems" in schema and len(value)<schema["minItems"]:return f"{path} must contain at least {schema['minItems']} items."
         if "maxItems" in schema and len(value)>schema["maxItems"]:return f"{path} must contain at most {schema['maxItems']} items."
         if schema.get("uniqueItems") is True:
-            encoded=[json.dumps(item,sort_keys=True,ensure_ascii=False,separators=(",",":")) for item in value]
+            encoded=[_json_value_key(item) for item in value]
             if len(encoded)!=len(set(encoded)):return f"{path} must contain unique items."
         item_schema=schema.get("items")
         if isinstance(item_schema,dict):
