@@ -8,6 +8,19 @@ from desktop_engine import CONTEXT_MAX, MODEL
 
 
 class SessionValidationTests(unittest.TestCase):
+    def test_legacy_session_migrates_to_ollama_provider_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(directory, MODEL, CONTEXT_MAX)
+            store.save(state)
+            path = store.root / f"{state['session_id']}.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.pop("provider_id", None); data.pop("model_id", None)
+            path.write_text(json.dumps(data), encoding="utf-8")
+            loaded = store.load(state["session_id"])
+            self.assertEqual(loaded["provider_id"], "ollama")
+            self.assertEqual(loaded["model_id"], MODEL)
+
     def test_auto_approval_and_reasoning_choice_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SessionStore(Path(directory) / "sessions")

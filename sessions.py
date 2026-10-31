@@ -8,7 +8,8 @@ class SessionStore:
     def __init__(self,root:Path|str): self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self._lock=threading.RLock()
     def create(self,workspace:str,model:str,context:int,options:dict|None=None)->dict[str,Any]:
         sid=time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8]
-        return {'schema_version':1,'session_id':sid,'created_at':time.time(),'updated_at':time.time(),'workspace':str(Path(workspace).resolve()),'model':model,'context':context,'runtime_options':options or {},'access':'ask','approval_mode':'per-action','messages':[{'role':'system','content':'You are a capable local software development agent. Inspect the project, plan substantial changes, use the available project tools, and ask before writes or commands. Follow project instructions and skills as relevant. The model controls its own reasoning behavior.'}],'turns':[],'todos':[]}
+        provider='llama.cpp' if str(model).startswith('gguf::') else 'ollama'
+        return {'schema_version':1,'session_id':sid,'created_at':time.time(),'updated_at':time.time(),'workspace':str(Path(workspace).resolve()),'model':model,'model_id':model,'provider_id':provider,'context':context,'runtime_options':options or {},'access':'ask','approval_mode':'per-action','messages':[{'role':'system','content':'You are a capable local software development agent. Inspect the project, plan substantial changes, use the available project tools, and ask before writes or commands. Follow project instructions and skills as relevant. The model controls its own reasoning behavior.'}],'turns':[],'todos':[]}
     def save(self,state:dict)->Path:
         state['updated_at']=time.time();path=self.root/(self._safe(state['session_id'])+'.json');tmp=None
         with self._lock:
@@ -25,6 +26,11 @@ class SessionStore:
         if state.get('schema_version',1)!=1:raise ValueError(f"Unsupported session schema version: {state.get('schema_version')}")
         if not isinstance(state['workspace'],str) or not state['workspace']:raise ValueError('Session workspace is invalid')
         if not isinstance(state['model'],str) or not state['model']:raise ValueError('Session model is invalid')
+        inferred_provider='llama.cpp' if state['model'].startswith('gguf::') else 'ollama'
+        state.setdefault('provider_id',inferred_provider)
+        state.setdefault('model_id',state['model'])
+        if state['provider_id'] not in {'ollama','llama.cpp'} or not isinstance(state['model_id'],str) or not state['model_id']:raise ValueError('Session provider/model identity is invalid')
+        if state['provider_id']!=inferred_provider or state['model_id']!=state['model']:raise ValueError('Session provider/model identity does not match its model reference')
         if isinstance(state['context'],bool) or not isinstance(state['context'],int) or state['context']<1:raise ValueError('Session context is invalid')
         if 'max_tokens' in state and (isinstance(state['max_tokens'],bool) or not isinstance(state['max_tokens'],int) or state['max_tokens']<1):raise ValueError('Session maximum output token setting is invalid')
         if 'temperature' in state and (isinstance(state['temperature'],bool) or not isinstance(state['temperature'],(int,float)) or not 0<=state['temperature']<=2 or not math.isfinite(state['temperature'])):raise ValueError('Session temperature setting is invalid')
@@ -48,7 +54,7 @@ class SessionStore:
         for p in self.root.glob('*.json'):
             try:
                 s=json.loads(p.read_text(encoding='utf8'))
-                if isinstance(s,dict):rows.append({k:s.get(k) for k in ('session_id','workspace','model','updated_at')})
+                if isinstance(s,dict):rows.append({k:s.get(k) for k in ('session_id','workspace','model','provider_id','model_id','updated_at')})
             except (OSError,json.JSONDecodeError):continue
         return sorted(rows,key=lambda x:x.get('updated_at') or 0,reverse=True)
     @staticmethod
