@@ -16,6 +16,12 @@ def test_rule_validation_rejects_unknown_fields_and_project_escape_patterns():
         validate_permission_rules([{"tool": "read_file", "decision": "deny", "path_glob": "C:secrets/**"}])
     with pytest.raises(ValueError, match="decision"):
         validate_permission_rules([{"tool": "read_file", "decision": []}])
+    with pytest.raises(ValueError, match="argv token list"):
+        validate_permission_rules([{"tool": "run_command", "decision": "allow", "command_prefix": "python -m pytest"}])
+    with pytest.raises(ValueError, match="requires run_command"):
+        validate_permission_rules([{"tool": "read_file", "decision": "allow", "command_prefix": ["python"]}])
+    with pytest.raises(ValueError, match="need command_prefix"):
+        validate_permission_rules([{"tool": "run_command", "decision": "deny", "path_glob": "src/**"}])
 
 
 def test_hard_deny_wins_even_when_an_allow_rule_matches():

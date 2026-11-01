@@ -35,6 +35,8 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
             if (not normalized_glob or posix_glob.is_absolute() or windows_glob.is_absolute()
                     or windows_glob.drive or ".." in posix_glob.parts):
                 raise ValueError(f"Permission rule {index + 1} path_glob must be a project-relative pattern.")
+            if tool in {"run_command", "run_shell"}:
+                raise ValueError(f"Permission rule {index + 1} command tools need command_prefix rather than path_glob.")
             rule["path_glob"] = normalized_glob
         command_prefix = item.get("command_prefix")
         if command_prefix is not None:
@@ -44,6 +46,10 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
                 rule["command_prefix"] = command_prefix.strip()
             else:
                 raise ValueError(f"Permission rule {index + 1} command_prefix must be text or a non-empty token list.")
+            if tool not in {"*", "run_command", "run_shell"}:
+                raise ValueError(f"Permission rule {index + 1} command_prefix requires run_command, run_shell, or wildcard tool scope.")
+            if tool == "run_command" and not isinstance(rule["command_prefix"], list):
+                raise ValueError(f"Permission rule {index + 1} run_command prefix must be an argv token list.")
         if "path_glob" in rule and "command_prefix" in rule:
             raise ValueError(f"Permission rule {index + 1} cannot combine path_glob and command_prefix.")
         rows.append(rule)
