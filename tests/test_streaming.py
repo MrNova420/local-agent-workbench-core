@@ -8,6 +8,21 @@ class FakeResponse:
  def readline(self):return next(self.lines,b'')
  def close(self):self.closed=True
 class StreamTests(unittest.TestCase):
+ def test_ollama_request_uses_the_context_selected_tool_schemas(self):
+  lines=[json.dumps({'message':{'content':'ready'},'done':True}).encode()+b'\n']
+  response=FakeResponse(lines);runtime=OllamaRuntime();events=[]
+  selected=[{'type':'function','function':{'name':'read_file','description':'read','parameters':{'type':'object','properties':{}}}}]
+  state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[{'type':'function','function':{'name':'write_file'}}]})(),
+         'temperature':0.2,'context':4096,'max_tokens':512,'runtime_options':{},'request_tools':selected,
+         'deferred_tool_names':['write_file']}
+  with patch('desktop_engine.open_http_stream',return_value=response) as open_url:
+   runtime.stream(state,[],threading.Event(),events.append)
+  payload=json.loads(open_url.call_args.args[0].data)
+  self.assertEqual(payload['tools'],selected)
+  settings=next(event for event in events if event['type']=='inference_settings')
+  self.assertEqual(settings['tool_names'],['read_file'])
+  self.assertEqual(settings['deferred_tool_names'],['write_file'])
+
  def test_reasoning_and_user_facing_generation_are_distinct_phases(self):
   lines=[json.dumps({'message':{'thinking':'reasoning only'}}).encode()+b'\n',json.dumps({'message':{'content':'visible answer'},'done':True,'eval_count':9}).encode()+b'\n']
   response=FakeResponse(lines);runtime=OllamaRuntime();events=[];state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),'temperature':0.2,'context':16384,'max_tokens':500,'runtime_options':{}}

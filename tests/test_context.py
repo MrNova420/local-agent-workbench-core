@@ -138,6 +138,34 @@ class ContextTests(unittest.TestCase):
             self.assertLessEqual(size,engine.context.budget(512))
             if 'Additional skills are available' in description:
                 self.assertIn('action=list',description)
+    def test_context_adaptive_tools_defer_mcp_schemas_but_keep_them_discoverable(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from desktop_engine import AgentEngine
+        with TemporaryDirectory() as directory:
+            engine=AgentEngine(Path(directory),context=4096,max_tokens=512)
+            engine.mcp_tools=[engine.state['registry']._schema(f'mcp__large__{i}', 'Large optional MCP operation '+('details '*120), {'value':{'type':'string'}}, ['value']) for i in range(30)]
+            engine.state['mcp_tools']=engine.mcp_tools
+            base=[{'role':'system','content':'short system'},{'role':'user','content':'inspect and update a project file'}]
+            tools=engine._tools_for_request(base)
+            names={t['function']['name'] for t in tools}
+            self.assertIn('load_tools',names)
+            self.assertIn('write_file',names)
+            self.assertLess(len(names),len(engine.state['registry'].schemas)+len(engine.mcp_tools))
+            self.assertEqual(sum(name.startswith('mcp__large__') for name in engine._deferred_tool_names),30)
+    def test_load_tools_selects_exact_deferred_schema_for_next_request(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from desktop_engine import AgentEngine
+        with TemporaryDirectory() as directory:
+            engine=AgentEngine(Path(directory),context=8192,max_tokens=512)
+            schema=engine.state['registry']._schema('mcp__build__check', 'Run a project build check', {'target':{'type':'string'}}, ['target'])
+            engine.mcp_tools=[schema];engine.state['mcp_tools']=engine.mcp_tools
+            base=[{'role':'system','content':'system'},{'role':'user','content':'build the project'}]
+            result=engine._load_tools({'names':['mcp__build__check'],'limit':20},base)
+            self.assertIn('selected for the next request',result)
+            self.assertIn('mcp__build__check',engine._selected_tool_names)
+            self.assertIn('mcp__build__check',{t['function']['name'] for t in engine._tools_for_request(base)})
     def test_budget_refuses_to_silently_lower_context(self):
         manager=ContextManager(context=4096,reserve=1024);huge=[{'role':'system','content':'s'},{'role':'user','content':'x'*50000}]
         with self.assertRaisesRegex(ValueError,'context was not reduced'):manager.compact(huge)

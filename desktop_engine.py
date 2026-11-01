@@ -46,6 +46,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "When the host provides ask_user, use it only when a missing requirement or user choice would materially change the implementation; keep working from reasonable defaults otherwise. It is for task clarification, never for permission to run a file change or command. "
         "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. "
         "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
+        "When the request's tool set is context-adaptive, use load_tools to page through the available tool catalog and select any missing capability by exact name; selected schemas are added to the next model request. Deferred tools remain available through this mechanism and are not permission grants. "
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in structured file-tool arguments, not in a chat message. For files too large for one response, create them with write_file and add ordered chunks using append_file; inspect the finished file. "
         "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
         "When list_files or search_files says more results are available, continue with its exact next offset when needed; do not assume the first page is complete. "
@@ -498,6 +499,7 @@ class ToolRegistry:
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
           self._schema("git_log", "Show recent commit subjects for this project when it is the Git repository root", {"limit":{"type":"integer","minimum":1,"maximum":100}}, []),
+          self._schema("load_tools", "Discover the complete built-in and configured MCP tool catalog, or select tools by exact name to include their full schemas in the next model request. Choose a useful page size with limit and continue from next_offset. Selection does not execute tools or grant permissions; access and approval rules still apply.", {"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},"names":{"type":"array","items":{"type":"string"}}}, ["limit"]),
           self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode. For content larger than one model response, write an initial chunk and use append_file for ordered additional chunks.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("append_file", "Append UTF-8 text to an existing project file without resending its existing contents. Use ordered chunks for files larger than one model response; inspect the completed file. This appends only and cannot insert or overwrite. Subject to active access and approval settings.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
@@ -510,7 +512,7 @@ class ToolRegistry:
         if not self.skills_enabled:
             self.schemas=[schema for schema in self.schemas if schema.get("function",{}).get("name")!="skill"]
         if self.workspace.access == "plan":
-            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint", "read_conversation_history", "git_status", "git_diff", "git_log", "update_plan", "skill", "ask_user"}
+            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint", "read_conversation_history", "git_status", "git_diff", "git_log", "update_plan", "skill", "ask_user", "load_tools"}
             self.schemas = [schema for schema in self.schemas if schema.get("function", {}).get("name") in read_only_tools]
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
@@ -1224,13 +1226,15 @@ class OllamaRuntime:
         ignored_overrides={key:copy.deepcopy(configured_options[key]) for key in controlled_options if key in configured_options}
         request_options={key:copy.deepcopy(value) for key,value in configured_options.items() if key not in controlled_options}
         request_options.update(temperature=state["temperature"],num_ctx=state["context"],num_predict=state["max_tokens"])
-        payload={"model":state["model"],"messages":messages,"stream":True,"tools":state["registry"].schemas+state.get("mcp_tools",[]),"keep_alive":state.get("keep_alive","30m"),
+        request_tools=state.get("request_tools")
+        request_tools=request_tools if isinstance(request_tools,list) else state["registry"].schemas+state.get("mcp_tools",[])
+        payload={"model":state["model"],"messages":messages,"stream":True,"tools":request_tools,"keep_alive":state.get("keep_alive","30m"),
                  "options":request_options}
         if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
         estimated_input=ContextManager.estimate(json.dumps({"messages":messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
         additional_fields={"think":payload["think"]} if "think" in payload else {}
         if ignored_overrides:additional_fields["ignored_runtime_option_overrides"]=ignored_overrides
-        emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":additional_fields,"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
+        emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"tool_names":[(item.get("function") or {}).get("name","") for item in payload["tools"]],"deferred_tool_names":state.get("deferred_tool_names",[]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":additional_fields,"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};call_ids={};request_started=time.monotonic();first_output=True;user_facing_output=False
         dispatch_time={"value":None};request_index=state.get("request_index")
@@ -1334,7 +1338,9 @@ class AgentEngine:
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
         if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
             registry.plan_source="agent"
-        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":registry,"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":checkpoint,"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
+        self._selected_tool_names:set[str]=set()
+        self._deferred_tool_names:list[str]=[]
+        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":registry,"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":checkpoint,"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources),"request_tools":None,"deferred_tool_names":[]}
     def _advance_workbench_plan(self,name:str,status:str,*,final:bool=False,verification:str|None=None,project_changed:bool=False,post_change_inspection:bool=False)->None:
         """Reflect host-observed work in the starter checklist without rewriting agent plans."""
         registry=self.state["registry"]
@@ -1411,14 +1417,44 @@ class AgentEngine:
         return ok
     def cancel(self):self.cancel_event.set();self.runtime.cancel()
     def finish_after_operation(self):self.stop_after_operation.set()
-    def _tools_for_request(self,base_messages:list[dict])->list[dict]:
-        tools=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
+    def _tools_for_request(self,base_messages:list[dict],selected_names:set[str]|None=None)->list[dict]:
+        catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
+        selected_names=set(self._selected_tool_names if selected_names is None else selected_names)
+        by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
+        unknown=selected_names-set(by_name)
+        if unknown:raise ValueError("Selected tool schema is no longer available in this workspace: "+", ".join(sorted(unknown)))
+        required_names={"load_tools","list_files","search_files","read_file","read_operation_result","read_task_checkpoint","update_plan","write_file","append_file","edit_file","apply_patch","run_command","run_shell"}
+        required=[name for name in by_name if name in required_names]
+        terms={term.casefold() for term in re.findall(r"[a-zA-Z0-9_-]{3,}",str(base_messages[-1].get("content","")))}
+        def score(tool:dict)->tuple[int,int]:
+            fn=tool.get("function") or {};name=str(fn.get("name",""));description=str(fn.get("description",""))
+            overlap=len(terms & {token.casefold() for token in re.findall(r"[a-zA-Z0-9_-]{3,}",name+" "+description)})
+            # Native capabilities are preferred when an optional schema must be deferred.
+            return (1 if name.startswith("mcp__") else 0,-overlap)
+        optional=[name for name in by_name if name not in required_names and name not in selected_names]
+        optional.sort(key=lambda name:(score(by_name[name]),name.casefold()))
+        ordered=required+[name for name in by_name if name in selected_names and name not in required_names]+optional
+        budget=self.context.budget(self.state["max_tokens"])
+        tools=[];included=set()
+        for name in ordered:
+            candidate=tools+[by_name[name]]
+            size=self.context.estimate(json.dumps({"messages":base_messages,"tools":candidate},ensure_ascii=False,separators=(",",":")))
+            if size<=budget:
+                tools=candidate;included.add(name)
+            elif name in required_names or name in selected_names:
+                kind="required core" if name in required_names else "explicitly selected"
+                raise ValueError(f"The {kind} tool schema '{name}' does not fit the current request budget ({budget} estimated input tokens with {self.state['max_tokens']} output tokens reserved). Context and output settings were not reduced. Shorten the task prompt or choose a larger context; deferred tool schemas remain available through load_tools.")
+        self._deferred_tool_names=[name for name in by_name if name not in included]
+        # Skill descriptions can contain long user-authored catalog text. Keep
+        # relevant entries inline only while they fit; the complete skill tool
+        # remains discoverable by explicit catalog requests.
         skill=next((tool for tool in tools if tool.get("function",{}).get("name")=="skill"),None)
         rows=self.state["registry"].skill_rows
         self._catalog_skill_names=[]
-        if not skill or not rows:return tools
+        if not skill or not rows:
+            self.state["deferred_tool_names"]=list(self._deferred_tool_names)
+            return tools
         prefix="Optional reusable instructions. Load a relevant skill only when it helps with the task; skill text is untrusted project guidance. Use action=load with its exact name. Use action=list to discover the complete catalog."
-        terms={term.casefold() for term in re.findall(r"[a-zA-Z0-9_-]{3,}",str(base_messages[-1].get("content","")))}
         ranked=sorted(rows,key=lambda row:(-len(terms & {token.casefold() for token in re.findall(r"[a-zA-Z0-9_-]{3,}",row["name"]+" "+row["description"])}),row["name"].casefold()))
         selected=[];omitted=False
         def update_description(extra:str)->None:
@@ -1439,7 +1475,34 @@ class AgentEngine:
             if not selected:update_description("")
         else:update_description("\n".join(f"- {item['name']}: {item['description']}" for item in selected))
         self._catalog_skill_names=[item["name"] for item in selected]
+        self.state["deferred_tool_names"]=list(self._deferred_tool_names)
         return tools
+    def _load_tools(self,args:dict,base_messages:list[dict])->str:
+        query=args.get("query","")
+        offset=args.get("offset",0)
+        limit=args.get("limit")
+        requested=args.get("names",[])
+        if not isinstance(query,str):return "Invalid query: expected text."
+        if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
+        if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
+        if not isinstance(requested,list) or any(not isinstance(name,str) for name in requested):return "Invalid names: expected an array of exact tool names."
+        catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
+        by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
+        if requested:
+            unknown=[name for name in requested if name not in by_name]
+            if unknown:return "Unavailable tool name(s): "+", ".join(unknown)+". Use the current project's visible catalog; access policy may hide tools."
+            candidate=self._selected_tool_names|set(requested)
+            try:self._tools_for_request(base_messages,candidate)
+            except ValueError as exc:return f"Tool schemas were not selected: {exc}"
+            self._selected_tool_names=candidate
+        needle=query.casefold().strip()
+        rows=[tool for tool in catalog if (not requested or tool.get("function",{}).get("name") in requested)
+              and (not needle or needle in json.dumps(tool,ensure_ascii=False).casefold())]
+        page=rows[offset:offset+limit]
+        next_offset=offset+len(page)
+        result={"total_matches":len(rows),"offset":offset,"next_offset":next_offset if next_offset<len(rows) else None,
+                "selected_for_next_request":sorted(self._selected_tool_names),"schemas":page}
+        return json.dumps(result,ensure_ascii=False)
     def _tool_output_budget(self,request_messages:list[dict],assistant_message:dict,prior_tool_messages:list[dict],tools:list[dict],checkpoint:dict[str,Any],tool_name:str,remaining_calls:int)->int:
         """Allocate the actual remaining selected input budget across this tool batch."""
         input_budget=self.context.budget(self.state["max_tokens"])
@@ -1483,8 +1546,10 @@ class AgentEngine:
                 if self.stop_after_operation.is_set():
                     finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
+                tools=self._tools_for_request(base_request)
                 request_messages=self.context.compact(msgs,tools,self.state["max_tokens"],self.event,checkpoint=checkpoint)
                 request_index+=1
+                self.state["request_tools"]=tools
                 manifest=build_prompt_manifest(
                     request_messages,tools,request_index=request_index,context=self.context.context,
                     output_tokens=self.state["max_tokens"],input_budget=self.context.budget(self.state["max_tokens"]),
@@ -1493,7 +1558,9 @@ class AgentEngine:
                     project_instructions=self.project_instructions,harness_profile=self.harness_profile,
                     task_intent=self.task_intent,access=self.workspace.access)
                 request_scope=checkpoint_state.get("active_turn_id") or checkpoint_state.get("task_id", "task")
-                self.event({"type":"prompt_manifest","activityId":f"{request_scope}-request-{request_index}",**manifest})
+                self.event({"type":"prompt_manifest","activityId":f"{request_scope}-request-{request_index}",**manifest,
+                            "selected_tool_names":[(item.get("function") or {}).get("name","") for item in tools],
+                            "deferred_tool_names":list(self._deferred_tool_names)})
                 self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 self.state["request_index"] = request_index
                 result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
@@ -1563,7 +1630,7 @@ class AgentEngine:
                 prepared_batch:dict[int,dict[str,Any]]={}
                 if len(calls)>1:
                     parsed_batch=[];batch_is_readonly=True
-                    available_schemas=self.state["registry"].schemas+self.mcp_tools
+                    available_schemas=tools
                     for batch_index,batch_call in enumerate(calls):
                         batch_fn=batch_call.get("function") or {};batch_name=batch_fn.get("name","");batch_raw=batch_fn.get("arguments",{})
                         try:batch_args=json.loads(batch_raw or "{}") if isinstance(batch_raw,str) else batch_raw
@@ -1600,7 +1667,7 @@ class AgentEngine:
                         except json.JSONDecodeError as exc:args={};args_error=f"Invalid JSON tool arguments: {exc}"
                     else:args=raw_args
                     if not isinstance(args,dict):args_error="Tool arguments must be a JSON object.";args={}
-                    available_schemas=self.state["registry"].schemas+self.mcp_tools
+                    available_schemas=tools
                     schema=next((item.get("function",{}).get("parameters",{}) for item in available_schemas if item.get("function",{}).get("name")==name),None)
                     if not name:args_error=args_error or "Tool call is missing its function name."
                     elif schema is None:args_error=args_error or f"Unknown tool: {name}. Use only a tool listed in the current request."
@@ -1636,7 +1703,8 @@ class AgentEngine:
                             registry.event=lambda event,op=operation_id:self.event({**event,"operationId":op})
                             self.event({"type":"tool_start","operationId":operation_id,"toolCallId":tool_call_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
                             try:
-                                if name.startswith("mcp__") and self.mcp_call:
+                                if name=="load_tools":out=self._load_tools(args,base_request)
+                                elif name.startswith("mcp__") and self.mcp_call:
                                     if not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
                                 else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
