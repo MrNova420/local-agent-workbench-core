@@ -34,13 +34,14 @@ def test_checkpoint_separates_user_decisions_blockers_and_next_action():
 
 def test_new_task_archives_completed_checkpoint_without_losing_it():
     previous = begin_task(None, prompt="First task", turn_id="t1", workspace="C:/p", settings={})
-    finish_task(previous, "completed", {"status": "inspected"})
+    finish_task(previous, "completed", {"status": "inspected"}, outcome="inspected")
 
     next_task = begin_task(previous, prompt="Second task", turn_id="t2", workspace="C:/p", settings={})
 
     assert next_task["current"]["goal"] == "Second task"
     assert next_task["task_history"][0]["goal"] == "First task"
     assert next_task["task_history"][0]["verification"] == {"status": "inspected"}
+    assert next_task["task_history"][0]["workflow_outcome"] == "inspected"
     assert "immediately_preceding_task" in render_checkpoint(next_task)
 
 

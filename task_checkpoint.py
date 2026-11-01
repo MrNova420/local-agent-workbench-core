@@ -110,9 +110,11 @@ def record_assistant_status(checkpoint: dict[str, Any], message: dict[str, Any])
     checkpoint["updated_at"] = time.time()
 
 
-def finish_task(checkpoint: dict[str, Any], status: str, verification: Any = None, blocker: str | None = None) -> None:
+def finish_task(checkpoint: dict[str, Any], status: str, verification: Any = None, blocker: str | None = None, outcome: str | None = None) -> None:
     checkpoint = _current(checkpoint)
     checkpoint["status"] = status
+    inferred = verification.get("status") if isinstance(verification, dict) else None
+    checkpoint["workflow_outcome"] = outcome or (str(inferred) if inferred else status)
     if verification is not None:
         checkpoint["verification"] = copy.deepcopy(verification)
     if blocker:
@@ -132,7 +134,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
         key: checkpoint.get(key)
         for key in (
             "schema_version", "task_id", "status", "goal", "user_updates", "workspace",
-            "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification",
+            "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
             "last_assistant_update", "next_action",
         )
         if checkpoint.get(key) not in (None, [], "")
@@ -143,7 +145,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
     if isinstance(history, list) and history:
         previous = history[-1]
         if isinstance(previous, dict):
-            prior_keys = ("task_id", "status", "goal", "workspace", "decisions", "blockers", "plan",
+            prior_keys = ("task_id", "status", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan",
                           "changed_files", "verification", "last_assistant_update", "next_action")
             prior = {key: copy.deepcopy(previous[key]) for key in prior_keys
                      if previous.get(key) not in (None, [], "")}

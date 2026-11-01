@@ -103,3 +103,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - `ProjectKnowledge.skills` can filter by project/user source. A disabled skill tool is omitted from the model request and direct engine invocation is rejected; selected source lists are captured with each immutable turn.
 - Standalone engine defaults preserve the prior skill behavior for existing CLI callers. The paired desktop app now adds Workbench-owned enable/source controls and persists them per app/session. It does not read or modify Codex/OpenCode skill settings.
 - Regression cases cover source filtering, disabled-tool exclusion, and turn capture. They are queued with the broader final gate and have not been executed.
+
+## 2026-11-01 observed workflow outcomes in progress
+
+- Terminal coding turns now record an outcome derived from host-observed tool results: discussion, plan-only, blocked, changed, inspected, command-completed, or command-failed. A successful command is deliberately not called a passing test or verified project.
+- The outcome is stored in the task checkpoint and emitted with the terminal event. Checkpoint completion records the outcome separately from the transport/run status.
+- Regression cases cover each classification and checkpoint persistence. They remain queued and have not been run.

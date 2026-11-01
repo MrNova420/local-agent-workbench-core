@@ -276,6 +276,23 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "failed"
     return "completed"
 
+def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, verification: dict[str, Any], plan: list[dict[str, Any]]) -> str:
+    """Describe only outcomes supported by host-observed tool activity."""
+    if action_denied:
+        return "blocked"
+    status = str(verification.get("status", "not_verified"))
+    if status == "command_failed":
+        return "command_failed"
+    if status == "command_completed":
+        return "command_completed"
+    if status == "inspected":
+        return "inspected"
+    if project_changed:
+        return "changed"
+    if access == "plan" or plan:
+        return "plan_only"
+    return "discussion"
+
 class Workspace:
     def __init__(self, root: Path | str, access: str = "ask"):
         self.root = Path(root).resolve(strict=True)
@@ -984,8 +1001,9 @@ class AgentEngine:
                     elif commands:verification_status="command_not_completed"
                     else:verification_status="not_verified"
                     verification={"status":verification_status,"steps":verification_steps}
-                    finish_task(checkpoint,"completed",verification)
-                    self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification});return msgs
+                    workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]))
+                    finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
+                    self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
                     args_error=None
