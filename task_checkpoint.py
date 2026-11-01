@@ -35,6 +35,7 @@ def begin_task(
             "workspace": workspace,
             "settings": copy.deepcopy(settings),
             "decisions": [],
+            "blockers": [],
             "operations": [],
             "changed_files": [],
             "verification": [],
@@ -65,6 +66,14 @@ def record_plan(checkpoint: dict[str, Any], items: Any) -> None:
 def record_decision(checkpoint: dict[str, Any], decision: dict[str, Any]) -> None:
     task = _current(checkpoint)
     task.setdefault("decisions", []).append({**copy.deepcopy(decision), "timestamp": time.time()})
+    task["updated_at"] = time.time()
+
+
+def record_blocker(checkpoint: dict[str, Any], reason: str) -> None:
+    task = _current(checkpoint)
+    blockers = task.setdefault("blockers", [])
+    if reason and reason not in blockers:
+        blockers.append(reason)
     task["updated_at"] = time.time()
 
 
@@ -101,11 +110,13 @@ def record_assistant_status(checkpoint: dict[str, Any], message: dict[str, Any])
     checkpoint["updated_at"] = time.time()
 
 
-def finish_task(checkpoint: dict[str, Any], status: str, verification: Any = None) -> None:
+def finish_task(checkpoint: dict[str, Any], status: str, verification: Any = None, blocker: str | None = None) -> None:
     checkpoint = _current(checkpoint)
     checkpoint["status"] = status
     if verification is not None:
         checkpoint["verification"] = copy.deepcopy(verification)
+    if blocker:
+        record_blocker(checkpoint, blocker)
     checkpoint["next_action"] = "" if status == "completed" else "Review the saved checkpoint and determine the next safe action."
     checkpoint["updated_at"] = time.time()
 
@@ -113,18 +124,31 @@ def finish_task(checkpoint: dict[str, Any], status: str, verification: Any = Non
 def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
     if not isinstance(checkpoint, dict) or not checkpoint:
         return ""
-    checkpoint = _current(checkpoint)
+    root = checkpoint
+    checkpoint = _current(root)
     # Tool arguments and complete results remain in the transcript/activity log. The checkpoint
     # carries stable references and verified outcomes without duplicating large file contents.
     visible = {
         key: checkpoint.get(key)
         for key in (
             "schema_version", "task_id", "status", "goal", "user_updates", "workspace",
-            "settings", "decisions", "plan", "operations", "changed_files", "verification",
+            "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification",
             "last_assistant_update", "next_action",
         )
         if checkpoint.get(key) not in (None, [], "")
     }
+    history = root.get("task_history", [])
+    # Keep the immediately preceding task available when a new task follows a failed,
+    # canceled, or completed run. Full history and operation results remain on disk.
+    if isinstance(history, list) and history:
+        previous = history[-1]
+        if isinstance(previous, dict):
+            prior_keys = ("task_id", "status", "goal", "workspace", "decisions", "blockers", "plan",
+                          "changed_files", "verification", "last_assistant_update", "next_action")
+            prior = {key: copy.deepcopy(previous[key]) for key in prior_keys
+                     if previous.get(key) not in (None, [], "")}
+            if prior:
+                visible["immediately_preceding_task"] = prior
     return (
         "Active task continuity checkpoint (facts come from saved user instructions, plans, "
         "and completed host tool events; result_ref points to the complete saved operation result):\n"

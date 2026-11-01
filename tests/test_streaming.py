@@ -37,4 +37,7 @@ class StreamTests(unittest.TestCase):
    got=runtime.stream(state,[],threading.Event(),events.append)
   self.assertEqual(got['message']['content'],'hello');self.assertEqual(got['message']['tool_calls'][0]['function']['name'],'list_files');self.assertEqual(got['prompt_eval_count'],18);self.assertEqual(got['prompt_eval_cached_count'],7);self.assertEqual(next(e['text'] for e in events if e['type']=='text'),'hello');self.assertEqual(next(e['phase'] for e in events if e['type']=='phase'),'generating')
   payload=json.loads(open_url.call_args.args[0].data);self.assertEqual(payload['options']['num_ctx'],16384);self.assertNotIn('think',payload);self.assertNotIn('reasoning_effort',payload);self.assertIsNone(open_url.call_args.kwargs['timeout'])
+  settings=next(event for event in events if event['type']=='inference_settings')
+  self.assertGreater(settings['estimated_input_tokens'],0)
+  self.assertIn('estimate',settings['input_estimate_method'])
 if __name__=='__main__':unittest.main()

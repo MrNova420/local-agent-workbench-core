@@ -792,7 +792,8 @@ class OllamaRuntime:
         payload={"model":state["model"],"messages":messages,"stream":True,"tools":state["registry"].schemas+state.get("mcp_tools",[]),"keep_alive":state.get("keep_alive","30m"),
                  "options":{"temperature":state["temperature"],"num_ctx":state["context"],"num_predict":state["max_tokens"],**state.get("runtime_options",{})}}
         if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
-        emit({"type":"inference_settings","model":state["model"],"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"request_options":payload["options"]})
+        estimated_input=ContextManager.estimate(json.dumps({"messages":messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
+        emit({"type":"inference_settings","model":state["model"],"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"request_options":payload["options"],"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};call_ids={};request_started=time.monotonic();first_output=True;user_facing_output=False
         try:
@@ -1059,7 +1060,7 @@ class AgentEngine:
             finish_task(checkpoint,"cancelled")
             self.event({"type":"cancelled","elapsed":time.monotonic()-start})
         except Exception as exc:
-            finish_task(checkpoint,"failed")
+            finish_task(checkpoint,"failed",blocker=f"{type(exc).__name__}: {exc}")
             self.event({"type":"error","error":f"{type(exc).__name__}: {exc}"})
         return msgs
 

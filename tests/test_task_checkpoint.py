@@ -1,4 +1,4 @@
-from task_checkpoint import begin_task, finish_task, record_operation, record_plan, render_checkpoint
+from task_checkpoint import begin_task, finish_task, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
 
 
 def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
@@ -19,6 +19,19 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     assert "65536" in render_checkpoint(second)
 
 
+def test_checkpoint_separates_user_decisions_blockers_and_next_action():
+    checkpoint = begin_task(None, prompt="Implement feature", turn_id="t1", workspace="C:/p", settings={})
+    record_decision(checkpoint, {"kind": "tool_approval", "tool": "run_command", "decision": "denied"})
+    record_blocker(checkpoint, "Requested dependency is unavailable.")
+    record_plan(checkpoint, [{"title": "Inspect", "status": "done"}, {"title": "Implement", "status": "pending"}])
+
+    rendered = render_checkpoint(checkpoint)
+
+    assert "denied" in rendered
+    assert "Requested dependency is unavailable." in rendered
+    assert "Implement" in checkpoint["current"]["next_action"]
+
+
 def test_new_task_archives_completed_checkpoint_without_losing_it():
     previous = begin_task(None, prompt="First task", turn_id="t1", workspace="C:/p", settings={})
     finish_task(previous, "completed", {"status": "inspected"})
@@ -28,6 +41,7 @@ def test_new_task_archives_completed_checkpoint_without_losing_it():
     assert next_task["current"]["goal"] == "Second task"
     assert next_task["task_history"][0]["goal"] == "First task"
     assert next_task["task_history"][0]["verification"] == {"status": "inspected"}
+    assert "immediately_preceding_task" in render_checkpoint(next_task)
 
 
 def test_legacy_checkpoint_shape_migrates_and_continues():
