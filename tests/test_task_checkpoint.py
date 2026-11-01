@@ -54,6 +54,21 @@ def test_task_acceptance_criteria_survive_followup_compaction_and_archive():
     assert next_task["task_history"][0]["acceptance_criteria"] == followup["current"]["acceptance_criteria"]
 
 
+def test_uncertain_operation_checkpoint_requires_inspection_before_replay():
+    checkpoint = begin_task(None, prompt="Generate the package", turn_id="t1", workspace="C:/p", settings={})
+    record_operation(checkpoint, {
+        "operationId": "cmd-1", "name": "run_command", "status": "uncertain",
+        "affectedFiles": [], "result": "partial output; timed out",
+    })
+
+    rendered = render_checkpoint(checkpoint)
+
+    assert checkpoint["current"]["operations"][0]["status"] == "uncertain"
+    assert checkpoint["current"]["operations"][0]["result_ref"] == "cmd-1"
+    assert "inspect the current workspace" in rendered
+    assert "Never treat an uncertain operation as safe to replay automatically." in rendered
+
+
 def test_new_task_archives_completed_checkpoint_without_losing_it():
     previous = begin_task(None, prompt="First task", turn_id="t1", workspace="C:/p", settings={})
     finish_task(previous, "completed", {"status": "inspected"}, outcome="inspected")

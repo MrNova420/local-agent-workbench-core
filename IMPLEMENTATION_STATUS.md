@@ -149,3 +149,4 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 
 - An approved command canceled after launch or terminated on timeout may already have written files. These results now use an `uncertain` operation state rather than implying a clean cancellation or definite failure; they trigger the existing bounded post-effect inspection path. Commands denied or canceled before launch remain non-side-effecting.
 - The renderer warns on uncertain command results, and a queued engine regression distinguishes in-flight cancellation/timeout from cancellation before execution. No tests or runtime commands were run.
+- The compaction checkpoint now explicitly requires inspecting uncertain operation output and current workspace state before requesting or repeating that operation; it says uncertain work is never automatically replayed. A queued continuity regression covers this instruction and the durable result reference.
