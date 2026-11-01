@@ -613,7 +613,9 @@ class ToolRegistry:
                 self.task_mode=authoritative_mode
             elif task_mode in {"discussion", "plan", "implement"}:
                 self.task_mode=task_mode
-            event={"type":"plan","items":self.plan,"taskMode":self.task_mode}
+            event={"type":"plan","items":self.plan}
+            if self.task_mode in {"discussion", "plan", "implement"}:
+                event["taskMode"]=self.task_mode
             if isinstance(added_criteria,list):
                 current_criteria=current_task(self.task_checkpoint).get("acceptance_criteria",[]) if self.task_checkpoint is not None else []
                 merged=list(current_criteria) if isinstance(current_criteria,list) else []

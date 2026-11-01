@@ -237,6 +237,11 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
     assert explicit_plan_events[-1]["taskMode"] == "plan"
     assert explicit_plan_checkpoint["current"]["task_mode"] == "plan"
 
+    automatic_events = []
+    automatic_registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_: True, automatic_events.append)
+    automatic_registry.run("update_plan", {"items": [{"title": "Inspect", "status": "pending"}]})
+    assert "taskMode" not in automatic_events[-1]
+
 
 def test_agent_can_expand_plan_without_replacing_existing_independent_workstreams(tmp_path):
     from desktop_engine import ToolRegistry, Workspace
