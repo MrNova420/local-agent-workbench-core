@@ -408,22 +408,16 @@ def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str,
     return bool(project_changed or command_side_effects_possible or mutation_attempted
                 or (plan_source == "agent" and _plan_has_open_work(plan)))
 
-def _continuation_progress_signature(task: dict[str, Any], plan: list[dict[str, Any]],
-                                     verification_steps: list[dict[str, Any]]) -> str:
+def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]]) -> str:
     """Compare observable progress, not elapsed time or a fixed continuation count."""
-    plan_state = [
-        {key: item.get(key) for key in ("id", "phase", "title", "text", "status", "acceptance_criteria") if key in item}
-        for item in plan if isinstance(item, dict)
-    ]
     operations = task.get("operations", [])
     operation_state = sorted({
         json.dumps({key: item.get(key) for key in ("name", "status", "affected_files", "arguments_fingerprint", "result_fingerprint") if key in item},
                    ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-        for item in operations if isinstance(item, dict)
+        for item in operations if isinstance(item, dict) and item.get("name") != "update_plan"
     }) if isinstance(operations, list) else []
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
-        "plan": plan_state,
         "operations": operation_state,
         "verification": verification_steps,
         "changed_files": task.get("changed_files", []),
@@ -1638,7 +1632,7 @@ class AgentEngine:
                     plan=checkpoint_state.get("plan",[])
                     plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
                     unfinished=_needs_implementation_continuation(implementation_requested,self.workspace.access,action_denied,completed_project_change,review_required,plan_remaining)
-                    progress_signature=_continuation_progress_signature(checkpoint_state,plan if isinstance(plan,list) else [],verification_steps)
+                    progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps)
                     if (unfinished or missing_final_response) and progress_signature!=last_continuation_signature:
                         last_continuation_signature=progress_signature
                         if missing_final_response and not unfinished:

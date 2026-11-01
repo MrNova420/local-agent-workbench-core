@@ -113,9 +113,19 @@ def test_final_content_requires_user_visible_text_after_tool_work():
 
 
 def test_structured_task_mode_change_counts_as_continuation_progress():
-    plan = [{"title": "Build", "status": "pending"}]
-    assert _continuation_progress_signature({"task_mode": "plan"}, plan, []) != _continuation_progress_signature(
-        {"task_mode": "implement"}, plan, [])
+    assert _continuation_progress_signature({"task_mode": "plan"}, []) != _continuation_progress_signature(
+        {"task_mode": "implement"}, [])
+
+
+def test_replanning_without_new_evidence_does_not_count_as_progress():
+    assert _continuation_progress_signature({"task_mode": "implement"}, []) == _continuation_progress_signature(
+        {"task_mode": "implement", "operations": [{"name": "update_plan", "status": "completed",
+                                                      "arguments_fingerprint": "one", "result_fingerprint": "one"}]},
+        [])
+    read = {"task_mode": "implement", "operations": [{"name": "read_file", "status": "completed",
+                                                         "result_fingerprint": "source changed"}]}
+    assert _continuation_progress_signature({"task_mode": "implement"}, []) != _continuation_progress_signature(
+        read, [])
 
 
 def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp_path):

@@ -22,7 +22,7 @@
 
 - The engine now treats empty assistant content as incomplete after a tool-free model response. It requests a user-visible terminal summary and checks for observable progress; if the same state repeats, it fails with `response_missing`, preserving completed operations and verification instead of reporting generic success.
 - A blank assistant bubble is not added to the transcript. The complete response, blocker, and terminal status remain recoverable; this adds no overall deadline and does not change model settings.
-- The continuation progress signature now includes the durable task mode, so a structured plan/discussion/implementation change counts as progress without relying on assistant wording.
+- The continuation progress signature includes durable task mode and host-observed non-plan tool results, file changes, and verification. `update_plan` calls themselves do not count as implementation progress, so repeatedly rewriting a plan cannot keep a no-work loop alive; plans remain fully expandable and are not capped.
 - Regression coverage is authored but not run.
 - Added helper, schema, and sidecar-persistence regressions. All tests remain queued and unrun.
 
