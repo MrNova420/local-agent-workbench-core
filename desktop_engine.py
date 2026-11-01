@@ -1,6 +1,7 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
 import codecs, copy, json, os, queue, re, tempfile, threading, time, urllib.request, uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 import math
 from pathlib import Path
@@ -19,7 +20,7 @@ MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
 CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
-PROJECT_LIST_SCAN_LIMIT = 20000
+PROJECT_LIST_SCAN_LIMIT = None
 
 class RequestCancelled(Exception):
  def __init__(self,message='Cancelled',partial_message:dict|None=None):
@@ -27,7 +28,7 @@ class RequestCancelled(Exception):
 
 def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto") -> str:
     profile_guidance = (
-        "Small-model workflow: break complex work into manageable steps while completing the full request. Group independent read-only operations when useful; choose action sizes that fit the task and model reliability. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. For implementation tasks, plan once, then take the next unfinished action; revise the plan only when new evidence or changed requirements justify it. Each implementation turn should advance requested work, inspect a result, or verify it rather than repeat completed planning. Respect discussion and plan-only intent; do not implement those tasks. After compaction, continue from the saved checkpoint and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
+        "Small-model workflow: break complex work into manageable steps while completing the full request. Treat the visible plan as a living, expandable plan: add independent workstreams, acceptance criteria, and newly discovered work when useful; revisit or revise priorities as evidence or user direction changes. Preserve completed items and useful decisions, but do not limit the number of planning passes, plan items, or improvement cycles. Avoid repeating unchanged analysis without a reason; keep making progress through planning, implementation, inspection, and verification as the task needs. Group independent read-only operations when useful; choose action sizes that fit the task and model reliability. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Respect discussion and plan-only intent; do not implement those tasks. After compaction, continue from the saved checkpoint, retain and extend prior plans, and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
@@ -51,7 +52,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "For long builds, tests, installs, and other approved work, omit timeout_seconds unless a task-specific timeout is required; the host's Cancel control remains available. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
-        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. When earlier tool output is absent from the recent transcript, use read_operation_result with its checkpoint operation_id; request offset/length slices for output too large to fit. The checkpoint is factual state, while complete transcript, emitted reasoning text, and operation results remain in session history.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revisit, broaden, or resequence the plan whenever new evidence, quality improvements, or user direction warrant it. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When earlier tool output is absent from the recent transcript, use read_operation_result with its checkpoint operation_id; request offset/length slices for output too large to fit. The checkpoint is factual state, while complete transcript, emitted reasoning text, and operation results remain in session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
@@ -434,7 +435,7 @@ class Workspace:
 
 class ToolRegistry:
     """Explicit project tools; approved shell commands run as the host user without OS sandboxing."""
-    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,task_checkpoint:dict[str,Any]|None=None,read_output_token_budget:int|None=None):
+    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int|None=None,search_byte_limit:int|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,task_checkpoint:dict[str,Any]|None=None,read_output_token_budget:int|None=None):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
@@ -446,15 +447,14 @@ class ToolRegistry:
         self.permission_rules=validate_permission_rules(permission_rules or [])
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
         self.read_output_byte_budget=max(512,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
-        read_budget_description=(f"This run returns up to approximately {self.read_output_byte_budget:,} UTF-8 bytes per call, budgeted from its selected context and output settings."
-                                 if self.read_output_byte_budget is not None else "No per-call read excerpt budget is configured.")
+        read_budget_description="Return the complete requested result when it fits the remaining request context. If the current request or a batch cannot fit it, return a clearly marked continuation cursor; do not silently omit material."
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [
-          self._schema("list_files", f"List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; results also page to the current context budget. Continue with the returned offset and limit when more results exist. {read_budget_description}", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
-          self._schema("search_files", f"Search project text for a literal substring. Use path and include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Default page size is 100; results also page to the current context budget. Continue with the returned offset and limit when more results exist. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
-          self._schema("read_file", f"Read a project file; optional 1-based line bounds and start_column let you inspect large files in sections. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
+          self._schema("list_files", f"List project files under an optional path and filename/glob pattern, such as src/**/*.tsx. Choose a useful page size with limit and continue at the returned offset. {read_budget_description}", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, []),
+          self._schema("search_files", f"Search project text for a literal substring. Use path/include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Choose a useful page size with limit and continue at the returned offset. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, ["query"]),
+          self._schema("read_file", f"Read the complete project file by default; optional 1-based line bounds and start_column let you continue through large files. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
-          self._schema("update_plan", "Create or update the current task checklist, concrete observable acceptance criteria, and concise user-relevant design decisions or assumptions to preserve across compaction. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, ["items"]),
+          self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
@@ -473,7 +473,8 @@ class ToolRegistry:
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
         return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required,"additionalProperties":False}}}
-    def run(self, name: str, args: dict) -> str:
+    def run(self, name: str, args: dict, *, output_byte_budget: int | None = None) -> str:
+        active_output_budget=self.read_output_byte_budget if output_byte_budget is None else max(0,int(output_byte_budget))
         policy=permission_decision(name,args,self.permission_rules)
         policy_approved=False
         if policy in {"allow","ask"}:
@@ -511,7 +512,17 @@ class ToolRegistry:
                 return (r.stdout+r.stderr) or "No tracked changes."
             except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
         if name == "update_plan":
-            self.plan=args.get("items",[]);self.plan_source="agent";criteria=args.get("acceptance_criteria");decisions=args.get("decisions");event={"type":"plan","items":self.plan}
+            replacement=args.get("items");additions=args.get("add_items")
+            if not isinstance(replacement,list) and not isinstance(additions,list):return "Invalid plan update: provide items to revise the full plan or add_items to expand the current plan."
+            self.plan=copy.deepcopy(replacement) if isinstance(replacement,list) else copy.deepcopy(self.plan)
+            if isinstance(additions,list):self.plan.extend(copy.deepcopy(additions))
+            self.plan_source="agent";criteria=args.get("acceptance_criteria");added_criteria=args.get("add_acceptance_criteria");decisions=args.get("decisions");event={"type":"plan","items":self.plan}
+            if isinstance(added_criteria,list):
+                current_criteria=current_task(self.task_checkpoint).get("acceptance_criteria",[]) if self.task_checkpoint is not None else []
+                merged=list(current_criteria) if isinstance(current_criteria,list) else []
+                for item in added_criteria:
+                    if isinstance(item,str) and item.strip() and item.strip() not in merged:merged.append(item.strip())
+                criteria=merged
             if isinstance(criteria,list):event["acceptanceCriteria"]=criteria
             if isinstance(decisions,list):event["decisions"]=decisions
             if self.task_checkpoint is not None:
@@ -527,12 +538,13 @@ class ToolRegistry:
             base = self.workspace.resolve(args.get("path", ".")); pattern = args.get("pattern", "*")
             offset=args.get("offset",0);limit=args.get("limit",1200)
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
-            if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=1200:return "Invalid limit: expected an integer from 1 to 1,200."
+            if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
             import fnmatch
             matches=[];matched=0;scanned=0;used_bytes=0;has_more=False;scan_capped=False
-            for p in iter_project_files(base,max_files=PROJECT_LIST_SCAN_LIMIT+1):
+            list_scan_max=PROJECT_LIST_SCAN_LIMIT+1 if PROJECT_LIST_SCAN_LIMIT is not None else None
+            for p in iter_project_files(base,max_files=list_scan_max):
                 scanned+=1
-                if scanned>PROJECT_LIST_SCAN_LIMIT:scan_capped=True;break
+                if PROJECT_LIST_SCAN_LIMIT is not None and scanned>PROJECT_LIST_SCAN_LIMIT:scan_capped=True;break
                 relative=p.relative_to(base).as_posix()
                 if "/" in pattern:
                     is_match=fnmatch.fnmatchcase(relative.casefold(),pattern.casefold())
@@ -542,7 +554,7 @@ class ToolRegistry:
                     if matched<offset:matched+=1;continue
                     item=p.relative_to(self.workspace.root).as_posix()
                     item_bytes=len(item.encode("utf8"))+(1 if matches else 0)
-                    if len(matches)<limit and (self.read_output_byte_budget is None or used_bytes+item_bytes<=self.read_output_byte_budget or not matches):
+                    if len(matches)<limit and (active_output_budget is None or used_bytes+item_bytes<=active_output_budget or not matches):
                         matches.append(item);used_bytes+=item_bytes
                     else:has_more=True;break
             result="\n".join(matches)
@@ -551,7 +563,7 @@ class ToolRegistry:
             if has_more:
                 result+="\n\n" if result else ""
                 if len(matches)>=limit:result+=f"[This page reached the requested {limit}-file page size.] "
-                elif self.read_output_byte_budget is not None:result+=f"[This page reached its context-derived ~{self.read_output_byte_budget:,}-byte output budget.] "
+                elif active_output_budget is not None:result+="[This page reached the remaining request-context budget.] "
                 result+=f"More results are available. Next offset {offset+len(matches)}; continue with limit {limit}."
             elif scan_capped:
                 result+="\n\n" if result else ""
@@ -562,12 +574,13 @@ class ToolRegistry:
             query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;used_bytes=0;capped=False;has_more=False
             offset=args.get("offset",0);limit=args.get("limit",100)
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
-            if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=100:return "Invalid limit: expected an integer from 1 to 100."
+            if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
             if not query:return "Search query must not be empty."
             import fnmatch
-            for p in iter_project_files(search_root,max_files=self.search_file_limit+1):
+            scan_max_files=self.search_file_limit+1 if self.search_file_limit is not None else None
+            for p in iter_project_files(search_root,max_files=scan_max_files):
                 scanned+=1
-                if scanned>self.search_file_limit:capped=True;break
+                if self.search_file_limit is not None and scanned>self.search_file_limit:capped=True;break
                 if p.suffix.casefold() not in TEXT_EXT:continue
                 relative=p.relative_to(search_root).as_posix()
                 if "/" in include:
@@ -577,7 +590,7 @@ class ToolRegistry:
                 if not matched:continue
                 try:
                     size=p.stat().st_size
-                    if bytes_read+size>self.search_byte_limit:capped=True;break
+                    if self.search_byte_limit is not None and bytes_read+size>self.search_byte_limit:capped=True;break
                     lines=p.read_text(encoding="utf8").splitlines();bytes_read+=size
                 except (OSError,UnicodeError): continue
                 for i,line in enumerate(lines,1):
@@ -586,7 +599,7 @@ class ToolRegistry:
                         if len(hits)>=limit:has_more=True;break
                         path_line=f"{p.relative_to(self.workspace.root).as_posix()}:{i}: "
                         content=line
-                        budget=self.read_output_byte_budget
+                        budget=active_output_budget
                         if budget is not None and len((path_line+content).encode("utf8"))>budget:
                             content=f"[matching line exceeds the result budget; inspect with read_file at line {i}]"
                         record=path_line+content
@@ -640,7 +653,7 @@ class ToolRegistry:
                             return f"Requested start column {start_column} is beyond line {line_number}."
                         if line_number>=start and column>=(start_column if line_number==start else 1):
                             char_bytes=len(char.encode("utf8"))
-                            if self.read_output_byte_budget is not None and used_bytes+char_bytes>self.read_output_byte_budget:
+                            if active_output_budget is not None and used_bytes+char_bytes>active_output_budget:
                                 truncated=True
                                 next_position=(line_number,column)
                                 break
@@ -877,6 +890,7 @@ def _utf8_suffix(value:str,budget:int)->tuple[str,int]:
 
 def tool_result_for_context(value:str,byte_budget:int,operation_id:str)->str:
     """Keep large tool results complete on disk and provide a bounded resumable model excerpt."""
+    byte_budget=max(192,int(byte_budget))
     if len(value.encode("utf8"))<=byte_budget:return value
     content_budget=max(0,(byte_budget-240)//2)
     head_budget=content_budget*2//3;tail_budget=content_budget-head_budget
@@ -911,7 +925,7 @@ def _split_turn_for_compaction(turn:list[dict])->list[list[dict]]:
     return groups
 
 class ContextManager:
-    def __init__(self, context: int=CONTEXT_MAX, reserve:int=512,scan_file_limit:int=5000,scan_bytes_limit:int=128*1024*1024): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
+    def __init__(self, context: int=CONTEXT_MAX, reserve:int=512,scan_file_limit:int|None=None,scan_bytes_limit:int|None=None): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
     @property
     def input_budget(self): return max(1024,self.context-self.reserve)
     def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens+1024))
@@ -925,12 +939,15 @@ class ContextManager:
         stop_words={"about","after","also","and","are","but","can","could","does","from","have","into","like","make","need","please","that","the","this","want","with","would"}
         terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}-stop_words; ranked=[];examined=0;bytes_read=0;capped=False
         if not terms:return ""
-        for p in iter_project_files(root,max_files=self.scan_file_limit):
+        retrieval_scan_max=self.scan_file_limit+1 if self.scan_file_limit is not None else None
+        for p in iter_project_files(root,max_files=retrieval_scan_max):
             examined+=1
+            if self.scan_file_limit is not None and examined>self.scan_file_limit:
+                capped=True;break
             if p.suffix.casefold() not in TEXT_EXT:continue
             try:
                 size=p.stat().st_size
-                if bytes_read+size>self.scan_bytes_limit:capped=True;break
+                if self.scan_bytes_limit is not None and bytes_read+size>self.scan_bytes_limit:capped=True;break
                 bytes_read+=size
                 path_tokens={word.casefold() for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",p.relative_to(root).as_posix())}
                 path_score=20*len(terms & path_tokens)
@@ -960,7 +977,6 @@ class ContextManager:
                 snippets="\n…\n".join("\n".join(f"{number}: {matching_lines[number]}" for number in range(start,end+1)) for start,end in excerpts)
                 if match_count>len(excerpts):snippets+=f"\n[Showing {len(excerpts)} matching excerpt groups from {match_count} matching lines.]"
                 ranked.append((score,rel,snippets))
-        if examined>=self.scan_file_limit:capped=True
         used=0; out=[];omitted_for_budget=False
         for score,rel,snippets in sorted(ranked,key=lambda x:(-x[0],x[1].casefold())):
             block=f"--- relevant file: {rel} (relevance {score}) ---\n{snippets or '[Path matched the task; inspect this file with read_file.]'}"; size=self.estimate(block)
@@ -1190,7 +1206,7 @@ class AgentEngine:
             return self.operation_results.get(operation_id)
         checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
         self.permission_rules=validate_permission_rules(permission_rules or [])
-        read_output_budget=max(128,self.context.budget(max_tokens)//8)
+        read_output_budget=self.context.budget(max_tokens)
         registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result,permission_rules=self.permission_rules,task_checkpoint=checkpoint,read_output_token_budget=read_output_budget)
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
         if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
@@ -1286,6 +1302,16 @@ class AgentEngine:
         else:update_description("\n".join(f"- {item['name']}: {item['description']}" for item in selected))
         self._catalog_skill_names=[item["name"] for item in selected]
         return tools
+    def _tool_output_budget(self,request_messages:list[dict],assistant_message:dict,prior_tool_messages:list[dict],tools:list[dict],checkpoint:dict[str,Any],tool_name:str,remaining_calls:int)->int:
+        """Allocate the actual remaining selected input budget across this tool batch."""
+        input_budget=self.context.budget(self.state["max_tokens"])
+        candidate=request_messages+[assistant_message,*prior_tool_messages,{"role":"tool","tool_name":tool_name,"content":""}]
+        used=self.context.estimate(json.dumps({"messages":candidate,"tools":tools},ensure_ascii=False,separators=(",",":")))
+        available=max(0,input_budget-used)
+        # Reserve a small envelope for a resumable-result pointer, then divide
+        # the actual remaining request budget among calls still pending.
+        envelope_reserve=min(256,available*2)
+        return max(0,(available//max(1,remaining_calls))*2-envelope_reserve)
     def run(self,prompt:str,messages:list[dict]|None=None)->list[dict]:
         access_policy={
             "plan":"Read-only: do not request project writes or commands.",
@@ -1334,6 +1360,8 @@ class AgentEngine:
                 result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
                 record_assistant_status(checkpoint,msg)
                 calls=msg.get("tool_calls") or []
+                assistant_tool_message={"role":"assistant",**msg}
+                batch_tool_messages=[]
                 if calls:
                     self.event({"type":"tool_batch","request_index":request_index,"assistantMessage":{"role":"assistant",**msg},"calls":[
                         {"id":call.get("id",f"call-{index}"),"name":(call.get("function") or {}).get("name","")}
@@ -1376,6 +1404,40 @@ class AgentEngine:
                     workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested)
                     finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
+                # Run independent read-only calls together. Mixed batches, writes,
+                # commands, MCP, and permission-prompted actions stay ordered.
+                readonly_names={"list_files","search_files","read_file","read_operation_result","git_status","git_diff","git_log"}
+                prepared_batch:dict[int,dict[str,Any]]={}
+                if len(calls)>1:
+                    parsed_batch=[];batch_is_readonly=True
+                    available_schemas=self.state["registry"].schemas+self.mcp_tools
+                    for batch_index,batch_call in enumerate(calls):
+                        batch_fn=batch_call.get("function") or {};batch_name=batch_fn.get("name","");batch_raw=batch_fn.get("arguments",{})
+                        try:batch_args=json.loads(batch_raw or "{}") if isinstance(batch_raw,str) else batch_raw
+                        except json.JSONDecodeError:batch_args=None
+                        batch_schema=next((item.get("function",{}).get("parameters",{}) for item in available_schemas if item.get("function",{}).get("name")==batch_name),None)
+                        batch_invalid=not isinstance(batch_args,dict) or batch_schema is None or bool(_validate_tool_arguments(batch_args,batch_schema))
+                        if batch_name not in readonly_names or batch_invalid or permission_decision(batch_name,batch_args if isinstance(batch_args,dict) else {},self.permission_rules) is not None:
+                            batch_is_readonly=False
+                        parsed_batch.append((batch_index,batch_call,batch_name,batch_args if isinstance(batch_args,dict) else {}))
+                    if batch_is_readonly and not self.cancel_event.is_set():
+                        futures={}
+                        with ThreadPoolExecutor() as executor:
+                            for batch_index,batch_call,batch_name,batch_args in parsed_batch:
+                                operation_id=uuid.uuid4().hex;operation_started=time.time()
+                                self.event({"type":"tool_start","operationId":operation_id,"toolCallId":batch_call.get("id",f"call-{batch_index}"),"name":batch_name,"arguments":batch_args,"status":"running","startedAt":operation_started})
+                                output_budget=self._tool_output_budget(request_messages,assistant_tool_message,[],tools,checkpoint,batch_name,len(calls))
+                                future=executor.submit(self.state["registry"].run,batch_name,batch_args,output_byte_budget=output_budget)
+                                futures[future]=(batch_index,operation_id,operation_started,output_budget)
+                            for future in as_completed(futures):
+                                batch_index,operation_id,operation_started,output_budget=futures[future]
+                                try:out=future.result()
+                                except Exception as exc:out=f"Tool error: {type(exc).__name__}: {exc}"
+                                batch_name=parsed_batch[batch_index][2]
+                                completed_at=time.time();status=_tool_activity_status(batch_name,str(out))
+                                operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":parsed_batch[batch_index][1].get("id",f"call-{batch_index}"),"name":batch_name,"result":str(out),"status":status,"affectedFiles":[],"startedAt":operation_started,"completedAt":completed_at}
+                                self.operation_results[operation_id]=str(out);record_operation(checkpoint,operation_event);self.event(operation_event)
+                                prepared_batch[batch_index]={"operation_id":operation_id,"started":operation_started,"output":str(out),"budget":output_budget,"completed_event":True}
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
                     args_error=None
@@ -1408,27 +1470,31 @@ class AgentEngine:
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
                     else:
-                        operation_id=uuid.uuid4().hex
-                        operation_started=time.time()
+                        prepared=prepared_batch.get(index)
+                        operation_id=prepared["operation_id"] if prepared else uuid.uuid4().hex
+                        operation_started=prepared["started"] if prepared else time.time()
                         registry=self.state["registry"]
-                        previous_event=registry.event
-                        registry.event=lambda event,op=operation_id:self.event({**event,"operationId":op})
                         tool_call_id=call.get("id",f"call-{index}")
-                        self.event({"type":"tool_start","operationId":operation_id,"toolCallId":tool_call_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
-                        try:
-                            if name.startswith("mcp__") and self.mcp_call:
-                                if not self._approval(name,args):out="Denied by user."
-                                else:out=self.mcp_call(name,args)
-                            else:out=self.state["registry"].run(name,args)
-                        except RequestCancelled:out="Cancelled while waiting for approval."
-                        except MCPRequestCancelled:
-                            out="Uncertain: MCP action was cancelled after dispatch; the server may have applied it. Inspect before retrying."
-                        except MCPRequestUncertain as exc:out=f"Uncertain: {exc}"
-                        except Exception as exc:
-                            if name.startswith("mcp__"):
-                                out=f"Uncertain: MCP call failed after dispatch ({type(exc).__name__}); server-side effects may have occurred. Inspect before retrying."
-                            else:out=f"Tool error: {type(exc).__name__}: {exc}"
-                        finally:registry.event=previous_event
+                        if prepared:
+                            out=prepared["output"]
+                        else:
+                            previous_event=registry.event
+                            registry.event=lambda event,op=operation_id:self.event({**event,"operationId":op})
+                            self.event({"type":"tool_start","operationId":operation_id,"toolCallId":tool_call_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
+                            try:
+                                if name.startswith("mcp__") and self.mcp_call:
+                                    if not self._approval(name,args):out="Denied by user."
+                                    else:out=self.mcp_call(name,args)
+                                else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
+                            except RequestCancelled:out="Cancelled while waiting for approval."
+                            except MCPRequestCancelled:
+                                out="Uncertain: MCP action was cancelled after dispatch; the server may have applied it. Inspect before retrying."
+                            except MCPRequestUncertain as exc:out=f"Uncertain: {exc}"
+                            except Exception as exc:
+                                if name.startswith("mcp__"):
+                                    out=f"Uncertain: MCP call failed after dispatch ({type(exc).__name__}); server-side effects may have occurred. Inspect before retrying."
+                                else:out=f"Tool error: {type(exc).__name__}: {exc}"
+                            finally:registry.event=previous_event
                         affected=[]
                         if name in {"read_file","write_file","edit_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
                         elif name=="apply_patch":
@@ -1451,8 +1517,9 @@ class AgentEngine:
                             verification_steps.append({"kind":"command","tool":name,"arguments":copy.deepcopy(args),"result":status})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()}
                         self.operation_results[operation_id]=str(out)
-                        record_operation(checkpoint,operation_event)
-                        self.event(operation_event)
+                        if not (prepared and prepared.get("completed_event")):
+                            record_operation(checkpoint,operation_event)
+                            self.event(operation_event)
                         self._advance_workbench_plan(name,status)
                         if status == "uncertain":
                             checkpoint_state = current_task(checkpoint)
@@ -1465,9 +1532,12 @@ class AgentEngine:
                                 "arguments": copy.deepcopy(args),
                             }
                     if name=="update_plan" and not args_error:
-                        record_plan(checkpoint,args.get("items",[]),args.get("acceptance_criteria"))
-                    context_result=tool_result_for_context(str(out),self.state["registry"].read_output_byte_budget,operation_id)
-                    msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":context_result})
+                        record_plan(checkpoint,self.state["registry"].plan,args.get("acceptance_criteria"),args.get("decisions"))
+                    prepared=prepared_batch.get(index)
+                    output_budget=prepared["budget"] if prepared else self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
+                    context_result=tool_result_for_context(str(out),output_budget,operation_id)
+                    tool_message={"role":"tool","tool_name":name or "unknown_tool","content":context_result}
+                    msgs.append(tool_message);batch_tool_messages.append(tool_message)
                     if name.startswith("mcp__") and status == "uncertain" and not self.cancel_event.is_set():
                         reason="MCP operation outcome is uncertain; inspect its remote effects before any retry. Remaining batched actions were not executed."
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):

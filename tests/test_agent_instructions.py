@@ -22,10 +22,13 @@ def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_lim
     assert "inspect results" in prompt.casefold()
 
 
-def test_small_model_workflow_prevents_restarting_or_repeating_completed_planning():
+def test_small_model_workflow_allows_iterative_planning_and_plan_expansion():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="small-model")
 
-    assert "plan once" in prompt.casefold()
+    assert "living, expandable plan" in prompt.casefold()
+    assert "add independent workstreams" in prompt.casefold()
+    assert "revisit or revise" in prompt.casefold()
+    assert "plan once" not in prompt.casefold()
     assert "take the next unfinished action" in prompt.casefold()
     assert "after compaction, continue from the saved checkpoint" in prompt.casefold()
 
@@ -41,4 +44,4 @@ def test_standard_workflow_remains_general():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="standard")
 
     assert "group independent read-only operations when useful" not in prompt.casefold()
-    assert "plan once" not in prompt.casefold()
+    assert "living, expandable plan" not in prompt.casefold()

@@ -30,6 +30,8 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(MODEL, 'hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M')
         self.assertEqual(CONTEXT_MAX, 262144)
         self.assertEqual(ContextManager().context, 262144)
+        self.assertIsNone(ContextManager().scan_file_limit)
+        self.assertIsNone(ContextManager().scan_bytes_limit)
     def test_retrieval_stays_inside_workspace_and_ranks_relevant_file(self):
         from tempfile import TemporaryDirectory
         from pathlib import Path

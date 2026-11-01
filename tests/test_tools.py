@@ -8,13 +8,15 @@ class ToolTests(unittest.TestCase):
    tools=ToolRegistry(Workspace(t),lambda *_:True)
    names={schema['function']['name'] for schema in tools.schemas}
    self.assertIn('git_diff',names)
- def test_file_listing_discloses_result_cap(self):
+ def test_file_listing_pages_at_requested_page_size_without_a_hard_maximum(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)
    for i in range(1201):(root/f'{i:04}.txt').write_text('x')
    tools=ToolRegistry(Workspace(root),lambda *_:True)
    result=tools.run('list_files',{'path':'.','pattern':'*.txt'})
-   self.assertIn('[File listing capped at 1,200 entries; results may be incomplete.]',result)
+   self.assertIn('[This page reached the requested 1200-file page size.]',result)
+   self.assertIsNone(tools.search_file_limit)
+   self.assertIsNone(tools.search_byte_limit)
  def test_file_listing_pages_through_matches_without_restarting_at_first_page(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)
@@ -108,7 +110,7 @@ class ToolTests(unittest.TestCase):
     engine=AgentEngine(Path(t),context=65536,max_tokens=8192)
     self.assertEqual(engine.state['context'],65536)
     self.assertEqual(engine.state['max_tokens'],8192)
-    self.assertEqual(engine.state['registry'].read_output_byte_budget,14080)
+    self.assertEqual(engine.state['registry'].read_output_byte_budget,112640)
 
  def test_file_listing_pages_within_context_budget(self):
    import re

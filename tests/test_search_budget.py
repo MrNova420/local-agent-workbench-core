@@ -6,6 +6,12 @@ from desktop_engine import ToolRegistry, Workspace
 
 
 class SearchBudgetTests(unittest.TestCase):
+    def test_project_search_has_no_implicit_file_or_byte_scan_ceiling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ToolRegistry(Workspace(directory), lambda *_: True)
+            self.assertIsNone(registry.search_file_limit)
+            self.assertIsNone(registry.search_byte_limit)
+
     def test_exact_file_scan_limit_is_not_reported_as_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -160,6 +160,7 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
     assert "acceptance_criteria" not in schema["required"]
     assert schema["properties"]["acceptance_criteria"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["decisions"] == {"type": "array", "items": {"type": "string"}}
+    assert schema["properties"]["add_items"]["type"] == "array"
     registry.run("update_plan", {"items": [{"title": "Build", "status": "pending"}],
                                 "acceptance_criteria": ["The requested page renders."],
                                 "decisions": ["Use the existing router to preserve deep links."]})
@@ -167,6 +168,27 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
     assert events[-1]["acceptanceCriteria"] == ["The requested page renders."]
     assert events[-1]["decisions"] == ["Use the existing router to preserve deep links."]
     assert checkpoint["current"]["decisions"][0]["text"] == "Use the existing router to preserve deep links."
+
+
+def test_agent_can_expand_plan_without_replacing_existing_independent_workstreams(tmp_path):
+    from desktop_engine import ToolRegistry, Workspace
+
+    registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_args: True)
+    registry.plan = [
+        {"title": "Build the API", "status": "in_progress", "group": "Backend"},
+        {"title": "Add the page", "status": "pending", "group": "Frontend"},
+    ]
+
+    result = registry.run("update_plan", {"add_items": [
+        {"title": "Add route tests", "status": "pending", "group": "Backend"},
+        {"title": "Review keyboard flow", "status": "pending", "group": "Accessibility"},
+    ]})
+
+    assert result == "Plan updated."
+    assert [item["title"] for item in registry.plan] == [
+        "Build the API", "Add the page", "Add route tests", "Review keyboard flow",
+    ]
+    assert registry.plan[-1]["group"] == "Accessibility"
 
 
 def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_left_alone(tmp_path):

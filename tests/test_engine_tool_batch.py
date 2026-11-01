@@ -1,4 +1,6 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -6,6 +8,33 @@ from desktop_engine import AgentEngine
 
 
 class EngineToolBatchTests(unittest.TestCase):
+    def test_independent_read_only_calls_execute_concurrently_and_keep_ordered_results(self):
+        with tempfile.TemporaryDirectory() as root:
+            engine = AgentEngine(root)
+            calls = [
+                {"id": "status", "function": {"name": "git_status", "arguments": {}}},
+                {"id": "diff", "function": {"name": "git_diff", "arguments": {}}},
+            ]
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": calls}},
+                {"message": {"role": "assistant", "content": "Read both results."}},
+            ]
+            lock = threading.Lock(); active = 0; peak = 0
+            def run_tool(name, args, **kwargs):
+                nonlocal active, peak
+                with lock:
+                    active += 1; peak = max(peak, active)
+                time.sleep(0.05)
+                with lock: active -= 1
+                return name
+            engine.state["registry"].run = run_tool
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            history = engine.run("Inspect the project status and diff.")
+
+            self.assertGreaterEqual(peak, 2)
+            self.assertEqual([m["content"] for m in history if m.get("role") == "tool"], ["git_status", "git_diff"])
+
     def test_uncertain_mcp_result_stops_remaining_batched_actions(self):
         with tempfile.TemporaryDirectory() as root:
             mcp_tool = {"type": "function", "function": {

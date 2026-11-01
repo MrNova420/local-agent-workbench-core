@@ -221,8 +221,10 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
         "and completed host tool events; result_ref points to the complete saved operation result):\n"
     )
     footer = (
-        "\nContinue this task from the recorded state. Do not restart planning or claim an operation "
-        "was completed unless its saved status says completed. Use the saved result reference or "
+        "\nContinue this task from the recorded state. Retain the existing plan and completed work; "
+        "extend, revise, or add independent workstreams when new evidence, quality improvements, "
+        "or user direction warrants it. Never claim an operation was completed unless its saved "
+        "status says completed. Use the saved result reference or "
         "project tools to inspect details when the recent transcript does not contain them. "
         "Use read_operation_result with an operation_id from this checkpoint to retrieve saved output. "
         "If an operation status is uncertain, inspect the current workspace and saved operation "
