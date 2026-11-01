@@ -45,7 +45,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
-        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. The checkpoint is factual state, while complete transcript, reasoning text, and operation results remain in session history.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. The checkpoint is factual state, while complete transcript, reasoning text, and operation results remain in session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
@@ -365,6 +365,7 @@ class ToolRegistry:
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
+        self.plan=[]
         self.skills_enabled=bool(skills_enabled)
         self.skill_sources=tuple(("project", "user") if skill_sources is None else skill_sources)
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
@@ -372,7 +373,7 @@ class ToolRegistry:
           self._schema("list_files", "List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; continue with the returned offset and limit when more results exist.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
           self._schema("search_files", "Search project text for a literal substring. Use path and include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Default page size is 100; continue with the returned offset and limit when more results exist.", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
           self._schema("read_file", "Read a project file; optional 1-based line bounds let you inspect large files in sections", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}, ["path"]),
-          self._schema("update_plan", "Create or update the current task checklist", {"items":{"type":"array","items":{"type":"object"}}}, ["items"]),
+          self._schema("update_plan", "Create or update the current task checklist and concrete, observable acceptance criteria for this task. Keep each criterion specific enough to inspect or verify.", {"items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}}}, ["items"]),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
@@ -408,7 +409,9 @@ class ToolRegistry:
                 return (r.stdout+r.stderr) or "No tracked changes."
             except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
         if name == "update_plan":
-            self.plan=args.get("items",[]);self.event({"type":"plan","items":self.plan});return "Plan updated."
+            self.plan=args.get("items",[]);criteria=args.get("acceptance_criteria");event={"type":"plan","items":self.plan}
+            if isinstance(criteria,list):event["acceptanceCriteria"]=criteria
+            self.event(event);return "Plan updated."
         if name == "skill":
             if not self.skills_enabled:return "Skills are disabled for this run. Enable them in Run configuration before requesting a skill."
             knowledge=ProjectKnowledge(self.workspace.root);skills=self.skill_rows
@@ -1128,7 +1131,7 @@ class AgentEngine:
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
                     if name=="update_plan" and not args_error:
-                        record_plan(checkpoint,args.get("items",[]))
+                        record_plan(checkpoint,args.get("items",[]),args.get("acceptance_criteria"))
                     msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":str(out)})
                     if self.stop_after_operation.is_set():
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):

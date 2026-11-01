@@ -137,3 +137,10 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Implementation commands can change project files without using the structured file tools. The engine now treats such effects as possible, records the exact approved command arguments and later inspection target, and requests one bounded post-command workspace inspection before it completes when no later inspection exists.
 - A command-only implementation remains `implementation_unverified` even if a later inspection ran, because the host has no structured write evidence identifying exactly what changed. A failed command remains `command_failed`; the UI warns that partial side effects may remain. Successful command exit is still not represented as a test pass.
 - Engine and renderer regressions cover this path and are queued for the final verification gate. No test, model, package, or UI run was performed for this source change.
+
+## 2026-11-01 task-specific acceptance criteria in progress
+
+- `update_plan` now accepts optional concrete acceptance criteria alongside checklist items. Criteria are retained in the active task checkpoint and its compaction rendering, while legacy calls that only send checklist items remain valid.
+- The source distinguishes agent-defined criteria from the workbench's empty starter state. A new task publishes an explicit empty criteria snapshot so restoring a session cannot reuse criteria from an older task.
+- Code review also found that `AgentEngine.run` reads `ToolRegistry.plan` before any plan update, but the registry had not initialized that field. It is now initialized to an empty list; a queued regression asserts the pre-update state.
+- Engine checkpoint, schema, sidecar journal replay, worker, renderer restore, and Plan-panel regressions have been added. All are queued; no tests, typecheck, package, app launch, or inference was run.

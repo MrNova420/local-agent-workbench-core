@@ -57,6 +57,8 @@ def begin_task(
             "changed_files": [],
             "verification": [],
             "plan": copy.deepcopy(plan or []),
+            "acceptance_criteria": [],
+            "acceptance_criteria_source": "awaiting_agent_refinement",
         }
     else:
         updates = current.setdefault("user_updates", [])
@@ -97,13 +99,17 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
     ]
 
 
-def record_plan(checkpoint: dict[str, Any], items: Any) -> None:
+def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any = None) -> None:
     checkpoint = _current(checkpoint)
     if isinstance(items, list):
         checkpoint["plan"] = copy.deepcopy(items)
         pending = next((item for item in items if isinstance(item, dict)
                         and str(item.get("status", "pending")).casefold() in {"pending", "in_progress", "in progress"}), None)
         checkpoint["next_action"] = str((pending or {}).get("title") or (pending or {}).get("text") or "Continue the active task plan.")
+        checkpoint["updated_at"] = time.time()
+    if isinstance(acceptance_criteria, list):
+        checkpoint["acceptance_criteria"] = [item.strip() for item in acceptance_criteria if isinstance(item, str) and item.strip()]
+        checkpoint["acceptance_criteria_source"] = "agent"
         checkpoint["updated_at"] = time.time()
 
 
@@ -179,6 +185,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
         for key in (
             "schema_version", "task_id", "status", "goal", "user_updates", "workspace",
             "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
+            "acceptance_criteria", "acceptance_criteria_source",
             "last_assistant_update", "next_action",
         )
         if checkpoint.get(key) not in (None, [], "")
@@ -189,7 +196,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
     if isinstance(history, list) and history:
         previous = history[-1]
         if isinstance(previous, dict):
-            prior_keys = ("task_id", "status", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan",
+            prior_keys = ("task_id", "status", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan", "acceptance_criteria",
                           "changed_files", "verification", "last_assistant_update", "next_action")
             prior = {key: copy.deepcopy(previous[key]) for key in prior_keys
                      if previous.get(key) not in (None, [], "")}
