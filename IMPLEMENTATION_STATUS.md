@@ -125,3 +125,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Verification records carry a compact evidence contract: whether a project change was observed, whether a post-change inspection completed, and the results of approved commands. A successful command is explicitly not a test-pass claim.
 - After a successful change, the engine's bounded continuation now asks for a post-change inspection even when a command already ran. If the model still does not inspect, the terminal record remains unverified and names the missing evidence.
 - Regression tests cover outcome precedence and evidence records. They are queued; no tests or model calls were run for this change.
+
+## 2026-11-01 prompt provenance in progress
+
+- The engine now emits a compact provenance manifest immediately before each provider request, describing that exact request's messages, conservative input estimate/budget, compaction notice and task-checkpoint inclusion, project instruction paths/sizes, retrieved project-relative file paths, enabled/available/catalog-included skills, retained skill-load results, and exact tool/MCP names.
+- The manifest contains source metadata and sizes, not duplicated prompt text or MCP credentials. It is stored as a durable activity event so the same inspection can be reopened with the session.
+- Pure engine cases cover prompt-source accounting, exact skill catalog inclusion, retained skill results, and omission of prompt content. These are queued and unrun.
