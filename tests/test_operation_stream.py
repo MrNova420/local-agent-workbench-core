@@ -129,7 +129,8 @@ class OperationStreamTests(unittest.TestCase):
             self.assertTrue(any(event.get("type") == "tool_done" and event.get("status") == "completed" for event in events))
             self.assertTrue(any(event.get("type") == "complete" for event in events))
             completion=next(event for event in events if event.get("type")=="complete")
-            self.assertEqual(completion["verification"]["status"],"check_ran")
+            self.assertEqual(completion["verification"]["status"],"inspected")
+            self.assertEqual(completion["verification"]["steps"],[{"kind":"inspection","tool":"read_file","result":"completed"}])
             self.assertEqual(messages[-1]["content"], "The page is ready.")
 
     def test_plan_only_request_does_not_force_a_tool_followup(self):
