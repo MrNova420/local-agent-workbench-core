@@ -203,4 +203,5 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 ## 2026-11-01 approved command timeout behavior
 
 - `run_command` and `run_shell` no longer impose a 120-second default or a one-hour ceiling. Omit `timeout_seconds` to wait for command completion or user cancellation; a caller can still request any positive explicit timeout. Tool descriptions and agent guidance explain this behavior.
+- The retained CLI approval preview now displays the actual command and says whether the operation has no deadline or an explicitly requested timeout; it no longer shows a false 120-second default.
 - Added queued validation coverage for no implicit timeout, large explicit values, and invalid values. No command or long-running task was launched.

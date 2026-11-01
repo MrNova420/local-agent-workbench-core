@@ -361,8 +361,11 @@ class LocalAgentApp(tk.Tk):
   name,args=e['name'],e.get('arguments',{});condition=e['condition'];result=e['result'];self.pending_approval=(condition,result)
   dialog=tk.Toplevel(self);dialog.title('Review requested action');dialog.geometry('860x650');dialog.minsize(620,430);dialog.configure(bg=BG);dialog.transient(self);dialog.grab_set();dialog.columnconfigure(0,weight=1);dialog.rowconfigure(3,weight=1)
   tk.Label(dialog,text='ACTION REVIEW',bg=BG,fg=AMBER,font=('Segoe UI Semibold',9)).grid(row=0,column=0,sticky='w',padx=20,pady=(16,3));tk.Label(dialog,text=name.replace('_',' ').title(),bg=BG,fg=TEXT,font=('Segoe UI Semibold',16)).grid(row=1,column=0,sticky='w',padx=20,pady=(0,10))
-  if name=='run_command':
-   detail='Command argv:\n'+json.dumps(args.get('argv',[]),ensure_ascii=False,indent=2)+f"\n\nTimeout: {args.get('timeout_seconds',120)} seconds\n\nThis process runs with your Windows account permissions."
+  if name in {'run_command','run_shell'}:
+   command=json.dumps(args.get('argv',[]),ensure_ascii=False,indent=2) if name=='run_command' else str(args.get('command',''))
+   timeout=args.get('timeout_seconds')
+   timeout_detail=f"Explicit timeout: {timeout} seconds" if timeout is not None else 'No command deadline; runs until completion or user cancellation.'
+   detail=f"Command:\n{command}\n\n{timeout_detail}\n\nThis process runs with your Windows account permissions."
   elif name=='apply_patch':detail=str(args.get('patch',''))
   else:detail=json.dumps(args,indent=2,ensure_ascii=False)
   if name.startswith('mcp__'):warning='Local MCP server actions may access resources outside the selected project.'
