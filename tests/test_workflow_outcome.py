@@ -1,4 +1,4 @@
-from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_has_open_work, _plan_requests_implementation, _restored_plan_requests_implementation, _verification_report, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_has_open_work, _plan_requests_implementation, _restored_plan_requests_implementation, _saved_plan_source, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import initial_task_plan
 
 
@@ -130,6 +130,13 @@ def test_restored_open_agent_plan_keeps_automatic_implementation_obligation():
     assert not _restored_plan_requests_implementation("auto", "discussion", "agent", pending)
     assert not _restored_plan_requests_implementation("auto", "plan", "workbench", pending)
     assert not _restored_plan_requests_implementation("plan", "plan", "agent", pending)
+
+
+def test_plan_ownership_migrates_from_legacy_checkpoints():
+    assert _saved_plan_source("plan", [{"title": "Build", "status": "pending"}], None) == "agent"
+    assert _saved_plan_source("plan", [{"title": "Build", "status": "pending", "source": "workbench"}], None) == "workbench"
+    assert _saved_plan_source("auto", [{"title": "Build", "status": "pending"}], {"corrupt": True}) == "workbench"
+    assert _saved_plan_source("auto", [{"title": "Build", "status": "pending"}], "agent") == "agent"
 
 
 def test_unknown_agent_plan_status_stays_open_until_explicitly_terminal():

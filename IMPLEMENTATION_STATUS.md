@@ -29,6 +29,7 @@
 
 - Task checkpoints now persist whether implementation was requested. Auto follow-ups retain this state across compaction/session recovery; explicit Discuss/Plan follow-ups clear it, and explicit Implement sets it. Continuation progress signatures and the compacted checkpoint include the field so a completed-looking plan cannot erase an interrupted implementation request.
 - Queued regressions cover checkpoint persistence, explicit read-only reset, and state-based continuation. No tests, typecheck, build, UI, package, or model run was performed.
+- Legacy checkpoints without plan provenance migrate using saved item markers first and the saved `plan`/`implement` mode when markers are absent. Explicit Workbench-owned rows remain Workbench plans.
 
 ## 2026-11-01 Saved plan provenance and resume continuation (verification queued)
 

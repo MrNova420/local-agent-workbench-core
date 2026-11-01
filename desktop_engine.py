@@ -401,6 +401,21 @@ def _restored_plan_requests_implementation(task_intent: str, task_mode: str, pla
     """Restore implementation obligation from any saved open implementation plan."""
     return task_intent == "auto" and _plan_requests_implementation(task_mode, plan_source, plan)
 
+def _saved_plan_source(task_mode: str, plan: list[dict[str, Any]], recorded_source: Any) -> str:
+    """Recover plan ownership, including pre-provenance session checkpoints."""
+    if isinstance(recorded_source,str) and recorded_source in {"agent", "workbench"}:
+        return recorded_source
+    sources = {item.get("source") for item in plan if isinstance(item, dict)
+               and isinstance(item.get("source"),str)
+               and item.get("source") in {"agent", "workbench"}}
+    if "agent" in sources:
+        return "agent"
+    if sources == {"workbench"}:
+        return "workbench"
+    if plan and task_mode in {"plan", "implement"}:
+        return "agent"
+    return "workbench"
+
 def _assistant_has_final_content(message: dict[str, Any]) -> bool:
     """Only user-visible assistant content counts as a completed response."""
     content = message.get("content")
@@ -520,7 +535,7 @@ class ToolRegistry:
         saved_task_mode=current_task(self.task_checkpoint).get("task_mode") if self.task_checkpoint is not None else None
         self.task_mode=saved_task_mode if saved_task_mode in {"discussion", "plan_only", "plan", "implement"} else "auto"
         saved_plan_source=current_task(self.task_checkpoint).get("plan_source") if self.task_checkpoint is not None else None
-        if saved_plan_source in {"agent", "workbench"}:
+        if isinstance(saved_plan_source,str) and saved_plan_source in {"agent", "workbench"}:
             self.plan_source=saved_plan_source
         self.task_intent="auto"
         self.conversation_messages:list[dict[str,Any]]=[]
@@ -1391,11 +1406,11 @@ class AgentEngine:
             registry.task_mode=explicit_task_mode
             current_task(checkpoint)["task_mode"]=explicit_task_mode
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
-        saved_plan_source=current_task(checkpoint).get("plan_source")
-        if saved_plan_source in {"agent", "workbench"}:
-            registry.plan_source=saved_plan_source
-        elif any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
-            registry.plan_source="agent"
+        checkpoint_state=current_task(checkpoint)
+        registry.plan_source=_saved_plan_source(registry.task_mode,registry.plan,checkpoint_state.get("plan_source"))
+        if not (isinstance(checkpoint_state.get("plan_source"),str)
+                and checkpoint_state.get("plan_source") in {"agent", "workbench"}) and registry.plan:
+            checkpoint_state["plan_source"]=registry.plan_source
         self._selected_tool_names:set[str]=set()
         self._deferred_tool_names:list[str]=[]
         self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":registry,"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":checkpoint,"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources),"request_tools":None,"deferred_tool_names":[]}
