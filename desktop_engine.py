@@ -436,6 +436,7 @@ class ToolRegistry:
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
         self.plan=[]
+        self.plan_source="workbench"
         self.skills_enabled=bool(skills_enabled)
         self.skill_sources=tuple(("project", "user") if skill_sources is None else skill_sources)
         self.operation_result_lookup=operation_result_lookup
@@ -495,7 +496,7 @@ class ToolRegistry:
                 return (r.stdout+r.stderr) or "No tracked changes."
             except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
         if name == "update_plan":
-            self.plan=args.get("items",[]);criteria=args.get("acceptance_criteria");event={"type":"plan","items":self.plan}
+            self.plan=args.get("items",[]);self.plan_source="agent";criteria=args.get("acceptance_criteria");event={"type":"plan","items":self.plan}
             if isinstance(criteria,list):event["acceptanceCriteria"]=criteria
             self.event(event);return "Plan updated."
         if name == "skill":
@@ -1104,7 +1105,36 @@ class AgentEngine:
                 saved=operation_result_lookup(operation_id)
                 if saved is not None:return saved
             return self.operation_results.get(operation_id)
-        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result),"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":task_checkpoint if isinstance(task_checkpoint,dict) else {},"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
+        registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result)
+        checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
+        registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
+        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":registry,"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":checkpoint,"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
+    def _advance_workbench_plan(self,name:str,status:str,*,final:bool=False,verification:str|None=None,project_changed:bool=False,post_change_inspection:bool=False)->None:
+        """Reflect host-observed work in the starter checklist without rewriting agent plans."""
+        registry=self.state["registry"]
+        plan=registry.plan
+        if not plan or registry.plan_source!="workbench":return
+        inspect_tools={"list_files","search_files","read_file","git_status","git_diff","git_log"}
+        write_tools={"write_file","edit_file","apply_patch"}
+        changed=False
+        for item in plan:
+            if not isinstance(item,dict):continue
+            title=str(item.get("title","")).casefold()
+            target=None
+            if "inspect relevant project context" in title and name in inspect_tools:
+                target="completed" if status=="completed" else "in_progress"
+            elif "implement the requested changes" in title and name in write_tools|{"run_command","run_shell"}:
+                target="completed" if final and project_changed else "in_progress"
+            elif "inspect the changes and run relevant approved checks" in title:
+                if name in inspect_tools|{"run_command","run_shell"} and status=="completed":target="in_progress"
+                if final and (verification=="command_completed" or (verification=="inspected" and post_change_inspection)):target="completed"
+            if target and item.get("status")!=target:
+                item["status"]=target;changed=True
+        if changed:
+            checkpoint=self.state["task_checkpoint"]
+            current=current_task(checkpoint)
+            current["plan"]=copy.deepcopy(plan)
+            self.event({"type":"plan","items":copy.deepcopy(plan),"acceptanceCriteria":copy.deepcopy(current.get("acceptance_criteria",[])),"source":"workbench"})
     def _approval(self,name:str,args:Any)->bool:
         checkpoint=self.state["task_checkpoint"]
         if self.approval_mode=="auto":
@@ -1234,6 +1264,10 @@ class AgentEngine:
                         continue
                     verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
                         command_side_effects_possible,post_change_inspection)
+                    self._advance_workbench_plan("run_command", "completed", final=True,
+                                                 verification=str(verification.get("status", "")),
+                                                 project_changed=completed_project_change,
+                                                 post_change_inspection=post_change_inspection)
                     workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested)
                     finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
@@ -1312,6 +1346,7 @@ class AgentEngine:
                         self.operation_results[operation_id]=str(out)
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
+                        self._advance_workbench_plan(name,status)
                         if status == "uncertain":
                             checkpoint_state = current_task(checkpoint)
                             checkpoint_state["uncertain_operation"] = {

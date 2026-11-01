@@ -2,6 +2,8 @@
 
 ## 2026-11-01 unpublished continuity source work
 
+- Seeded implementation checklists now advance from host-observed reads, writes, commands, and post-change inspection. Model-authored plans take ownership when `update_plan` is called and are never overwritten by automatic progress. Acceptance criteria remain attached to host progress events. Queued regression covers progression and agent-plan ownership; it has not been run.
+
 - The inference copy of an oversized task checkpoint is now budgeted independently from the configured model context. It preserves the full saved checkpoint, active goal/plan/settings, newest operation references and recent updates, and reports each omitted history category. The compaction event exposes these counts to the desktop so the user can see what was summarized. Context/output/reasoning settings are unchanged. Regressions are queued and unrun.
 
 - Verification outcomes now retain an explicit `command_incomplete` state for cancelled, partial, uncertain, or otherwise incomplete command runs, even when the project also has observed file changes. The command result is included in the verification record. Queued regression coverage was added; no test was run.

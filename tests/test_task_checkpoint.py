@@ -138,3 +138,35 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
                                 "acceptance_criteria": ["The requested page renders."]})
     assert registry.plan == [{"title": "Build", "status": "pending"}]
     assert events[-1]["acceptanceCriteria"] == ["The requested page renders."]
+
+
+def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_left_alone(tmp_path):
+    from desktop_engine import AgentEngine
+
+    events = []
+    plan = [
+        {"title": "Inspect relevant project context", "status": "pending", "source": "workbench"},
+        {"title": "Refine the checklist with affected files and acceptance criteria", "status": "pending", "source": "workbench"},
+        {"title": "Implement the requested changes under the selected access and approval rules", "status": "pending", "source": "workbench"},
+        {"title": "Inspect the changes and run relevant approved checks", "status": "pending", "source": "workbench"},
+    ]
+    checkpoint = {"current": {"plan": copy.deepcopy(plan), "acceptance_criteria": ["The page renders."]}}
+    engine = AgentEngine(tmp_path, event=events.append, task_checkpoint=checkpoint)
+
+    engine._advance_workbench_plan("read_file", "completed")
+    assert engine.state["registry"].plan[0]["status"] == "completed"
+    assert events[-1]["type"] == "plan"
+    assert events[-1]["acceptanceCriteria"] == ["The page renders."]
+
+    engine._advance_workbench_plan("write_file", "completed")
+    assert engine.state["registry"].plan[2]["status"] == "in_progress"
+    engine._advance_workbench_plan("run_command", "completed", final=True,
+                                   verification="command_completed", project_changed=True)
+    assert engine.state["registry"].plan[2]["status"] == "completed"
+    assert engine.state["registry"].plan[3]["status"] == "completed"
+
+    registry = engine.state["registry"]
+    registry.run("update_plan", {"items": [{"title": "Agent-owned plan", "status": "pending"}]})
+    agent_plan = copy.deepcopy(registry.plan)
+    engine._advance_workbench_plan("write_file", "completed")
+    assert registry.plan == agent_plan
