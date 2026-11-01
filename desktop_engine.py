@@ -445,7 +445,7 @@ class ToolRegistry:
         self.operation_result_lookup=operation_result_lookup
         self.permission_rules=validate_permission_rules(permission_rules or [])
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
-        self.read_output_byte_budget=max(256,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
+        self.read_output_byte_budget=max(512,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
         read_budget_description=(f"This run returns up to approximately {self.read_output_byte_budget:,} UTF-8 bytes per call, budgeted from its selected context and output settings."
                                  if self.read_output_byte_budget is not None else "No per-call read excerpt budget is configured.")
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
@@ -858,6 +858,39 @@ class ToolRegistry:
             if self.cancel_event.is_set():return result+"\n[command cancelled by user]"
             return result+f"\n[exit {process.returncode}]"
         except (OSError,ValueError) as exc: return f"Command error: {exc}"
+
+def _utf8_prefix(value:str,budget:int)->tuple[str,int]:
+    used=0;index=0
+    while index<len(value):
+        size=len(value[index].encode("utf8"))
+        if used+size>budget:break
+        used+=size;index+=1
+    return value[:index],index
+
+def _utf8_suffix(value:str,budget:int)->tuple[str,int]:
+    used=0;index=len(value)
+    while index>0:
+        size=len(value[index-1].encode("utf8"))
+        if used+size>budget:break
+        used+=size;index-=1
+    return value[index:],index
+
+def tool_result_for_context(value:str,byte_budget:int,operation_id:str)->str:
+    """Keep large tool results complete on disk and provide a bounded resumable model excerpt."""
+    if len(value.encode("utf8"))<=byte_budget:return value
+    content_budget=max(0,(byte_budget-240)//2)
+    head_budget=content_budget*2//3;tail_budget=content_budget-head_budget
+    while True:
+        head,head_end=_utf8_prefix(value,head_budget)
+        tail,tail_start=_utf8_suffix(value,tail_budget)
+        omitted=max(0,tail_start-head_end)
+        marker=(f"[Tool result excerpt: full {len(value):,}-character result remains saved. "
+                f"Omitted characters {head_end}-{tail_start}; continue with read_operation_result "
+                f"operation_id={operation_id} offset={head_end} length={omitted}.]")
+        excerpt=head+"\n\n"+marker+"\n\n"+tail
+        if len(excerpt.encode("utf8"))<=byte_budget:return excerpt
+        if head_budget==0 and tail_budget==0:return marker[:byte_budget]
+        head_budget=head_budget*3//4;tail_budget=tail_budget*3//4
 
 def _split_turn_for_compaction(turn:list[dict])->list[list[dict]]:
     """Keep the user's instruction separate from complete assistant/tool exchanges."""
@@ -1433,7 +1466,8 @@ class AgentEngine:
                             }
                     if name=="update_plan" and not args_error:
                         record_plan(checkpoint,args.get("items",[]),args.get("acceptance_criteria"))
-                    msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":str(out)})
+                    context_result=tool_result_for_context(str(out),self.state["registry"].read_output_byte_budget,operation_id)
+                    msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":context_result})
                     if name.startswith("mcp__") and status == "uncertain" and not self.cancel_event.is_set():
                         reason="MCP operation outcome is uncertain; inspect its remote effects before any retry. Remaining batched actions were not executed."
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):

@@ -1,7 +1,31 @@
 import unittest
-from desktop_engine import ContextManager, CONTEXT_MAX, MODEL
+from desktop_engine import ContextManager, CONTEXT_MAX, MODEL, tool_result_for_context
 
 class ContextTests(unittest.TestCase):
+    def test_oversized_tool_results_keep_full_saved_result_retrievable_with_utf8_safe_cursor(self):
+        import re
+        result = ("start 雪\n" + "middle-" * 5000 + "\nfinish 雪")
+
+        excerpt = tool_result_for_context(result, 512, "operation-42")
+
+        self.assertLessEqual(len(excerpt.encode("utf-8")), 512)
+        self.assertTrue(excerpt.startswith("start 雪"))
+        self.assertTrue(excerpt.endswith("finish 雪"))
+        self.assertIn("read_operation_result", excerpt)
+        self.assertIn("operation-42", excerpt)
+        match = re.search(r"offset=(\d+) length=(\d+)", excerpt)
+        self.assertIsNotNone(match)
+        offset, length = map(int, match.groups())
+        head = excerpt.split("\n\n[Tool result excerpt:", 1)[0]
+        tail = excerpt.rsplit("]\n\n", 1)[1]
+        self.assertTrue(result.startswith(head))
+        self.assertTrue(result.endswith(tail))
+        self.assertEqual(offset, len(head))
+        self.assertEqual(length, len(result) - len(head) - len(tail))
+
+    def test_tool_results_under_budget_are_unchanged(self):
+        self.assertEqual(tool_result_for_context("complete result 雪", 512, "op"), "complete result 雪")
+
     def test_target_model_and_full_context_are_defaults(self):
         self.assertEqual(MODEL, 'hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M')
         self.assertEqual(CONTEXT_MAX, 262144)
