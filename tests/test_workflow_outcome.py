@@ -1,4 +1,4 @@
-from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_requests_implementation, _verification_report, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_requests_implementation, _restored_plan_requests_implementation, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import initial_task_plan
 
 
@@ -105,6 +105,15 @@ def test_open_agent_plan_requests_implementation_unless_task_is_discussion():
     assert _plan_requests_implementation("auto", "agent", pending)
     assert _plan_requests_implementation("implement", "agent", pending)
     assert not _plan_requests_implementation("auto", "workbench", pending)
+
+
+def test_restored_open_agent_plan_keeps_automatic_implementation_obligation():
+    pending = [{"title": "Implement and inspect", "status": "pending"}]
+    assert _restored_plan_requests_implementation("auto", "plan", "agent", pending)
+    assert _restored_plan_requests_implementation("auto", "auto", "agent", pending)
+    assert not _restored_plan_requests_implementation("auto", "discussion", "agent", pending)
+    assert not _restored_plan_requests_implementation("auto", "plan", "workbench", pending)
+    assert not _restored_plan_requests_implementation("plan", "plan", "agent", pending)
 
 
 def test_final_content_requires_user_visible_text_after_tool_work():

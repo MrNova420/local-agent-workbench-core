@@ -388,6 +388,11 @@ def _plan_requests_implementation(task_mode: str, plan_source: str, plan: list[d
     """Open agent work drives Automatic continuation; only discussion suppresses it."""
     return task_mode != "discussion" and plan_source == "agent" and _plan_has_open_work(plan)
 
+def _restored_plan_requests_implementation(task_intent: str, task_mode: str, plan_source: str,
+                                           plan: list[dict[str, Any]]) -> bool:
+    """Restore implementation obligation from a saved open agent plan."""
+    return task_intent == "auto" and _plan_requests_implementation(task_mode, plan_source, plan)
+
 def _assistant_has_final_content(message: dict[str, Any]) -> bool:
     """Only user-visible assistant content counts as a completed response."""
     content = message.get("content")
@@ -418,6 +423,7 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
     }) if isinstance(operations, list) else []
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
+        "plan_source": task.get("plan_source", "workbench"),
         "operations": operation_state,
         "verification": verification_steps,
         "changed_files": task.get("changed_files", []),
@@ -499,6 +505,9 @@ class ToolRegistry:
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
         saved_task_mode=current_task(self.task_checkpoint).get("task_mode") if self.task_checkpoint is not None else None
         self.task_mode=saved_task_mode if saved_task_mode in {"discussion", "plan", "implement"} else "auto"
+        saved_plan_source=current_task(self.task_checkpoint).get("plan_source") if self.task_checkpoint is not None else None
+        if saved_plan_source in {"agent", "workbench"}:
+            self.plan_source=saved_plan_source
         self.task_intent="auto"
         self.conversation_messages:list[dict[str,Any]]=[]
         self.read_output_byte_budget=max(512,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
@@ -625,7 +634,7 @@ class ToolRegistry:
             if isinstance(criteria,list):event["acceptanceCriteria"]=criteria
             if isinstance(decisions,list):event["decisions"]=decisions
             if self.task_checkpoint is not None:
-                record_plan(self.task_checkpoint,self.plan,criteria if isinstance(criteria,list) else None,decisions,self.task_mode)
+                record_plan(self.task_checkpoint,self.plan,criteria if isinstance(criteria,list) else None,decisions,self.task_mode,plan_source="agent")
             self.event(event);return "Plan updated."
         if name == "skill":
             if not self.skills_enabled:return "Skills are disabled for this run. Enable them in Run configuration before requesting a skill."
@@ -1368,7 +1377,10 @@ class AgentEngine:
             registry.task_mode=explicit_task_mode
             current_task(checkpoint)["task_mode"]=explicit_task_mode
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
-        if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
+        saved_plan_source=current_task(checkpoint).get("plan_source")
+        if saved_plan_source in {"agent", "workbench"}:
+            registry.plan_source=saved_plan_source
+        elif any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
             registry.plan_source="agent"
         self._selected_tool_names:set[str]=set()
         self._deferred_tool_names:list[str]=[]
@@ -1582,7 +1594,10 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=self.task_intent=="implement"
+        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=(
+            self.task_intent=="implement" or _restored_plan_requests_implementation(
+                self.task_intent,self.state["registry"].task_mode,self.state["registry"].plan_source,
+                checkpoint_state.get("plan",[])))
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -1763,7 +1778,7 @@ class AgentEngine:
                             registry.plan=initial_task_plan(prompt,"implement")
                             registry.plan_source="workbench"
                             registry.task_mode="implement"
-                            record_plan(checkpoint,registry.plan,[],task_mode="implement")
+                            record_plan(checkpoint,registry.plan,[],task_mode="implement",plan_source="workbench")
                             self.event({"type":"plan","items":copy.deepcopy(registry.plan),
                                         "acceptanceCriteria":[],"source":"workbench","taskMode":"implement"})
                         tool_call_id=call.get("id",f"call-{index}")
@@ -1834,7 +1849,7 @@ class AgentEngine:
                             }
                     if name=="update_plan" and not args_error:
                         record_plan(checkpoint,self.state["registry"].plan,args.get("acceptance_criteria"),
-                                    args.get("decisions"),self.state["registry"].task_mode)
+                                    args.get("decisions"),self.state["registry"].task_mode,plan_source="agent")
                         if (self.task_intent == "auto" and _plan_requests_implementation(
                                 self.state["registry"].task_mode, self.state["registry"].plan_source,
                                 self.state["registry"].plan)):

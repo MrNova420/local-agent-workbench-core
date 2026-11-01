@@ -87,8 +87,12 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
 
 
 def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any = None,
-                decisions: Any = None, task_mode: str | None = None) -> None:
+                decisions: Any = None, task_mode: str | None = None,
+                plan_source: str | None = None) -> None:
     checkpoint = _current(checkpoint)
+    if plan_source in {"agent", "workbench"}:
+        checkpoint["plan_source"] = plan_source
+        checkpoint["updated_at"] = time.time()
     if task_mode in {"discussion", "plan", "implement"}:
         checkpoint["task_mode"] = task_mode
         checkpoint["updated_at"] = time.time()
@@ -192,7 +196,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
     visible = {
         key: copy.deepcopy(checkpoint.get(key))
         for key in (
-            "schema_version", "task_id", "status", "task_mode", "goal", "user_updates", "workspace",
+            "schema_version", "task_id", "status", "task_mode", "plan_source", "goal", "user_updates", "workspace",
             "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
             "acceptance_criteria", "acceptance_criteria_source",
             "last_assistant_update", "next_action",
@@ -205,7 +209,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
     if isinstance(history, list) and history:
         previous = history[-1]
         if isinstance(previous, dict):
-            prior_keys = ("task_id", "status", "task_mode", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan", "acceptance_criteria",
+            prior_keys = ("task_id", "status", "task_mode", "plan_source", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan", "acceptance_criteria",
                           "changed_files", "verification", "last_assistant_update", "next_action")
             prior = {key: copy.deepcopy(previous[key]) for key in prior_keys
                      if previous.get(key) not in (None, [], "")}

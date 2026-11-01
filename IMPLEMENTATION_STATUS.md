@@ -24,6 +24,11 @@
 - Explicit Workbench Plan-only and Discuss intents remain read-only and authoritative. A completed agent plan can still end as a plan outcome; a pending plan that cannot make progress is reported as implementation incomplete, not successful plan-only completion.
 - Updated the Automatic-mode settings explanation to make the distinction visible. Added a queued engine regression for plan → write → inspect → completed plan → final response. No tests, typecheck, build, packaged app, or model run were performed.
 
+## 2026-11-01 Saved plan provenance and resume continuation (verification queued)
+
+- Task checkpoints now persist whether their current plan came from the agent or the Workbench. Session restoration restores that source, and an open agent plan in Automatic mode re-establishes its implementation obligation before the first resumed inference request.
+- Compaction includes plan provenance, and continuation progress signatures include it. Explicit Discuss/Plan UI intents still override resumed implementation state. Added queued checkpoint provenance and restored-plan continuation regressions. No tests, typecheck, build, packaged app, or model run were performed.
+
 ## 2026-11-01 Missing final response recovery (verification queued)
 
 - The engine now treats empty assistant content as incomplete after a tool-free model response. It requests a user-visible terminal summary and checks for observable progress; if the same state repeats, it fails with `response_missing`, preserving completed operations and verification instead of reporting generic success.

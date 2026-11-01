@@ -8,8 +8,9 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     first = begin_task(None, prompt="Build a site", turn_id="t1", workspace="C:/p",
                        settings={"context": 65536, "max_tokens": 8192})
     record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}])
-    record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}], task_mode="plan")
+    record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}], task_mode="plan", plan_source="agent")
     assert '"task_mode":"plan"' in render_checkpoint(first)
+    assert '"plan_source":"agent"' in render_checkpoint(first)
     record_operation(first, {"operationId": "op1", "name": "write_file", "status": "completed",
                              "affectedFiles": ["index.html"], "result": "Wrote index.html"})
     second = begin_task(first, prompt="Keep the visual style, then verify", turn_id="t2",
@@ -18,6 +19,7 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     checkpoint = second["current"]
     assert checkpoint["task_id"] == "t1"
     assert checkpoint["task_mode"] == "auto"
+    assert checkpoint["plan_source"] == "agent"
     assert checkpoint["user_updates"] == [{"turn_id": "t2", "instruction": "Keep the visual style, then verify"}]
     assert checkpoint["changed_files"] == ["index.html"]
     assert checkpoint["operations"][0]["result_ref"] == "op1"
