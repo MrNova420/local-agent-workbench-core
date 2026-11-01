@@ -6,10 +6,18 @@ import psutil
 import tempfile
 from pathlib import Path
 
-from desktop_engine import ToolRegistry, Workspace
+from desktop_engine import ToolRegistry, Workspace, _command_timeout
 
 
 class CommandCancelTests(unittest.TestCase):
+    def test_command_timeout_is_optional_and_explicit_values_are_not_capped(self):
+        self.assertIsNone(_command_timeout({"argv": ["build"]}))
+        self.assertEqual(_command_timeout({"timeout_seconds": 86_400}), 86_400)
+        with self.assertRaises(ValueError):
+            _command_timeout({"timeout_seconds": 0})
+        with self.assertRaises(ValueError):
+            _command_timeout({"timeout_seconds": True})
+
     def test_cancel_terminates_the_active_approved_command(self):
         cancel = threading.Event()
         tools = ToolRegistry(Workspace(Path.cwd()), lambda *_: True, cancel_event=cancel)

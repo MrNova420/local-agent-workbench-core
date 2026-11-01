@@ -45,6 +45,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
         "When list_files or search_files says more results are available, continue with its exact next offset when needed; do not assume the first page is complete. "
         "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
+        "For long builds, tests, installs, and other approved work, omit timeout_seconds unless a task-specific timeout is required; the host's Cancel control remains available. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
         "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. When earlier tool output is absent from the recent transcript, use read_operation_result with its checkpoint operation_id; request offset/length slices for output too large to fit. The checkpoint is factual state, while complete transcript, reasoning text, and operation results remain in session history.\n\n"
@@ -54,6 +55,14 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
     )
 
 _requests_implementation = requests_implementation
+
+def _command_timeout(args:dict[str,Any])->int|None:
+    """No implicit deadline: a command runs until exit or explicit user cancellation."""
+    if "timeout_seconds" not in args:return None
+    value=args["timeout_seconds"]
+    if not isinstance(value,int) or isinstance(value,bool) or value<1:
+        raise ValueError("timeout_seconds must be a positive integer when specified; omit it to wait for completion or cancellation.")
+    return value
 
 def _asks_for_clarification(content:str)->bool:
     folded=content.casefold()
@@ -440,8 +449,8 @@ class ToolRegistry:
           self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
           self._schema("apply_patch", "Apply a unified diff in the active workspace, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
-          self._schema("run_command", "Run an argv command in project; requires approval. The exact command ['pwd'] returns the selected project root on every platform. Other commands are launched directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer"}}, ["argv"]),
-          self._schema("run_shell", "Run a PowerShell command string in the project; requires approval. Use for normal Windows developer workflows that need pipes, redirects, or .cmd/.ps1 scripts. Commands run with the Windows user's permissions and are not sandboxed; the user reviews the exact command before it runs.", {"command":{"type":"string"},"timeout_seconds":{"type":"integer"}}, ["command"]),
+          self._schema("run_command", "Run an argv command in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. The exact command ['pwd'] returns the selected project root. Other commands launch directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1}}, ["argv"]),
+          self._schema("run_shell", "Run a PowerShell command string in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. Use for Windows workflows needing pipes, redirects, or script wrappers. Commands run with host-user permissions and are not OS-sandboxed; the user reviews the exact command before it runs.", {"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1}}, ["command"]),
         ]
         if not self.skills_enabled:
             self.schemas=[schema for schema in self.schemas if schema.get("function",{}).get("name")!="skill"]
@@ -720,9 +729,10 @@ class ToolRegistry:
             if any(x in {"&&","||",";","|",">","<"} for x in argv): return "Shell operators are not accepted."
             if len(argv)==1 and argv[0].casefold()=="pwd":return str(self.workspace.root)
         try:
-            limit=max(1,min(3600,int(args.get("timeout_seconds",120))))
+            try:limit=_command_timeout(args)
+            except ValueError as exc:return f"Invalid command timeout: {exc}"
             process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
-            deadline=time.monotonic()+limit
+            deadline=time.monotonic()+limit if limit is not None else None
             chunks={"stdout":[],"stderr":[]};output:queue.Queue=queue.Queue();readers=[];known_descendants={};last_tree_scan=0.0;drain_deadline=None;incomplete_output=False
             def scan_descendants():
                 try:
@@ -769,7 +779,7 @@ class ToolRegistry:
                     scan_descendants();last_tree_scan=now
                 if not stopped and self.cancel_event.is_set():
                     stopped=True;terminate_at=now+1;drain_deadline=now+5;terminate_tree()
-                elif not stopped and now>=deadline:
+                elif not stopped and deadline is not None and now>=deadline:
                     stopped=True;timed_out=True;terminate_at=now+1;drain_deadline=now+5;terminate_tree()
                 elif stopped and terminate_at is not None and now>=terminate_at and process.poll() is None:
                     terminate_tree()

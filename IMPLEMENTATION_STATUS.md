@@ -199,3 +199,8 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 
 - Resource snapshots now report Ollama/llama.cpp worker process count, summed CPU, and resident memory separately from the Agent Workbench sidecar and whole-system readings. NVIDIA compute-process VRAM is matched by worker PID where available; unavailable attribution stays unavailable rather than appearing as zero.
 - System GPU utilization, memory, and power remain device-wide; runtime worker VRAM is labeled as shared runtime process data and is not attributed to the selected model. Added mocked telemetry coverage; tests and hardware acceptance are queued and have not been run.
+
+## 2026-11-01 approved command timeout behavior
+
+- `run_command` and `run_shell` no longer impose a 120-second default or a one-hour ceiling. Omit `timeout_seconds` to wait for command completion or user cancellation; a caller can still request any positive explicit timeout. Tool descriptions and agent guidance explain this behavior.
+- Added queued validation coverage for no implicit timeout, large explicit values, and invalid values. No command or long-running task was launched.
