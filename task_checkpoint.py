@@ -7,6 +7,16 @@ import json
 import time
 from typing import Any
 
+_PLAN_TERMINAL_STATUSES = {"done", "complete", "completed", "verified", "not_required", "not required",
+                           "skipped", "cancelled", "canceled", "deferred"}
+
+
+def plan_item_is_open(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    status = str(item.get("status", "pending")).strip().casefold()
+    return status not in _PLAN_TERMINAL_STATUSES
+
 
 def begin_task(
     previous: dict[str, Any] | None,
@@ -104,8 +114,7 @@ def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any
         checkpoint["updated_at"] = time.time()
     if isinstance(items, list):
         checkpoint["plan"] = copy.deepcopy(items)
-        pending = next((item for item in items if isinstance(item, dict)
-                        and str(item.get("status", "pending")).casefold() in {"pending", "in_progress", "in progress"}), None)
+        pending = next((item for item in items if plan_item_is_open(item)), None)
         checkpoint["next_action"] = str((pending or {}).get("title") or (pending or {}).get("text") or "Continue the active task plan.")
         checkpoint["updated_at"] = time.time()
     if isinstance(acceptance_criteria, list):

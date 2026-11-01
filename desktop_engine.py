@@ -11,7 +11,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import checkpoint_omissions, current_task, finish_task, initial_task_plan, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
+from task_checkpoint import checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from permission_policy import permission_decision, validate_permission_rules
 from typing import Any, Callable
@@ -376,15 +376,7 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
     return "discussion"
 
 def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
-    terminal_statuses = {"done", "complete", "completed", "verified", "not_required", "not required",
-                         "skipped", "cancelled", "canceled", "deferred"}
-    for item in plan:
-        if not isinstance(item, dict):
-            continue
-        status=str(item.get("status", "pending")).strip().casefold()
-        if status not in terminal_statuses:
-            return True
-    return False
+    return any(plan_item_is_open(item) for item in plan)
 
 def _plan_requests_implementation(task_mode: str, plan_source: str, plan: list[dict[str, Any]]) -> bool:
     """Agent plan phases and open work drive Automatic implementation continuation."""
@@ -1450,8 +1442,7 @@ class AgentEngine:
             checkpoint=self.state["task_checkpoint"]
             current=current_task(checkpoint)
             current["plan"]=copy.deepcopy(plan)
-            pending=next((item for item in plan if isinstance(item,dict)
-                          and str(item.get("status","pending")).casefold() in {"pending","in_progress","in progress"}),None)
+            pending=next((item for item in plan if plan_item_is_open(item)),None)
             current["next_action"]=(str((pending or {}).get("title") or (pending or {}).get("text") or "Continue the active task plan.")
                                     if pending else "")
             self.event({"type":"plan","items":copy.deepcopy(plan),"acceptanceCriteria":copy.deepcopy(current.get("acceptance_criteria",[])),"source":"workbench"})

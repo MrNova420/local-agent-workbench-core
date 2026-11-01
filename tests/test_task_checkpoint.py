@@ -43,6 +43,16 @@ def test_automatic_plan_only_mode_is_persisted_then_reclassified_on_followup():
     assert '"task_mode":"auto"' in render_checkpoint(restored)
 
 
+def test_next_action_tracks_unknown_open_plan_statuses():
+    checkpoint = begin_task(None, prompt="Build", turn_id="t1", workspace="C:/p", settings={})
+    record_plan(checkpoint, [
+        {"title": "Old complete step", "status": "completed"},
+        {"title": "Continue building", "status": "planned"},
+    ])
+
+    assert checkpoint["current"]["next_action"] == "Continue building"
+
+
 def test_explicit_read_only_followup_clears_prior_implementation_obligation():
     checkpoint = begin_task(None, prompt="Build a feature", turn_id="build", workspace="C:/p", settings={"task_intent": "auto"})
     record_implementation_requested(checkpoint)
