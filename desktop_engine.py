@@ -43,6 +43,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         + "The selected model controls its own reasoning default.\n\n"
         "Execution rule: when the user asks you to build, create, implement, fix, or change project files, planning is an intermediate step. Continue directly to structured tools in the same task and verify the result. Do not stop after announcing what you are about to do. Only provide a plan without edits when the user explicitly asks for plan-only/review-only work or access is read-only.\n\n"
         "Tool and approval protocol: perform project operations by calling the structured tools provided to you. Do not narrate an intended tool call and then stop. "
+        "When the host provides ask_user, use it only when a missing requirement or user choice would materially change the implementation; keep working from reasonable defaults otherwise. It is for task clarification, never for permission to run a file change or command. "
         "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. "
         "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in the write_file tool arguments, not in a chat message. "
@@ -435,7 +436,7 @@ class Workspace:
 
 class ToolRegistry:
     """Explicit project tools; approved shell commands run as the host user without OS sandboxing."""
-    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int|None=None,search_byte_limit:int|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,task_checkpoint:dict[str,Any]|None=None,read_output_token_budget:int|None=None):
+    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int|None=None,search_byte_limit:int|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,task_checkpoint:dict[str,Any]|None=None,read_output_token_budget:int|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
@@ -444,6 +445,7 @@ class ToolRegistry:
         self.skills_enabled=bool(skills_enabled)
         self.skill_sources=tuple(("project", "user") if skill_sources is None else skill_sources)
         self.operation_result_lookup=operation_result_lookup
+        self.ask_user_callback=ask_user
         self.permission_rules=validate_permission_rules(permission_rules or [])
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
         self.conversation_messages:list[dict[str,Any]]=[]
@@ -468,16 +470,23 @@ class ToolRegistry:
           self._schema("run_command", "Run an argv command in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. The exact command ['pwd'] returns the selected project root. Other commands launch directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1}}, ["argv"]),
           self._schema("run_shell", "Run a PowerShell command string in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. Use for Windows workflows needing pipes, redirects, or script wrappers. Commands run with host-user permissions and are not OS-sandboxed; the user reviews the exact command before it runs.", {"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1}}, ["command"]),
         ]
+        if self.ask_user_callback is not None:
+            self.schemas.append(self._schema("ask_user", "Pause this run to ask the user for missing requirements or a meaningful choice. Use only when the answer affects the work; do not use this for file/command approval, which has its own approval dialog. Offer optional choices and accept a freeform response.", {"question":{"type":"string","minLength":1},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","minLength":1},"description":{"type":"string"}},"required":["label"],"additionalProperties":False}},"title":{"type":"string"}}, ["question"]))
         if not self.skills_enabled:
             self.schemas=[schema for schema in self.schemas if schema.get("function",{}).get("name")!="skill"]
         if self.workspace.access == "plan":
-            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint", "read_conversation_history", "git_status", "git_diff", "git_log", "update_plan", "skill"}
+            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint", "read_conversation_history", "git_status", "git_diff", "git_log", "update_plan", "skill", "ask_user"}
             self.schemas = [schema for schema in self.schemas if schema.get("function", {}).get("name") in read_only_tools]
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
         return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required,"additionalProperties":False}}}
     def run(self, name: str, args: dict, *, output_byte_budget: int | None = None) -> str:
         active_output_budget=self.read_output_byte_budget if output_byte_budget is None else max(0,int(output_byte_budget))
+        if name == "ask_user":
+            if self.ask_user_callback is None:return "Ask-user interaction is unavailable in this runtime."
+            if permission_decision(name,args,self.permission_rules)=="deny":
+                return "Denied by user: a persistent deny permission rule blocks this tool."
+            return self.ask_user_callback(args)
         policy=permission_decision(name,args,self.permission_rules)
         policy_approved=False
         if policy in {"allow","ask"}:
@@ -1229,7 +1238,7 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
@@ -1246,7 +1255,7 @@ class AgentEngine:
         checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
         self.permission_rules=validate_permission_rules(permission_rules or [])
         read_output_budget=self.context.budget(max_tokens)
-        registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result,permission_rules=self.permission_rules,task_checkpoint=checkpoint,read_output_token_budget=read_output_budget)
+        registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result,permission_rules=self.permission_rules,task_checkpoint=checkpoint,read_output_token_budget=read_output_budget,ask_user=ask_user)
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
         if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
             registry.plan_source="agent"

@@ -8,6 +8,8 @@ def test_agent_prompt_uses_structured_tools_to_start_actions_and_trigger_approva
     assert "call the requested tool" in prompt
     assert "the workbench will show its approval dialog" in prompt
     assert "Do not claim that an action ran unless its tool result confirms it" in prompt
+    assert "missing requirement or user choice" in prompt
+    assert "never for permission to run a file change or command" in prompt
     assert "Project-specific guidance" in prompt
     assert "concise user-relevant design decisions and assumptions" in prompt
     assert "not private chain-of-thought" in prompt

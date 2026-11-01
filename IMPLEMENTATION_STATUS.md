@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-01 structured user clarification (verification queued)
+
+- The desktop engine exposes `ask_user` only when the host supplies an answer handler; standalone/CLI registries do not advertise an unsupported tool. Plan-only sessions can use it because asking a requirement does not mutate the workspace.
+- The tool is treated as a read-only clarification operation, still respects persistent hard-deny rules, and is explicitly excluded from file/command approval. The prompt asks only for materially consequential missing requirements and tells the model to continue from reasonable defaults otherwise.
+- Engine prompt/catalog regressions are queued. No test was run.
+
 ## 2026-11-01 living plan progression and batch safety
 
 - Starter checklist stages now carry stable phase identifiers instead of depending on display-text matching. Legacy title-only plans remain readable, the captured task brief starts complete rather than appearing as permanently pending, and plan-only presentation can complete from the host terminal event. The model can still replace, extend, and repeatedly revise its own plan; workbench progress will not overwrite an agent-owned plan. A queued regression covers phase metadata; tests remain intentionally unrun.

@@ -86,6 +86,22 @@ def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp
     assert not {"write_file", "edit_file", "apply_patch", "run_command", "run_shell"} & names
 
 
+def test_optional_ask_user_tool_is_available_in_read_only_runs_only_when_host_supports_it(tmp_path):
+    handler = lambda args: f"User chose: {args['question']}"
+    engine = AgentEngine(tmp_path, access="plan", ask_user=handler)
+    names = {schema["function"]["name"] for schema in engine.state["registry"].schemas}
+    assert "ask_user" in names
+    assert engine.state["registry"].run("ask_user", {"question": "Which style?"}) == "User chose: Which style?"
+
+    standalone = ToolRegistry(Workspace(tmp_path, "plan"), lambda *_: False)
+    assert "ask_user" not in {schema["function"]["name"] for schema in standalone.schemas}
+
+    denied = ToolRegistry(Workspace(tmp_path, "plan"), lambda *_: False,
+                          permission_rules=[{"tool": "ask_user", "decision": "deny"}],
+                          ask_user=handler)
+    assert denied.run("ask_user", {"question": "Which style?"}) == "Denied by user: a persistent deny permission rule blocks this tool."
+
+
 def test_plan_access_omits_external_mcp_tools(tmp_path):
     external = [{"type": "function", "function": {"name": "mcp__anything", "parameters": {"type": "object"}}}]
     engine = AgentEngine(tmp_path, access="plan", mcp_tools=external)
