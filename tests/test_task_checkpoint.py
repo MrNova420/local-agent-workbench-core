@@ -9,6 +9,7 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
                        settings={"context": 65536, "max_tokens": 8192})
     record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}])
     record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}], task_mode="plan")
+    assert '"task_mode":"plan"' in render_checkpoint(first)
     record_operation(first, {"operationId": "op1", "name": "write_file", "status": "completed",
                              "affectedFiles": ["index.html"], "result": "Wrote index.html"})
     second = begin_task(first, prompt="Keep the visual style, then verify", turn_id="t2",

@@ -192,7 +192,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
     visible = {
         key: copy.deepcopy(checkpoint.get(key))
         for key in (
-            "schema_version", "task_id", "status", "goal", "user_updates", "workspace",
+            "schema_version", "task_id", "status", "task_mode", "goal", "user_updates", "workspace",
             "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
             "acceptance_criteria", "acceptance_criteria_source",
             "last_assistant_update", "next_action",
@@ -205,7 +205,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
     if isinstance(history, list) and history:
         previous = history[-1]
         if isinstance(previous, dict):
-            prior_keys = ("task_id", "status", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan", "acceptance_criteria",
+            prior_keys = ("task_id", "status", "task_mode", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan", "acceptance_criteria",
                           "changed_files", "verification", "last_assistant_update", "next_action")
             prior = {key: copy.deepcopy(previous[key]) for key in prior_keys
                      if previous.get(key) not in (None, [], "")}
