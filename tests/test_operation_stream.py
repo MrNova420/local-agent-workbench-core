@@ -451,6 +451,34 @@ class OperationStreamTests(unittest.TestCase):
             self.assertFalse(completion["implementationRequested"])
             self.assertEqual(list(Path(root).iterdir()), [])
 
+    def test_explicit_automatic_plan_only_followup_can_clear_saved_obligation_before_changes(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            checkpoint = {"current": {
+                "status": "active", "task_mode": "implement", "plan_source": "agent",
+                "implementation_requested": True,
+                "plan": [{"title": "Build feature", "status": "pending"}],
+            }}
+            engine = AgentEngine(root, access="edit", event=events.append,
+                                 task_checkpoint=checkpoint, task_intent="auto")
+            responses = [
+                {"message": {"role": "assistant", "content": "I will provide the plan only.", "tool_calls": [
+                    {"id": "plan-only", "function": {"name": "update_plan", "arguments": {
+                        "task_mode": "plan_only", "items": [{"title": "Build feature later", "status": "deferred"}]
+                    }}}
+                ]}},
+                {"message": {"role": "assistant", "content": "Here is the plan."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Only plan this; do not implement it.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "plan_only")
+            self.assertFalse(completion["implementationRequested"])
+            self.assertFalse(checkpoint["current"]["implementation_requested"])
+            self.assertEqual(list(Path(root).iterdir()), [])
+
     def test_denied_action_is_not_retried_by_implementation_continuation(self):
         with tempfile.TemporaryDirectory() as root:
             engine=AgentEngine(root,access="ask",approve=lambda *_:False)

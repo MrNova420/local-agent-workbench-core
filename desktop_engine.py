@@ -1885,11 +1885,16 @@ class AgentEngine:
                     if name=="update_plan" and not args_error:
                         record_plan(checkpoint,self.state["registry"].plan,args.get("acceptance_criteria"),
                                     args.get("decisions"),self.state["registry"].task_mode,plan_source="agent")
-                        if (self.task_intent == "auto" and _plan_requests_implementation(
-                                self.state["registry"].task_mode, self.state["registry"].plan_source,
-                                self.state["registry"].plan)):
-                            implementation_requested=True
-                            record_implementation_requested(checkpoint)
+                        if self.task_intent == "auto":
+                            if (self.state["registry"].task_mode == "plan_only" and not mutation_attempted
+                                    and not completed_project_change and not command_side_effects_possible):
+                                implementation_requested=False
+                                record_implementation_requested(checkpoint,False)
+                            elif _plan_requests_implementation(
+                                    self.state["registry"].task_mode, self.state["registry"].plan_source,
+                                    self.state["registry"].plan):
+                                implementation_requested=True
+                                record_implementation_requested(checkpoint)
                     prepared=prepared_batch.get(index)
                     output_budget=prepared["budget"] if prepared else self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
                     context_result=tool_result_for_context(str(out),output_budget,operation_id)
