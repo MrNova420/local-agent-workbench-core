@@ -26,7 +26,7 @@ class RequestCancelled(Exception):
 
 def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto") -> str:
     profile_guidance = (
-        "Small-model workflow: break complex work into manageable steps while completing the full request. Group independent read-only operations when useful; choose action sizes that fit the task and model reliability. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Do not skip required project work or validation.\n\n"
+        "Small-model workflow: break complex work into manageable steps while completing the full request. Group independent read-only operations when useful; choose action sizes that fit the task and model reliability. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Plan once, then take the next unfinished action; revise the plan only when new evidence or changed requirements justify it. Each inference turn should advance implementation, inspect a result, or verify work rather than repeat completed planning. After compaction, continue from the saved checkpoint and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
