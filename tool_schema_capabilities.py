@@ -7,10 +7,12 @@ from typing import Any
 SUPPORTED_SCHEMA_KEYWORDS = frozenset({
     "$ref", "$schema", "$id", "$comment", "$defs", "definitions", "title", "description",
     "default", "examples", "deprecated", "readOnly", "writeOnly", "type", "enum", "const",
-    "allOf", "anyOf", "oneOf", "not", "required", "properties", "patternProperties",
+    "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "required", "dependentRequired",
+    "dependentSchemas", "properties", "patternProperties", "propertyNames",
     "additionalProperties", "additionalItems", "items", "format", "minLength", "maxLength", "pattern",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
-    "maxItems", "uniqueItems", "minProperties", "maxProperties",
+    "maxItems", "uniqueItems", "contains", "minContains", "maxContains", "prefixItems",
+    "minProperties", "maxProperties",
 })
 SUPPORTED_SCHEMA_TYPES = frozenset({"object", "array", "string", "integer", "number", "boolean", "null"})
 

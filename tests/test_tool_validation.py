@@ -25,6 +25,25 @@ class ToolValidationTests(unittest.TestCase):
             cursor=cursor["properties"]
         self.assertTrue(any("nesting" in item for item in unsupported_schema_features(deeply_nested)))
 
+    def test_json_schema_2020_conditionals_dependencies_property_names_and_arrays(self):
+        conditional={"type":"object","if":{"required":["mode"]},
+                    "then":{"required":["payload"]},"else":{"required":["fallback"]}}
+        self.assertIsNone(_validate_tool_arguments({"mode":"write","payload":{}},conditional))
+        self.assertIn("payload is required",_validate_tool_arguments({"mode":"write"},conditional))
+        self.assertIn("fallback is required",_validate_tool_arguments({},conditional))
+        dependencies={"type":"object","dependentRequired":{"token":["user"]},
+                      "dependentSchemas":{"config":{"required":["enabled"]}},
+                      "propertyNames":{"pattern":"^[a-z]+$"}}
+        self.assertIsNone(_validate_tool_arguments({"token":"x","user":"kayde","config":{"enabled":True}},dependencies))
+        self.assertIn("user is required",_validate_tool_arguments({"token":"x"},dependencies))
+        self.assertIn("enabled is required",_validate_tool_arguments({"config":{}},dependencies))
+        self.assertIn("property name",_validate_tool_arguments({"BadKey":1},dependencies))
+        arrays={"type":"array","prefixItems":[{"type":"string"},{"type":"integer"}],
+                "items":{"type":"boolean"},"contains":{"const":"required"},"minContains":1}
+        self.assertIsNone(_validate_tool_arguments(["label",2,True,"required"],arrays))
+        self.assertIn("must be integer",_validate_tool_arguments(["label","two",True,"required"],arrays))
+        self.assertIn("at least 1 item",_validate_tool_arguments(["label",2,True],arrays))
+
     def test_legacy_saved_tool_result_is_migrated_to_ollama_protocol(self):
         messages=[{"role":"assistant","tool_calls":[{"id":"old-call","function":{"name":"read_file","arguments":{"path":"a.py"}}}]},
                   {"role":"tool","tool_call_id":"old-call","content":"file body"}]

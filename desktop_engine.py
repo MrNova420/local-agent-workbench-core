@@ -11,7 +11,7 @@ from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
-from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS
+from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -76,6 +76,9 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
     if isinstance(value,float) and not math.isfinite(value):return f"{path} is not a finite JSON number."
     if not isinstance(schema, dict):
         return f"{path} has an invalid tool schema."
+    if _root_schema is None:
+        unsupported_features=unsupported_schema_features(schema)
+        if unsupported_features:return f"{path} uses unsupported JSON Schema feature(s): {', '.join(unsupported_features[:4])}."
     if _depth >= 64:
         return f"{path} exceeds the supported tool-schema nesting depth."
     unsupported=sorted(set(schema)-SUPPORTED_SCHEMA_KEYWORDS)
@@ -110,6 +113,16 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
     if "uniqueItems" in schema and not isinstance(schema["uniqueItems"],bool):return f"{path} has an invalid uniqueItems tool schema."
     if "additionalProperties" in schema and not isinstance(schema["additionalProperties"],(bool,dict)):return f"{path} has an invalid additionalProperties tool schema."
     if "additionalItems" in schema and not isinstance(schema["additionalItems"],(bool,dict)):return f"{path} has an invalid additionalItems tool schema."
+    for keyword in ("if", "then", "else", "propertyNames", "contains"):
+        if keyword in schema and not isinstance(schema[keyword],dict):return f"{path} has an invalid {keyword} tool schema."
+    for keyword in ("dependentSchemas",):
+        if keyword in schema and (not isinstance(schema[keyword],dict) or any(not isinstance(item,dict) for item in schema[keyword].values())):return f"{path} has an invalid {keyword} tool schema."
+    if "dependentRequired" in schema and (not isinstance(schema["dependentRequired"],dict) or any(not isinstance(keys,list) or not all(isinstance(key,str) for key in keys) for keys in schema["dependentRequired"].values())):return f"{path} has an invalid dependentRequired tool schema."
+    for keyword in ("prefixItems",):
+        if keyword in schema and (not isinstance(schema[keyword],list) or any(not isinstance(item,dict) for item in schema[keyword])):return f"{path} has an invalid {keyword} tool schema."
+    for keyword in ("minContains", "maxContains"):
+        constraint=schema.get(keyword)
+        if constraint is not None and (not isinstance(constraint,int) or isinstance(constraint,bool) or constraint<0):return f"{path} has an invalid {keyword} tool schema."
 
     # Composition is useful in MCP schemas and must be validated before the
     # ordinary type/property checks. Preserve the child error for actionable
@@ -133,6 +146,12 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
             return f"{path} has an invalid not tool schema."
         if _validate_tool_arguments(value, schema["not"], path, _depth + 1, root_schema) is None:
             return f"{path} matches a forbidden tool argument shape."
+    if "if" in schema:
+        condition_error=_validate_tool_arguments(value,schema["if"],path,_depth+1,root_schema)
+        branch=schema.get("else") if condition_error else schema.get("then")
+        if branch is not None:
+            error=_validate_tool_arguments(value,branch,path,_depth+1,root_schema)
+            if error:return error
 
     expected=schema.get("type")
     if expected:
@@ -176,6 +195,25 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
         if not all(isinstance(key,str) for key in required):return f"{path} has an invalid required tool schema."
         for key in required:
             if key not in value:return f"{path}.{key} is required."
+        dependencies=schema.get("dependentRequired",{})
+        if not isinstance(dependencies,dict):return f"{path} has an invalid dependentRequired tool schema."
+        for trigger,dependent_keys in dependencies.items():
+            if not isinstance(trigger,str) or not isinstance(dependent_keys,list) or not all(isinstance(key,str) for key in dependent_keys):return f"{path} has an invalid dependentRequired tool schema."
+            if trigger in value:
+                for key in dependent_keys:
+                    if key not in value:return f"{path}.{key} is required when {trigger} is present."
+        dependent_schemas=schema.get("dependentSchemas",{})
+        if not isinstance(dependent_schemas,dict):return f"{path} has an invalid dependentSchemas tool schema."
+        for trigger,dependent_schema in dependent_schemas.items():
+            if trigger in value:
+                error=_validate_tool_arguments(value,dependent_schema,path,_depth+1,root_schema)
+                if error:return error
+        property_names=schema.get("propertyNames")
+        if property_names is not None:
+            if not isinstance(property_names,dict):return f"{path} has an invalid propertyNames tool schema."
+            for key in value:
+                error=_validate_tool_arguments(key,property_names,f"{path} property name",_depth+1,root_schema)
+                if error:return error
         properties=schema.get("properties",{})
         patterns=schema.get("patternProperties",{})
         if not isinstance(properties,dict) or not isinstance(patterns,dict) or any(not isinstance(pattern,str) or len(pattern)>512 for pattern in patterns):return f"{path} has an invalid object tool schema."
@@ -200,9 +238,25 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
         if schema.get("uniqueItems") is True:
             encoded=[_json_value_key(item) for item in value]
             if len(encoded)!=len(set(encoded)):return f"{path} must contain unique items."
+        prefix_items=schema.get("prefixItems",[])
+        if not isinstance(prefix_items,list):return f"{path} has an invalid prefixItems tool schema."
+        for index,child_schema in enumerate(prefix_items[:len(value)]):
+            if not isinstance(child_schema,dict):return f"{path} has an invalid prefixItems tool schema."
+            error=_validate_tool_arguments(value[index],child_schema,f"{path}[{index}]",_depth+1,root_schema)
+            if error:return error
+        contains=schema.get("contains")
+        if contains is not None:
+            if not isinstance(contains,dict):return f"{path} has an invalid contains tool schema."
+            matches=sum(_validate_tool_arguments(item,contains,f"{path}[{index}]",_depth+1,root_schema) is None for index,item in enumerate(value))
+            minimum=schema.get("minContains",1);maximum=schema.get("maxContains")
+            if not isinstance(minimum,int) or isinstance(minimum,bool) or minimum<0:return f"{path} has an invalid minContains tool schema."
+            if maximum is not None and (not isinstance(maximum,int) or isinstance(maximum,bool) or maximum<0):return f"{path} has an invalid maxContains tool schema."
+            if matches<minimum:return f"{path} must contain at least {minimum} item(s) matching its schema."
+            if maximum is not None and matches>maximum:return f"{path} must contain at most {maximum} item(s) matching its schema."
         item_schema=schema.get("items")
         if isinstance(item_schema,dict):
-            for index,item in enumerate(value):
+            prefix_count=len(prefix_items)
+            for index,item in enumerate(value[prefix_count:],prefix_count):
                 error=_validate_tool_arguments(item,item_schema,f"{path}[{index}]",_depth+1,root_schema)
                 if error:return error
         elif isinstance(item_schema,list):
