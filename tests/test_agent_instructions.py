@@ -17,6 +17,8 @@ def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_lim
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="small-model")
 
     assert "group independent read-only operations when useful" in prompt.casefold()
+    assert "batch independent tool calls in one response when their inputs are already known" in prompt.casefold()
+    assert "writes, commands, and mcp calls preserve order and approval" in prompt.casefold()
     assert "choose action sizes that fit the task" in prompt.casefold()
     assert "do not skip required project work or validation" in prompt.casefold()
     assert "inspect results" in prompt.casefold()
