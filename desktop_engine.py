@@ -243,6 +243,8 @@ def _tool_activity_status(name: str, result: str) -> str:
     """Map known tool outcomes to truthful states without inspecting file contents."""
     text = str(result)
     folded = text.casefold().strip()
+    if name in {"run_command", "run_shell"} and "[command cancelled by user]" in folded:
+        return "uncertain"
     if folded.startswith("denied by user"):
         return "denied"
     if folded.startswith("blocked:"):
@@ -266,10 +268,8 @@ def _tool_activity_status(name: str, result: str) -> str:
     if name == "edit_file":
         return "completed" if text.startswith("Edited ") else "failed"
     if name in {"run_command", "run_shell"}:
-        if "[command cancelled by user]" in folded:
-            return "cancelled"
         if "[command timed out after " in folded:
-            return "failed"
+            return "uncertain"
         match = re.search(r"\[exit (-?\d+)\]\s*$", folded)
         if match:
             return "completed" if int(match.group(1)) == 0 else "failed"

@@ -3,10 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace
+from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace, _tool_activity_status
 
 
 class OperationStreamTests(unittest.TestCase):
+    def test_cancelled_or_timed_out_command_is_marked_uncertain_about_partial_effects(self):
+        self.assertEqual(_tool_activity_status("run_command", "output\n[command cancelled by user]"), "uncertain")
+        self.assertEqual(_tool_activity_status("run_shell", "partial output\n[command timed out after 30s]"), "uncertain")
+        self.assertEqual(_tool_activity_status("run_command", "Cancelled before this tool action ran."), "cancelled")
+
     def _run_one_tool(self, tool_name, arguments, tool_runner=None):
         with tempfile.TemporaryDirectory() as root:
             events = []

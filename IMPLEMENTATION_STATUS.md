@@ -144,3 +144,8 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The source distinguishes agent-defined criteria from the workbench's empty starter state. A new task publishes an explicit empty criteria snapshot so restoring a session cannot reuse criteria from an older task.
 - Code review also found that `AgentEngine.run` reads `ToolRegistry.plan` before any plan update, but the registry had not initialized that field. It is now initialized to an empty list; a queued regression asserts the pre-update state.
 - Engine checkpoint, schema, sidecar journal replay, worker, renderer restore, and Plan-panel regressions have been added. All are queued; no tests, typecheck, package, app launch, or inference was run.
+
+## 2026-11-01 uncertain command termination
+
+- An approved command canceled after launch or terminated on timeout may already have written files. These results now use an `uncertain` operation state rather than implying a clean cancellation or definite failure; they trigger the existing bounded post-effect inspection path. Commands denied or canceled before launch remain non-side-effecting.
+- The renderer warns on uncertain command results, and a queued engine regression distinguishes in-flight cancellation/timeout from cancellation before execution. No tests or runtime commands were run.
