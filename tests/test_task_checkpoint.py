@@ -1,3 +1,5 @@
+import copy
+
 from task_checkpoint import begin_task, finish_task, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
 
 
@@ -67,6 +69,31 @@ def test_uncertain_operation_checkpoint_requires_inspection_before_replay():
     assert checkpoint["current"]["operations"][0]["result_ref"] == "cmd-1"
     assert "inspect the current workspace" in rendered
     assert "Never treat an uncertain operation as safe to replay automatically." in rendered
+
+
+def test_budgeted_checkpoint_keeps_the_active_goal_plan_and_recent_progress_with_omission_counts():
+    checkpoint = begin_task(None, prompt="Finish the complete project implementation", turn_id="t0",
+                            workspace="C:/p", settings={"context": 65536})
+    record_plan(checkpoint, [
+        {"title": f"Completed stage {index}", "status": "done"} for index in range(30)
+    ] + [{"title": "Inspect final build", "status": "in_progress"}])
+    for index in range(45):
+        checkpoint["current"].setdefault("user_updates", []).append(
+            {"turn_id": f"t{index + 1}", "instruction": f"Follow-up detail {index} " + ("important " * 20)})
+        record_operation(checkpoint, {"operationId": f"op-{index}", "name": "read_file",
+                                      "status": "completed", "result": "detail" * 30})
+
+    original = copy.deepcopy(checkpoint)
+    rendered = render_checkpoint(checkpoint, token_budget=420)
+
+    assert "Finish the complete project implementation" in rendered
+    assert "Inspect final build" in rendered
+    assert "op-44" in rendered
+    assert "checkpoint_omissions" in rendered
+    assert '"operations"' in rendered
+    assert '"user_updates"' in rendered
+    assert len(render_checkpoint(checkpoint).encode("utf-8")) > len(rendered.encode("utf-8"))
+    assert checkpoint == original
 
 
 def test_new_task_archives_completed_checkpoint_without_losing_it():

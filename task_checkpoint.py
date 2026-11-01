@@ -173,7 +173,7 @@ def finish_task(checkpoint: dict[str, Any], status: str, verification: Any = Non
     checkpoint["updated_at"] = time.time()
 
 
-def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
+def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | None = None) -> str:
     if not isinstance(checkpoint, dict) or not checkpoint:
         return ""
     root = checkpoint
@@ -181,7 +181,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
     # Tool arguments and complete results remain in the transcript/activity log. The checkpoint
     # carries stable references and verified outcomes without duplicating large file contents.
     visible = {
-        key: checkpoint.get(key)
+        key: copy.deepcopy(checkpoint.get(key))
         for key in (
             "schema_version", "task_id", "status", "goal", "user_updates", "workspace",
             "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
@@ -202,11 +202,12 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
                      if previous.get(key) not in (None, [], "")}
             if prior:
                 visible["immediately_preceding_task"] = prior
-    return (
+    header = (
         "Active task continuity checkpoint (facts come from saved user instructions, plans, "
         "and completed host tool events; result_ref points to the complete saved operation result):\n"
-        + json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
-        + "\nContinue this task from the recorded state. Do not restart planning or claim an operation "
+    )
+    footer = (
+        "\nContinue this task from the recorded state. Do not restart planning or claim an operation "
         "was completed unless its saved status says completed. Use the saved result reference or "
         "project tools to inspect details when the recent transcript does not contain them. "
         "Use read_operation_result with an operation_id from this checkpoint to retrieve saved output. "
@@ -214,6 +215,86 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
         "result to determine whether it partially took effect before requesting or repeating it. "
         "Never treat an uncertain operation as safe to replay automatically."
     )
+
+    def encode() -> str:
+        return header + json.dumps(visible, ensure_ascii=False, separators=(",", ":")) + footer
+
+    def token_estimate(value: str) -> int:
+        return max(1, (len(value.encode("utf-8")) + 1) // 2)
+
+    if token_budget is None or token_estimate(encode()) <= max(1, int(token_budget)):
+        return encode()
+
+    # Canonical checkpoints on disk remain complete. Only the inference copy is
+    # summarized, and every removed history category is counted in-band so the
+    # model knows what is omitted and can consult session operations/files.
+    omissions: dict[str, int] = {}
+
+    def omit_oldest(key: str, minimum: int = 1) -> bool:
+        rows = visible.get(key)
+        if not isinstance(rows, list) or len(rows) <= minimum:
+            return False
+        rows.pop(0)
+        omissions[key] = omissions.get(key, 0) + 1
+        visible["checkpoint_omissions"] = omissions.copy()
+        return True
+
+    # Historical task and prose are less important than the active request, plan,
+    # safety decisions, and most recent operation references.
+    previous = visible.pop("immediately_preceding_task", None)
+    if previous is not None:
+        omissions["immediately_preceding_task"] = 1
+        visible["checkpoint_omissions"] = omissions.copy()
+    last_update = visible.get("last_assistant_update")
+    if isinstance(last_update, str) and len(last_update) > 1200:
+        visible["last_assistant_update"] = last_update[-1200:]
+        omissions["last_assistant_update_characters"] = len(last_update) - 1200
+        visible["checkpoint_omissions"] = omissions.copy()
+
+    def current_size() -> int:
+        return token_estimate(encode())
+
+    while current_size() > token_budget:
+        reduced = False
+        for key in ("user_updates", "operations", "decisions", "changed_files", "blockers"):
+            if omit_oldest(key):
+                reduced = True
+                break
+        if reduced:
+            continue
+        plan = visible.get("plan")
+        if isinstance(plan, list):
+            completed_index = next((index for index, item in enumerate(plan)
+                                    if isinstance(item, dict)
+                                    and str(item.get("status", "")).casefold() in {"done", "completed"}), None)
+            if completed_index is not None:
+                plan.pop(completed_index)
+                omissions["plan_completed_items"] = omissions.get("plan_completed_items", 0) + 1
+                visible["checkpoint_omissions"] = omissions.copy()
+                continue
+        if isinstance(last_update, str) and last_update:
+            current = visible.get("last_assistant_update")
+            if isinstance(current, str) and current:
+                shortened = current[-max(0, len(current) // 2):] if len(current) > 80 else ""
+                visible["last_assistant_update"] = shortened
+                omissions["last_assistant_update_characters"] = max(
+                    omissions.get("last_assistant_update_characters", 0), len(last_update) - len(shortened))
+                visible["checkpoint_omissions"] = omissions.copy()
+                continue
+        break
+    return encode()
+
+
+def checkpoint_omissions(rendered: str) -> dict[str, int]:
+    """Return explicit inference-only omissions embedded in a rendered checkpoint."""
+    try:
+        payload = rendered.split("\n", 1)[1].split("\nContinue this task", 1)[0]
+        visible = json.loads(payload)
+        value = visible.get("checkpoint_omissions", {}) if isinstance(visible, dict) else {}
+        return {str(key): int(count) for key, count in value.items()
+                if isinstance(count, int) and not isinstance(count, bool) and count > 0}
+    except (IndexError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
 
 
 def current_task(checkpoint: dict[str, Any]) -> dict[str, Any]:

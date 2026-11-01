@@ -10,7 +10,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
+from task_checkpoint import checkpoint_omissions, current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from typing import Any, Callable
 
@@ -893,13 +893,25 @@ class ContextManager:
         tool_size=self.estimate(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
         if tool_size+max(self.reserve,output_tokens+1024)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
         system=messages[:1] if messages and messages[0].get("role")=="system" else []
-        checkpoint_text=render_checkpoint(checkpoint)
+        full_checkpoint_text=render_checkpoint(checkpoint)
+        checkpoint_text=full_checkpoint_text
+        checkpoint_target=max(64,budget//4)
+        if checkpoint_text and self.estimate(checkpoint_text)>checkpoint_target:
+            checkpoint_text=render_checkpoint(checkpoint,token_budget=checkpoint_target)
+        checkpoint_omitted=checkpoint_omissions(checkpoint_text)
         continuity=[{"role":"system","content":checkpoint_text}] if checkpoint_text else []
         base=system+continuity
         conversation=messages[len(system):]
         request=base+conversation
         total=request_size(request)
-        if total<=budget:return request
+        if total<=budget:
+            if checkpoint_text!=full_checkpoint_text and on_compact:
+                on_compact({"type":"context_compacted","omittedTurns":0,"retainedTurns":0,"omittedOperationGroups":0,
+                            "configuredContext":self.context,"inputBudget":budget,"checkpointIncluded":bool(checkpoint_text),
+                            "checkpointEstimate":self.estimate(checkpoint_text) if checkpoint_text else 0,
+                            "checkpointCompacted":True,"checkpointOmissions":checkpoint_omitted,
+                            "reason":"task checkpoint summarized to preserve input budget; canonical session checkpoint is unchanged"})
+            return request
         if len(messages)<3:raise ValueError(f"Request exceeds input budget for {self.context:,}-token context; context was not reduced.")
         # Compact only at complete user-turn boundaries. Keep assistant tool-call messages
         # together with every corresponding tool result; partial pairs are invalid provider input.
@@ -960,7 +972,7 @@ class ContextManager:
         if request_size(compacted)>budget:
             raise ValueError(f"Current turn and context notice exceed the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
         if on_compact:
-            on_compact({"type":"context_compacted","omittedTurns":dropped,"retainedTurns":len(kept),"omittedOperationGroups":omitted_groups,"configuredContext":self.context,"inputBudget":budget,"checkpointIncluded":bool(checkpoint_text),"checkpointEstimate":self.estimate(checkpoint_text) if checkpoint_text else 0,"reason":"rolling task checkpoint plus recent complete-turn tail and complete current-task operation exchanges"})
+            on_compact({"type":"context_compacted","omittedTurns":dropped,"retainedTurns":len(kept),"omittedOperationGroups":omitted_groups,"configuredContext":self.context,"inputBudget":budget,"checkpointIncluded":bool(checkpoint_text),"checkpointEstimate":self.estimate(checkpoint_text) if checkpoint_text else 0,"checkpointCompacted":checkpoint_text!=full_checkpoint_text,"checkpointOmissions":checkpoint_omitted,"reason":"budgeted task checkpoint plus recent complete-turn tail and complete current-task operation exchanges"})
         return compacted
 
 class OllamaRuntime:

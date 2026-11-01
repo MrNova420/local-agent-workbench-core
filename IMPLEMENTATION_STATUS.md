@@ -2,6 +2,8 @@
 
 ## 2026-11-01 unpublished continuity source work
 
+- The inference copy of an oversized task checkpoint is now budgeted independently from the configured model context. It preserves the full saved checkpoint, active goal/plan/settings, newest operation references and recent updates, and reports each omitted history category. The compaction event exposes these counts to the desktop so the user can see what was summarized. Context/output/reasoning settings are unchanged. Regressions are queued and unrun.
+
 - Verification outcomes now retain an explicit `command_incomplete` state for cancelled, partial, uncertain, or otherwise incomplete command runs, even when the project also has observed file changes. The command result is included in the verification record. Queued regression coverage was added; no test was run.
 
 - Tool-batch events now include the inference request index so the desktop activity layer can settle streamed per-call preparation rows against the exact request. A regression is queued; no verification was run.

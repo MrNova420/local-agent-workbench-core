@@ -72,6 +72,19 @@ class ContextTests(unittest.TestCase):
         self.assertIn('complete saved result 8',compact_results[-1]['content'])
         self.assertTrue(any('read_operation_result' in str(message.get('content','')) for message in compacted))
         self.assertEqual(len(messages),20,'compaction must leave canonical task history untouched')
+    def test_compaction_budget_summarizes_oversized_checkpoint_without_changing_context(self):
+        manager=ContextManager(context=4096,reserve=1024)
+        checkpoint={'current':{'task_id':'active','goal':'Keep building the full project','status':'active',
+                    'plan':[{'title':'Inspect','status':'done'},{'title':'Finish implementation','status':'in_progress'}],
+                    'operations':[{'operation_id':f'op-{i}','name':'read_file','status':'completed','result_ref':f'op-{i}'} for i in range(200)],
+                    'user_updates':[{'turn_id':f't{i}','instruction':f'Follow-up {i} '+('detail '*20)} for i in range(100)]}}
+        messages=[{'role':'system','content':'system'},{'role':'user','content':'Continue this project '+('task '*30)}]
+        events=[]
+        compacted=manager.compact(messages,output_tokens=512,on_compact=events.append,checkpoint=checkpoint)
+        self.assertTrue(events[0]['checkpointCompacted'])
+        self.assertGreater(events[0]['checkpointOmissions']['operations'],0)
+        self.assertTrue(any('Continue this project' in str(message.get('content','')) for message in compacted))
+        self.assertEqual(manager.context,4096)
     def test_request_skills_fit_available_budget_and_full_catalog_stays_callable(self):
         from tempfile import TemporaryDirectory
         from pathlib import Path
