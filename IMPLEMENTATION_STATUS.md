@@ -186,3 +186,10 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - JSON Schema `format` is treated as its default annotation vocabulary, not as an assertion. Common MCP schemas containing `format: date-time` or similar metadata remain usable, but the harness does not claim to validate the formatted value.
 - Expanded validation for common 2020-era keywords: `if`/`then`/`else`, `dependentRequired`, `dependentSchemas`, `propertyNames`, `prefixItems`, `contains`, and its match-count bounds. A root schema preflight rejects unsupported keywords even when they sit in a conditional branch that would not otherwise be evaluated; this closes a fail-closed bypass in conditional schemas.
 - Added queued cases for each conditional/dependency/array behavior and for nested unsupported-feature preflight. They remain unrun with the rest of the requested final verification batch.
+
+## 2026-11-01 active-task compaction and saved tool-result recovery
+
+- Compaction can now split an oversized active user turn only at complete assistant/tool exchange boundaries. It retains the original task prompt and the newest complete exchanges that fit, while the checkpoint preserves operation IDs and outcomes. Omitted exchange counts are emitted as compaction metadata; canonical session messages and full results are not modified.
+- Added a read-only `read_operation_result` tool. It retrieves a complete result by checkpoint operation ID, or a user-selected character slice for large command/tool output. In the desktop runtime, lookup is scoped to the session captured by the active run. It is included in Plan/Discussion read-only catalogs.
+- The system/checkpoint instructions tell the model to retrieve omitted output and inspect uncertain effects before retrying. The app stores and displays the number of omitted in-task exchange groups alongside omitted turns and the configured context/input budget.
+- Queued regressions cover compaction of a single long task, complete call/result boundaries, full/ranged result recovery, captured-session scope, and persisted compaction metadata. They remain unrun.

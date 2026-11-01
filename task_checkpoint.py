@@ -209,6 +209,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None) -> str:
         + "\nContinue this task from the recorded state. Do not restart planning or claim an operation "
         "was completed unless its saved status says completed. Use the saved result reference or "
         "project tools to inspect details when the recent transcript does not contain them. "
+        "Use read_operation_result with an operation_id from this checkpoint to retrieve saved output. "
         "If an operation status is uncertain, inspect the current workspace and saved operation "
         "result to determine whether it partially took effect before requesting or repeating it. "
         "Never treat an uncertain operation as safe to replay automatically."

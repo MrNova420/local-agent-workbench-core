@@ -44,6 +44,15 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIn("must be integer",_validate_tool_arguments(["label","two",True,"required"],arrays))
         self.assertIn("at least 1 item",_validate_tool_arguments(["label",2,True],arrays))
 
+    def test_prior_operation_result_tool_returns_full_result_or_requested_character_slice(self):
+        with tempfile.TemporaryDirectory() as folder:
+            registry=AgentEngine(Path(folder),context=CONTEXT_MAX,access="plan").state["registry"]
+            registry.operation_result_lookup=lambda operation_id: "full output from operation" if operation_id=="op-1" else None
+            self.assertIn("read_operation_result",[row["function"]["name"] for row in registry.schemas])
+            self.assertEqual(registry.run("read_operation_result",{"operation_id":"op-1"}),"full output from operation")
+            self.assertIn("characters 5-10 of 26",registry.run("read_operation_result",{"operation_id":"op-1","offset":5,"length":5}))
+            self.assertTrue(registry.run("read_operation_result",{"operation_id":"unknown"}).startswith("No saved result"))
+
     def test_legacy_saved_tool_result_is_migrated_to_ollama_protocol(self):
         messages=[{"role":"assistant","tool_calls":[{"id":"old-call","function":{"name":"read_file","arguments":{"path":"a.py"}}}]},
                   {"role":"tool","tool_call_id":"old-call","content":"file body"}]

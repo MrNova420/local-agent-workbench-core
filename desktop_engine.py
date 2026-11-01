@@ -47,7 +47,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
-        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. The checkpoint is factual state, while complete transcript, reasoning text, and operation results remain in session history.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. When earlier tool output is absent from the recent transcript, use read_operation_result with its checkpoint operation_id; request offset/length slices for output too large to fit. The checkpoint is factual state, while complete transcript, reasoning text, and operation results remain in session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
@@ -418,18 +418,20 @@ class Workspace:
 
 class ToolRegistry:
     """Explicit project tools; approved shell commands run as the host user without OS sandboxing."""
-    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None):
+    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
         self.plan=[]
         self.skills_enabled=bool(skills_enabled)
         self.skill_sources=tuple(("project", "user") if skill_sources is None else skill_sources)
+        self.operation_result_lookup=operation_result_lookup
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [
           self._schema("list_files", "List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; continue with the returned offset and limit when more results exist.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
           self._schema("search_files", "Search project text for a literal substring. Use path and include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Default page size is 100; continue with the returned offset and limit when more results exist.", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
           self._schema("read_file", "Read a project file; optional 1-based line bounds let you inspect large files in sections", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}, ["path"]),
+          self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("update_plan", "Create or update the current task checklist and concrete, observable acceptance criteria for this task. Keep each criterion specific enough to inspect or verify.", {"items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}}}, ["items"]),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
@@ -444,12 +446,26 @@ class ToolRegistry:
         if not self.skills_enabled:
             self.schemas=[schema for schema in self.schemas if schema.get("function",{}).get("name")!="skill"]
         if self.workspace.access == "plan":
-            read_only_tools = {"list_files", "search_files", "read_file", "git_status", "git_diff", "git_log", "update_plan", "skill"}
+            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "git_status", "git_diff", "git_log", "update_plan", "skill"}
             self.schemas = [schema for schema in self.schemas if schema.get("function", {}).get("name") in read_only_tools]
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
         return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required,"additionalProperties":False}}}
     def run(self, name: str, args: dict) -> str:
+        if name == "read_operation_result":
+            operation_id=str(args.get("operation_id", "")).strip()
+            if not operation_id:return "Invalid operation_id: provide the exact saved operation ID from the task checkpoint."
+            if self.operation_result_lookup is None:return "Saved operation-result lookup is unavailable in this runtime."
+            result=self.operation_result_lookup(operation_id)
+            if result is None:return "No saved result exists for that operation ID in this session. Do not repeat an uncertain operation; inspect the workspace first."
+            offset=args.get("offset",0);length=args.get("length")
+            if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
+            if length is not None and (not isinstance(length,int) or isinstance(length,bool) or length<1):return "Invalid length: expected a positive integer."
+            end=None if length is None else offset+length
+            excerpt=result[offset:end]
+            if length is None and offset==0:return excerpt
+            stop=min(len(result),end) if end is not None else len(result)
+            return f"Saved operation result characters {offset}-{stop} of {len(result)}:\n{excerpt}"
         if name in {"git_status", "git_diff", "git_log"}:
             import subprocess
             try:
@@ -778,6 +794,24 @@ class ToolRegistry:
             return result+f"\n[exit {process.returncode}]"
         except (OSError,ValueError) as exc: return f"Command error: {exc}"
 
+def _split_turn_for_compaction(turn:list[dict])->list[list[dict]]:
+    """Keep the user's instruction separate from complete assistant/tool exchanges."""
+    if not turn or turn[0].get("role")!="user":return [turn]
+    groups=[[turn[0]]]
+    index=1
+    while index<len(turn):
+        message=turn[index]
+        calls=message.get("tool_calls") if message.get("role")=="assistant" else None
+        if not isinstance(calls,list) or not calls:
+            groups.append([message]);index+=1;continue
+        exchange=[message];remaining=len(calls);index+=1
+        while index<len(turn) and remaining:
+            exchange.append(turn[index])
+            if turn[index].get("role")=="tool":remaining-=1
+            index+=1
+        groups.append(exchange)
+    return groups
+
 class ContextManager:
     def __init__(self, context: int=CONTEXT_MAX, reserve:int=512,scan_file_limit:int=5000,scan_bytes_limit:int=128*1024*1024): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
     @property
@@ -862,7 +896,7 @@ class ContextManager:
             current.append(message)
         if current:turns.append(current)
         if not turns:raise ValueError(f"Request exceeds input budget for configured {self.context:,}-token context; no complete turn boundary is available for safe compaction.")
-        kept=[]
+        kept=[];omitted_groups=0
         for turn in reversed(turns):
             candidate=[turn]+kept
             dropped=len(turns)-len(candidate)
@@ -872,8 +906,31 @@ class ContextManager:
             proposed=base+notice+[m for group in candidate for m in group]
             if request_size(proposed)>budget:
                 if not kept:
-                    raise ValueError(f"The current complete conversation turn exceeds the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
-                break
+                    if turn is turns[-1]:
+                        blocks=_split_turn_for_compaction(turn)
+                        if len(blocks)>1:
+                            retained=[]
+                            for block in reversed(blocks[1:]):
+                                trial=[block]+retained
+                                missing=len(blocks)-1-len(trial)
+                                within_notice=([{"role":"user","content":f"[Active task compaction: {missing} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript and outputs remain saved. Use operation IDs in the task checkpoint with read_operation_result to recover output; inspect the workspace before repeating any action.]"}] if missing else [])
+                                candidate_turn=blocks[0]+within_notice+[message for group in trial for message in group]
+                                if request_size(base+notice+candidate_turn)>budget:break
+                                retained=trial
+                            omitted_groups=len(blocks)-1-len(retained)
+                            within_notice=([{"role":"user","content":f"[Active task compaction: {omitted_groups} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript and outputs remain saved. Use operation IDs in the task checkpoint with read_operation_result to recover output; inspect the workspace before repeating any action.]"}] if omitted_groups else [])
+                            compact_turn=blocks[0]+within_notice+[message for group in retained for message in group]
+                            if request_size(base+notice+compact_turn)<=budget:
+                                turn=compact_turn
+                                candidate=[turn]+kept
+                                proposed=base+notice+[m for group in candidate for m in group]
+                            else:
+                                raise ValueError(f"The current user prompt and compaction notice exceed the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
+                        else:
+                            raise ValueError(f"The current complete conversation turn exceeds the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
+                    else:
+                        raise ValueError(f"The current complete conversation turn exceeds the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
+                else:break
             kept=candidate
         dropped=len(turns)-len(kept)
         notice=[]
@@ -889,7 +946,7 @@ class ContextManager:
         if request_size(compacted)>budget:
             raise ValueError(f"Current turn and context notice exceed the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
         if on_compact:
-            on_compact({"type":"context_compacted","omittedTurns":dropped,"retainedTurns":len(kept),"configuredContext":self.context,"inputBudget":budget,"checkpointIncluded":bool(checkpoint_text),"checkpointEstimate":self.estimate(checkpoint_text) if checkpoint_text else 0,"reason":"rolling task checkpoint plus recent complete-turn tail"})
+            on_compact({"type":"context_compacted","omittedTurns":dropped,"retainedTurns":len(kept),"omittedOperationGroups":omitted_groups,"configuredContext":self.context,"inputBudget":budget,"checkpointIncluded":bool(checkpoint_text),"checkpointEstimate":self.estimate(checkpoint_text) if checkpoint_text else 0,"reason":"rolling task checkpoint plus recent complete-turn tail and complete current-task operation exchanges"})
         return compacted
 
 class OllamaRuntime:
@@ -999,12 +1056,12 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto"):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
-        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources),"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":task_checkpoint if isinstance(task_checkpoint,dict) else {},"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
+        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=operation_result_lookup),"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":task_checkpoint if isinstance(task_checkpoint,dict) else {},"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
     def _approval(self,name:str,args:Any)->bool:
         checkpoint=self.state["task_checkpoint"]
         if self.approval_mode=="auto":

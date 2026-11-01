@@ -54,6 +54,24 @@ class ContextTests(unittest.TestCase):
         assistant=next(m for m in compacted if m.get('tool_calls'))
         result=next(m for m in compacted if m.get('role')=='tool')
         self.assertEqual(assistant['tool_calls'][0]['function']['name'],result['tool_name'])
+    def test_compaction_can_shrink_a_single_long_task_at_complete_tool_exchange_boundaries(self):
+        manager=ContextManager(context=4096,reserve=1024)
+        messages=[{'role':'system','content':'SYSTEM'},{'role':'user','content':'Build the requested project '+('goal '*50)}]
+        for index in range(9):
+            messages.append({'role':'assistant','tool_calls':[{'id':f'call-{index}','function':{'name':'read_file','arguments':{'path':f'src/{index}.py'}}}]})
+            messages.append({'role':'tool','tool_name':'read_file','content':f'complete saved result {index} '+('detail '*220)})
+        checkpoint={'current':{'task_id':'task-long','goal':'Build the requested project','status':'active',
+                               'operations':[{'operation_id':f'op-{index}','name':'read_file','status':'completed','result_ref':f'op-{index}'} for index in range(9)]}}
+        events=[]
+        compacted=manager.compact(messages,output_tokens=512,on_compact=events.append,checkpoint=checkpoint)
+        compact_calls=[message for message in compacted if message.get('tool_calls')]
+        compact_results=[message for message in compacted if message.get('role')=='tool']
+        self.assertGreater(events[0]['omittedOperationGroups'],0)
+        self.assertLess(len(compact_calls),9)
+        self.assertEqual(len(compact_calls),len(compact_results))
+        self.assertIn('complete saved result 8',compact_results[-1]['content'])
+        self.assertTrue(any('read_operation_result' in str(message.get('content','')) for message in compacted))
+        self.assertEqual(len(messages),20,'compaction must leave canonical task history untouched')
     def test_request_skills_fit_available_budget_and_full_catalog_stays_callable(self):
         from tempfile import TemporaryDirectory
         from pathlib import Path
