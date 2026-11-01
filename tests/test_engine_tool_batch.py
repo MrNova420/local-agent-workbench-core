@@ -71,6 +71,36 @@ class EngineToolBatchTests(unittest.TestCase):
             assert uncertain["status"] == "uncertain"
             assert checkpoint["uncertain_operation"]["name"] == "mcp__calendar__create_event"
 
+    def test_finish_after_operation_drains_already_started_read_batch_before_stopping(self):
+        with tempfile.TemporaryDirectory() as root:
+            engine = AgentEngine(root)
+            calls = [
+                {"id": "status", "function": {"name": "git_status", "arguments": {}}},
+                {"id": "diff", "function": {"name": "git_diff", "arguments": {}}},
+            ]
+            engine.runtime.stream = lambda *_args: {"message": {"role": "assistant", "content": "", "tool_calls": calls}}
+            lock = threading.Lock()
+            active = 0
+
+            def run_tool(name, args, **kwargs):
+                nonlocal active
+                with lock:
+                    active += 1
+                    should_stop = active == 2
+                if should_stop:
+                    engine.finish_after_operation()
+                time.sleep(0.03)
+                return name
+
+            engine.state["registry"].run = run_tool
+            events = []
+            engine.event = events.append
+            history = engine.run("Inspect status and diff")
+
+            results = [row["content"] for row in history if row.get("role") == "tool"]
+            assert results == ["git_status", "git_diff"]
+            assert events[-1]["type"] == "stopped_after_operation"
+
     def test_reports_every_tool_call_in_large_response_without_dropping_any(self):
         with tempfile.TemporaryDirectory() as root:
             engine = AgentEngine(root)

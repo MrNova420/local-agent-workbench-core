@@ -1491,6 +1491,7 @@ class AgentEngine:
                                 prepared_batch[batch_index]={"operation_id":operation_id,"started":operation_started,"output":str(out),"budget":output_budget,"completed_event":True}
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
+                    prepared=prepared_batch.get(index)
                     args_error=None
                     if isinstance(raw_args,str):
                         try:args=json.loads(raw_args or "{}")
@@ -1611,7 +1612,9 @@ class AgentEngine:
                         finish_task(checkpoint,"failed",blocker=reason,outcome="blocked")
                         self.event({"type":"error","error":reason,"workflowOutcome":"blocked"})
                         return msgs
-                    if self.stop_after_operation.is_set():
+                    # Safe read batches are already in flight together. Drain and record
+                    # every submitted operation before stopping ahead of the next model call.
+                    if self.stop_after_operation.is_set() and not prepared:
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             pending_fn=pending.get("function") or {};msgs.append({"role":"tool","tool_name":pending_fn.get("name","unknown_tool"),"content":"Not executed: the user chose to stop after the active operation."})
                         finish_task(checkpoint,"stopped")

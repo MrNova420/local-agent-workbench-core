@@ -4,6 +4,7 @@
 
 - Starter checklist stages now carry stable phase identifiers instead of depending on display-text matching. Legacy title-only plans remain readable, the captured task brief starts complete rather than appearing as permanently pending, and plan-only presentation can complete from the host terminal event. The model can still replace, extend, and repeatedly revise its own plan; workbench progress will not overwrite an agent-owned plan. A queued regression covers phase metadata; tests remain intentionally unrun.
 - The engine's current batch behavior supports multiple calls in one provider response and concurrent execution for validated, independent, read-only tools. Mutating file actions, commands, MCP, and permission-sensitive work remain sequential so approval and side-effect order stay inspectable. This boundary is explicit in the agent guidance and is not being broadened without a safe approval/rollback design.
+- Finish-after-operation now drains and records a safe read batch that was already launched concurrently before stopping at the next model request. This prevents completed reads from being mislabeled as unexecuted when the user chooses to finish active work. A queued regression covers the race; tests remain unrun.
 
 ## 2026-11-01 unpublished continuity source work
 
