@@ -108,6 +108,29 @@ class ToolTests(unittest.TestCase):
     self.assertEqual(engine.state['context'],65536)
     self.assertEqual(engine.state['max_tokens'],8192)
     self.assertEqual(engine.state['registry'].read_output_byte_budget,14080)
+
+ def test_file_listing_pages_within_context_budget(self):
+   import re
+   with tempfile.TemporaryDirectory() as t:
+    root=Path(t)
+    for index in range(120):(root/f'project-file-{index:03}.txt').write_text('x')
+    tools=ToolRegistry(Workspace(root),lambda *_:True,read_output_token_budget=512)
+    first=tools.run('list_files',{'limit':1200})
+    self.assertIn('More results are available',first)
+    self.assertLess(len(first.encode('utf8')),1300)
+    offset=int(re.search(r'Next offset (\d+)',first).group(1))
+    second=tools.run('list_files',{'offset':offset,'limit':1200})
+    self.assertNotEqual(first.splitlines()[0],second.splitlines()[0])
+
+ def test_search_reports_large_matching_line_and_points_to_complete_file_read(self):
+   with tempfile.TemporaryDirectory() as t:
+    root=Path(t); (root/'large.py').write_text('needle '+('雪'*1000)+'\n',encoding='utf8')
+    tools=ToolRegistry(Workspace(root),lambda *_:True,read_output_token_budget=512)
+    result=tools.run('search_files',{'query':'needle','include':'*.py'})
+    self.assertIn('large.py:1',result)
+    self.assertIn('matching line exceeds the result budget',result)
+    self.assertIn('read_file at line 1',result)
+    self.assertLess(len(result.encode('utf8')),1300)
  def test_write_file_accepts_files_over_old_cap(self):
   with tempfile.TemporaryDirectory() as t:
    content='x'*600000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)

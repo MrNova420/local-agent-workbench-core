@@ -449,8 +449,8 @@ class ToolRegistry:
                                  if self.read_output_byte_budget is not None else "No per-call read excerpt budget is configured.")
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [
-          self._schema("list_files", "List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; continue with the returned offset and limit when more results exist.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
-          self._schema("search_files", "Search project text for a literal substring. Use path and include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Default page size is 100; continue with the returned offset and limit when more results exist.", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
+          self._schema("list_files", f"List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; results also page to the current context budget. Continue with the returned offset and limit when more results exist. {read_budget_description}", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
+          self._schema("search_files", f"Search project text for a literal substring. Use path and include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Default page size is 100; results also page to the current context budget. Continue with the returned offset and limit when more results exist. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
           self._schema("read_file", f"Read a project file; optional 1-based line bounds and start_column let you inspect large files in sections. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("update_plan", "Create or update the current task checklist, concrete observable acceptance criteria, and concise user-relevant design decisions or assumptions to preserve across compaction. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, ["items"]),
@@ -528,7 +528,7 @@ class ToolRegistry:
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
             if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=1200:return "Invalid limit: expected an integer from 1 to 1,200."
             import fnmatch
-            matches=[];matched=0;scanned=0;has_more=False;scan_capped=False
+            matches=[];matched=0;scanned=0;used_bytes=0;has_more=False;scan_capped=False
             for p in iter_project_files(base,max_files=20000):
                 scanned+=1
                 relative=p.relative_to(base).as_posix()
@@ -538,7 +538,10 @@ class ToolRegistry:
                 else:is_match=fnmatch.fnmatchcase(p.name.casefold(),pattern.casefold())
                 if is_match:
                     if matched<offset:matched+=1;continue
-                    if len(matches)<limit:matches.append(p.relative_to(self.workspace.root).as_posix())
+                    item=p.relative_to(self.workspace.root).as_posix()
+                    item_bytes=len(item.encode("utf8"))+(1 if matches else 0)
+                    if len(matches)<limit and (self.read_output_byte_budget is None or used_bytes+item_bytes<=self.read_output_byte_budget or not matches):
+                        matches.append(item);used_bytes+=item_bytes
                     else:has_more=True;break
             if scanned>=20000 and not has_more:scan_capped=True
             result="\n".join(matches)
@@ -546,7 +549,8 @@ class ToolRegistry:
                 result=f"No project files found under '{args.get('path', '.')}'. The directory is empty or contains only ignored files."
             if has_more:
                 result+="\n\n" if result else ""
-                if limit==1200:result+="[File listing capped at 1,200 entries; results may be incomplete.] "
+                if len(matches)>=limit:result+=f"[This page reached the requested {limit}-file page size.] "
+                elif self.read_output_byte_budget is not None:result+=f"[This page reached its context-derived ~{self.read_output_byte_budget:,}-byte output budget.] "
                 result+=f"More results are available. Next offset {offset+len(matches)}; continue with limit {limit}."
             elif scan_capped:
                 result+="\n\n" if result else ""
@@ -554,7 +558,7 @@ class ToolRegistry:
             return result
         if name == "search_files":
             search_root=self.workspace.resolve(args.get("path","."));include=str(args.get("include","*")).strip() or "*"
-            query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;capped=False;has_more=False
+            query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;used_bytes=0;capped=False;has_more=False
             offset=args.get("offset",0);limit=args.get("limit",100)
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
             if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=100:return "Invalid limit: expected an integer from 1 to 100."
@@ -577,8 +581,17 @@ class ToolRegistry:
                 for i,line in enumerate(lines,1):
                     if query in line.casefold():
                         if offset>0:offset-=1;continue
-                        if len(hits)<limit:hits.append(f"{p.relative_to(self.workspace.root).as_posix()}:{i}: {line}")
-                        else:has_more=True;break
+                        if len(hits)>=limit:has_more=True;break
+                        path_line=f"{p.relative_to(self.workspace.root).as_posix()}:{i}: "
+                        content=line
+                        budget=self.read_output_byte_budget
+                        if budget is not None and len((path_line+content).encode("utf8"))>budget:
+                            content=f"[matching line exceeds the result budget; inspect with read_file at line {i}]"
+                        record=path_line+content
+                        record_bytes=len(record.encode("utf8"))+(1 if hits else 0)
+                        if budget is not None and used_bytes+record_bytes>budget and hits:
+                            has_more=True;break
+                        hits.append(record);used_bytes+=record_bytes
                 if has_more:break
             result="\n".join(hits) or "No matches."
             if scanned>=self.search_file_limit:capped=True
