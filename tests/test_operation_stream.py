@@ -48,7 +48,7 @@ class OperationStreamTests(unittest.TestCase):
         self.assertIn("Invalid unified diff", event["result"])
 
     def test_tool_exception_is_recorded_as_failed_activity(self):
-        def explode(*_args):
+        def explode(*_args, **_kwargs):
             raise OSError("disk unavailable")
 
         event = self._run_one_tool("write_file", {"path": "x.txt", "content": "x"}, explode)
@@ -99,7 +99,7 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(readonly.run("append_file", {"path": "missing.txt", "content": "x"}), "Blocked: project is in read-only plan mode.")
 
     def test_error_like_file_contents_remain_completed(self):
-        event = self._run_one_tool("read_file", {"path": "x.txt"}, lambda *_: "Invalid unified diff is an example")
+        event = self._run_one_tool("read_file", {"path": "x.txt"}, lambda *_args, **_kwargs: "Invalid unified diff is an example")
 
         self.assertEqual(event["status"], "completed")
 
@@ -123,7 +123,7 @@ class OperationStreamTests(unittest.TestCase):
             events = []
             engine = AgentEngine(root, access="edit", event=events.append)
             result_text = "λ" * 20000
-            engine.state["registry"].run = lambda _name, _args: result_text
+            engine.state["registry"].run = lambda _name, _args, **_kwargs: result_text
             responses = [
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
                     {"id": "call-1", "function": {"name": "read_file", "arguments": {"path": "x.txt"}}}
@@ -148,7 +148,7 @@ class OperationStreamTests(unittest.TestCase):
             events = []
             engine = AgentEngine(root, access="edit", event=events.append)
             calls = []
-            engine.state["registry"].run = lambda *_: (engine.finish_after_operation(), calls.append("tool"), "saved")[2]
+            engine.state["registry"].run = lambda *_args, **_kwargs: (engine.finish_after_operation(), calls.append("tool"), "saved")[2]
             responses = [{"message": {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "call-1", "function": {"name": "write_file", "arguments": {"path": "x", "content": "saved"}}},
                 {"id": "call-2", "function": {"name": "write_file", "arguments": {"path": "y", "content": "pending"}}},
@@ -196,7 +196,7 @@ class OperationStreamTests(unittest.TestCase):
             completion=next(event for event in events if event.get("type")=="complete")
             self.assertTrue(completion["implementationRequested"])
             self.assertEqual(completion["verification"]["status"],"inspected")
-            self.assertEqual(completion["verification"]["steps"],[{"kind":"inspection","tool":"read_file","result":"completed"}])
+            self.assertEqual(completion["verification"]["steps"],[{"kind":"inspection","tool":"read_file","arguments":{"path":"index.html"},"result":"completed"}])
             self.assertEqual(completion["verification"]["contract"]["project_change"], "observed")
             self.assertEqual(completion["verification"]["contract"]["post_change_inspection"], "completed")
             self.assertEqual(messages[-1]["content"], "The page is ready.")
@@ -206,7 +206,7 @@ class OperationStreamTests(unittest.TestCase):
             events = []
             engine = AgentEngine(root, access="edit", event=events.append)
             actions = []
-            engine.state["registry"].run = lambda name, _args: (
+            engine.state["registry"].run = lambda name, _args, **_kwargs: (
                 actions.append(name) or {
                     "write_file": "Wrote app.py",
                     "run_command": "Checks completed [exit 0]",
@@ -239,9 +239,9 @@ class OperationStreamTests(unittest.TestCase):
     def test_command_only_implementation_records_possible_effects_and_inspects_after_command(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
-            engine = AgentEngine(root, access="edit", event=events.append)
+            engine = AgentEngine(root, access="edit", approve=lambda *_args: True, event=events.append)
             actions = []
-            engine.state["registry"].run = lambda name, args: (
+            engine.state["registry"].run = lambda name, args, **_kwargs: (
                 actions.append((name, args)) or {
                     "run_command": "Generated project files [exit 0]",
                     "read_file": "Observed generated file contents",
@@ -275,8 +275,8 @@ class OperationStreamTests(unittest.TestCase):
     def test_failed_implementation_command_is_inspected_for_partial_effects(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
-            engine = AgentEngine(root, access="edit", event=events.append)
-            engine.state["registry"].run = lambda name, _args: {
+            engine = AgentEngine(root, access="edit", approve=lambda *_args: True, event=events.append)
+            engine.state["registry"].run = lambda name, _args, **_kwargs: {
                 "run_command": "Generated package.json, then build failed [exit 1]",
                 "git_status": " M package.json",
             }[name]
@@ -323,7 +323,7 @@ class OperationStreamTests(unittest.TestCase):
     def test_implementation_that_uses_its_continuation_without_a_change_is_not_discussion(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
-            engine = AgentEngine(root, access="edit", event=events.append)
+            engine = AgentEngine(root, access="edit", event=events.append, task_intent="implement")
             responses = [
                 {"message": {"role": "assistant", "content": "I will implement the requested change."}},
                 {"message": {"role": "assistant", "content": "I could not make the change."}},
@@ -334,7 +334,7 @@ class OperationStreamTests(unittest.TestCase):
 
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
-            self.assertEqual(completion["verification"]["status"], "not_implemented")
+            self.assertEqual(completion["verification"]["status"], "implementation_incomplete")
 
     def test_open_agent_plan_continues_across_planning_until_work_and_plan_are_complete(self):
         with tempfile.TemporaryDirectory() as root:
@@ -496,7 +496,7 @@ class OperationStreamTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             events = []
             engine = AgentEngine(root, access="edit", event=events.append)
-            engine.state["registry"].run = lambda *_args: "completed"
+            engine.state["registry"].run = lambda *_args, **_kwargs: "completed"
             calls = [{"id": f"call-{index}", "function": {"name": "update_plan", "arguments": {"items": []}}} for index in range(17)]
             responses = [
                 {"message": {"role": "assistant", "content": "", "tool_calls": calls}},
@@ -512,7 +512,7 @@ class OperationStreamTests(unittest.TestCase):
     def test_run_can_continue_beyond_thirty_two_tool_turns(self):
         with tempfile.TemporaryDirectory() as root:
             engine = AgentEngine(root, context=CONTEXT_MAX, access="edit")
-            engine.state["registry"].run = lambda *_args: "completed"
+            engine.state["registry"].run = lambda *_args, **_kwargs: "completed"
             responses = [
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
                     {"id": f"call-{index}", "function": {"name": "update_plan", "arguments": {"items": []}}}

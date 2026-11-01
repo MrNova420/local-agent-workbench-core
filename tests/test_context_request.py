@@ -6,7 +6,7 @@ from desktop_engine import OllamaRuntime
 class ContextRequestTests(unittest.TestCase):
  def test_runtime_sends_requested_context_verbatim(self):
   captured={}
-  def fail(req,cancel,register):
+  def fail(req,cancel,register,**_kwargs):
    captured['payload']=json.loads(req.data)
    raise HTTPError(req.full_url,500,'context allocation failed',None,None)
   state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),'context':262144,'temperature':0.2,'max_tokens':4096}

@@ -62,7 +62,7 @@ def test_engine_emits_manifest_for_the_actual_tool_catalog_before_waiting(tmp_pa
         "---\nname: python-review\ndescription: Review Python changes\n---\nCheck the patch.", encoding="utf8",
     )
     events = []
-    engine = AgentEngine(tmp_path, access="plan", event=events.append)
+    engine = AgentEngine(tmp_path, access="plan", event=events.append, skill_sources=["project"])
     engine.runtime.stream = lambda *_args: {"message": {"role": "assistant", "content": "Here is the analysis."}}
 
     engine.run("Explain the project and review its Python conventions.")

@@ -11,7 +11,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
+from task_checkpoint import begin_task, checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from permission_policy import permission_decision, validate_permission_rules
 from typing import Any, Callable
@@ -28,7 +28,7 @@ class RequestCancelled(Exception):
 
 def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto") -> str:
     profile_guidance = (
-        "Small-model workflow: break complex work into manageable steps while completing the full request. Treat the visible plan as a living, expandable plan: add independent workstreams, acceptance criteria, and newly discovered work when useful; revisit or revise priorities as evidence or user direction changes. Preserve completed items and useful decisions, but do not limit the number of planning passes, plan items, or improvement cycles. Avoid repeating unchanged analysis without a reason; keep making progress through planning, implementation, inspection, and verification as the task needs. Batch independent tool calls in one response when their inputs are already known; do not batch actions that depend on an earlier result. Group independent read-only operations when useful; the host may execute validated read-only calls concurrently, while writes, commands, and MCP calls preserve order and approval. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Respect discussion and plan-only intent; do not implement those tasks. After compaction, continue from the saved checkpoint, retain and extend prior plans, and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
+        "Small-model workflow: break complex work into manageable steps while completing the full request. Choose action sizes that fit the task, then take the next unfinished action instead of stopping after planning. For implementation tasks, carry the plan into actual project changes, inspection, and relevant verification. Treat the visible plan as a living, expandable plan: add independent workstreams, acceptance criteria, and newly discovered work when useful; revisit or revise priorities as evidence or user direction changes. Preserve completed items and useful decisions, but do not limit the number of planning passes, plan items, or improvement cycles. Avoid repeating unchanged analysis without a reason; keep making progress through planning, implementation, inspection, and verification as the task needs. Batch independent tool calls in one response when their inputs are already known; do not batch actions that depend on an earlier result. Group independent read-only operations when useful; the host may execute validated read-only calls concurrently, while writes, commands, and MCP calls preserve order and approval. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Respect discussion and plan-only intent; do not implement those tasks. After compaction, continue from the saved checkpoint, retain and extend prior plans, and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
@@ -453,16 +453,20 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
     return json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 def _needs_implementation_continuation(implementation_requested:bool,access:str,action_denied:bool,
-                                       project_change_observed:bool,review_required:bool,plan_remaining:bool)->bool:
+                                       project_change_observed:bool,review_required:bool,plan_remaining:bool,
+                                       command_effects_inspected:bool=False)->bool:
     """Decide from structured work evidence only; assistant prose cannot mark a task done or pending."""
     return bool(implementation_requested and access!="plan" and not action_denied
-                and (not project_change_observed or review_required or plan_remaining))
+                and (review_required or plan_remaining
+                     or (not project_change_observed and not command_effects_inspected)))
 
 def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool,
-                         command_side_effects_possible: bool = False, post_effect_inspection: bool = False) -> dict[str, Any]:
+                         command_side_effects_possible: bool = False, post_effect_inspection: bool | None = None) -> dict[str, Any]:
     """Summarize host-observed evidence without treating a completed command as a passing test."""
     inspections = [step for step in steps if step.get("kind") == "inspection"]
     commands = [step for step in steps if step.get("kind") == "command"]
+    if post_effect_inspection is None:
+        post_effect_inspection = bool(project_changed and inspections)
     if any(step.get("result") == "failed" for step in commands):
         status = "command_failed"
     elif any(step.get("result") in {"partial", "uncertain", "cancelled", "command_not_completed"} for step in commands):
@@ -1258,10 +1262,15 @@ class ContextManager:
 
 class OllamaRuntime:
     def __init__(self,base_url:str="http://127.0.0.1:11434"):
-        self.base_url=base_url.rstrip("/");self.response=None;self.connection=None;self.lock=threading.Lock()
+        self.base_url=base_url.rstrip("/");self.response=None;self.connection=None;self.lock=threading.Lock();self.cancelled_waiting_headers=False
     def cancel(self):
-        with self.lock:connection=self.connection;response=self.response
-        interrupt_connection(connection,response)
+        with self.lock:
+            connection=self.connection;response=self.response
+            if connection is not None and response is None:self.cancelled_waiting_headers=True
+        # The cancel control must return immediately even if the HTTP reader
+        # owns a buffered-response lock. Socket shutdown wakes that reader; its
+        # own finally block performs definitive response/connection cleanup.
+        threading.Thread(target=interrupt_connection,args=(connection,response),daemon=True).start()
     def get(self,path:str,payload:dict|None=None,timeout:int=5)->dict:
         req=urllib.request.Request(self.base_url+path,data=json.dumps(payload).encode() if payload is not None else None,headers={"Content-Type":"application/json"} if payload is not None else {})
         with urllib.request.urlopen(req,timeout=timeout) as response:return json.loads(response.read().decode())
@@ -1293,14 +1302,16 @@ class OllamaRuntime:
         emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"tool_names":[(item.get("function") or {}).get("name","") for item in payload["tools"]],"deferred_tool_names":state.get("deferred_tool_names",[]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":additional_fields,"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};call_ids={};request_started=time.monotonic();first_output=True;user_facing_output=False
-        dispatch_time={"value":None};request_index=state.get("request_index")
+        dispatch_time={"value":None};headers_received_flag={"value":False};request_index=state.get("request_index")
         try:
+            with self.lock:self.cancelled_waiting_headers=False
             def register(connection,response):
                 with self.lock:self.connection=connection;self.response=response
             def dispatched():
                 dispatch_time["value"]=time.monotonic()
                 emit({"type":"request_dispatched","provider":"ollama","request_index":request_index})
             def headers_received(response):
+                headers_received_flag["value"]=True
                 elapsed=time.monotonic()-dispatch_time["value"] if dispatch_time["value"] is not None else None
                 emit({"type":"request_headers","provider":"ollama","request_index":request_index,
                       "http_status":response.status,"http_reason":response.reason,"header_wait_seconds":elapsed})
@@ -1361,8 +1372,12 @@ class OllamaRuntime:
             return result
         except Exception as exc:
             with self.lock:active_response=self.response
-            headers_received_flag=active_response is not None
-            failure_phase="provider_http_error" if headers_received_flag and getattr(active_response,"status",0) >= 400 else "streaming_response" if headers_received_flag else "waiting_response_headers" if dispatch_time["value"] is not None else "connecting_or_sending"
+            response_is_error=active_response is not None and getattr(active_response,"status",0) >= 400
+            has_partial_stream=bool(result["message"].get("content") or result["message"].get("thinking") or calls)
+            failure_phase=("provider_http_error" if response_is_error else
+                           "waiting_response_headers" if cancel.is_set() and self.cancelled_waiting_headers else
+                           "streaming_response" if headers_received_flag["value"] or has_partial_stream else
+                           "waiting_response_headers" if dispatch_time["value"] is not None else "connecting_or_sending")
             emit({"type":"request_error","provider":"ollama","request_index":request_index,
                   "phase":failure_phase,
                   "cancelled":cancel.is_set(),"error":str(exc)})
@@ -1488,7 +1503,12 @@ class AgentEngine:
         by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
         unknown=selected_names-set(by_name)
         if unknown:raise ValueError("Selected tool schema is no longer available in this workspace: "+", ".join(sorted(unknown)))
-        required_names={"load_tools","list_files","search_files","read_file","read_operation_result","read_task_checkpoint","update_plan","write_file","append_file","edit_file","apply_patch","run_command","run_shell"}
+        # Tool schemas are part of the actual model input budget. Keep catalog
+        # discovery available, then fit broadly useful and task-relevant tools
+        # into the remaining budget. A large fixed "required" bundle made a
+        # valid 4K request fail before the model could do any work; deferred
+        # capabilities remain selectable through load_tools.
+        required_names={"load_tools"}
         required=[name for name in by_name if name in required_names]
         terms={term.casefold() for term in re.findall(r"[a-zA-Z0-9_-]{3,}",str(base_messages[-1].get("content","")))}
         def score(tool:dict)->tuple[int,int]:
@@ -1496,8 +1516,15 @@ class AgentEngine:
             overlap=len(terms & {token.casefold() for token in re.findall(r"[a-zA-Z0-9_-]{3,}",name+" "+description)})
             # Native capabilities are preferred when an optional schema must be deferred.
             return (1 if name.startswith("mcp__") else 0,-overlap)
+        preferred_names={"update_plan","list_files","search_files","read_file","read_operation_result",
+                         "read_task_checkpoint","write_file","edit_file","apply_patch","append_file",
+                         "run_command","run_shell","git_status","git_diff"}
         optional=[name for name in by_name if name not in required_names and name not in selected_names]
-        optional.sort(key=lambda name:(score(by_name[name]),name.casefold()))
+        optional.sort(key=lambda name:(
+            score(by_name[name]),
+            0 if name in preferred_names else 1,
+            name.casefold(),
+        ))
         ordered=required+[name for name in by_name if name in selected_names and name not in required_names]+optional
         budget=self.context.budget(self.state["max_tokens"])
         tools=[];included=set()
@@ -1609,6 +1636,18 @@ class AgentEngine:
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
         self.state["registry"].conversation_messages=msgs
         checkpoint=self.state["task_checkpoint"]
+        if not isinstance(checkpoint.get("current"), dict):
+            checkpoint = begin_task(
+                checkpoint if checkpoint else None,
+                prompt=prompt,
+                turn_id=uuid.uuid4().hex,
+                workspace=str(self.workspace.root),
+                settings={"task_intent": self.task_intent, "context": self.context.context,
+                          "max_tokens": self.state["max_tokens"], "model": self.model},
+                plan=self.state["registry"].plan,
+            )
+            self.state["task_checkpoint"] = checkpoint
+            self.state["registry"].task_checkpoint = checkpoint
         checkpoint_state=current_task(checkpoint)
         checkpoint_state.setdefault("goal",prompt)
         checkpoint_state["workspace"]=str(self.workspace.root)
@@ -1674,7 +1713,10 @@ class AgentEngine:
                     review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
                     plan=checkpoint_state.get("plan",[])
                     plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
-                    unfinished=_needs_implementation_continuation(implementation_requested,self.workspace.access,action_denied,completed_project_change,review_required,plan_remaining)
+                    unfinished=_needs_implementation_continuation(
+                        implementation_requested,self.workspace.access,action_denied,
+                        completed_project_change,review_required,plan_remaining,
+                        command_effects_inspected=command_side_effects_possible and post_change_inspection)
                     progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps)
                     if (unfinished or missing_final_response) and progress_signature!=last_continuation_signature:
                         last_continuation_signature=progress_signature
@@ -1796,11 +1838,12 @@ class AgentEngine:
                         operation_started=prepared["started"] if prepared else time.time()
                         registry=self.state["registry"]
                         if (not prepared and self.task_intent == "auto"
-                                and name in {"write_file", "append_file", "edit_file", "apply_patch"}
+                                and name in {"write_file", "append_file", "edit_file", "apply_patch", "run_command", "run_shell"}
                                 and not registry.plan):
-                            # A real structured write request is reliable evidence that
-                            # Automatic mode needs an implementation checklist. Publish
-                            # it before the write runs; do not guess from prompt wording.
+                            # A real structured project-changing operation is
+                            # reliable evidence that Automatic mode needs an
+                            # implementation checklist. Publish it before the
+                            # operation; do not guess from prompt wording.
                             registry.plan=initial_task_plan(prompt,"implement")
                             registry.plan_source="workbench"
                             registry.task_mode="implement"
@@ -1843,7 +1886,7 @@ class AgentEngine:
                         # In Automatic mode, implementation intent comes from host-observed
                         # operations or the agent's structured plan, never keyword matches
                         # against the user's wording or the model's prose.
-                        if self.task_intent == "auto" and name in {"write_file", "append_file", "edit_file", "apply_patch"} and status != "denied":
+                        if self.task_intent == "auto" and name in {"write_file", "append_file", "edit_file", "apply_patch", "run_command", "run_shell"} and status not in {"denied", "blocked"}:
                             mutation_attempted=True
                             implementation_requested=True
                             record_implementation_requested(checkpoint)

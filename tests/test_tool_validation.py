@@ -13,7 +13,7 @@ class ToolValidationTests(unittest.TestCase):
         schema={"type":"object","properties":{"settings":{"type":"object","if":{"required":["mode"]},"then":{"properties":{"mode":{"type":"string","format":"date-time"}}}}}}
         report=unsupported_schema_features(schema)
         self.assertEqual(report, sorted(report))
-        self.assertTrue(any(".if: unsupported keyword" in item for item in report))
+        self.assertFalse(any(".if: unsupported keyword" in item for item in report))
         self.assertFalse(any("format" in item for item in report))
         self.assertIsNone(_validate_tool_arguments({"when":"not-a-date"},{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}))
         self.assertTrue(unsupported_schema_features({"type":"file"}))
@@ -21,8 +21,8 @@ class ToolValidationTests(unittest.TestCase):
         deeply_nested={}
         cursor=deeply_nested
         for _ in range(66):
-            cursor["properties"]={}
-            cursor=cursor["properties"]
+            cursor["properties"]={"child":{}}
+            cursor=cursor["properties"]["child"]
         self.assertTrue(any("nesting" in item for item in unsupported_schema_features(deeply_nested)))
 
     def test_json_schema_2020_conditionals_dependencies_property_names_and_arrays(self):
@@ -32,14 +32,14 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIn("payload is required",_validate_tool_arguments({"mode":"write"},conditional))
         self.assertIn("fallback is required",_validate_tool_arguments({},conditional))
         dependencies={"type":"object","dependentRequired":{"token":["user"]},
-                      "dependentSchemas":{"config":{"required":["enabled"]}},
+                      "dependentSchemas":{"config":{"properties":{"config":{"required":["enabled"]}}}},
                       "propertyNames":{"pattern":"^[a-z]+$"}}
         self.assertIsNone(_validate_tool_arguments({"token":"x","user":"kayde","config":{"enabled":True}},dependencies))
         self.assertIn("user is required",_validate_tool_arguments({"token":"x"},dependencies))
         self.assertIn("enabled is required",_validate_tool_arguments({"config":{}},dependencies))
         self.assertIn("property name",_validate_tool_arguments({"BadKey":1},dependencies))
         arrays={"type":"array","prefixItems":[{"type":"string"},{"type":"integer"}],
-                "items":{"type":"boolean"},"contains":{"const":"required"},"minContains":1}
+                "items":{"type":["boolean","string"]},"contains":{"const":"required"},"minContains":1}
         self.assertIsNone(_validate_tool_arguments(["label",2,True,"required"],arrays))
         self.assertIn("must be integer",_validate_tool_arguments(["label","two",True,"required"],arrays))
         self.assertIn("at least 1 item",_validate_tool_arguments(["label",2,True],arrays))
@@ -106,7 +106,7 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIsNone(_validate_tool_arguments(2.0,{"type":"integer"}))
         self.assertIn("constant",_validate_tool_arguments(True,{"const":1}))
         self.assertIn("one of",_validate_tool_arguments(True,{"enum":[1]}))
-        self.assertIn("unsupported JSON Schema keyword",_validate_tool_arguments({"name":"x"},{"type":"object","propertyNames":{"type":"string"}}))
+        self.assertIsNone(_validate_tool_arguments({"name":"x"},{"type":"object","propertyNames":{"type":"string"}}))
         self.assertIn("unique",_validate_tool_arguments([1,1.0],{"type":"array","uniqueItems":True}))
         self.assertIn("finite JSON number",_validate_tool_arguments(float("nan"),{"type":"number"}))
 

@@ -1,3 +1,4 @@
+import json
 import unittest
 from desktop_engine import ContextManager, CONTEXT_MAX, MODEL, tool_result_for_context
 

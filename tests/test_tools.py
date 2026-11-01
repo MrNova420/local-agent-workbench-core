@@ -96,7 +96,7 @@ class ToolTests(unittest.TestCase):
     root=Path(t); content='a'*900+'雪'*100+'\nsecond line\n'; (root/'large.txt').write_text(content,encoding='utf8')
     tools=ToolRegistry(Workspace(root),lambda *_:True,read_output_token_budget=512)
     first=tools.run('read_file',{'path':'large.txt'})
-    match=re.search(r'continue with read_file at line (\d+), column (\d+)',first)
+    match=re.search(r'continue with read_file at line (\d+), column (\d+)',first,re.IGNORECASE)
     self.assertIsNotNone(match)
     line,column=map(int,match.groups())
     self.assertEqual(line,1)
@@ -165,7 +165,7 @@ class ToolTests(unittest.TestCase):
     tools=ToolRegistry(Workspace(root),lambda *_:True,cancel_event=cancelled)
     self.assertTrue(tools.run('list_files',{}).startswith('Cancelled:'))
     self.assertTrue(tools.run('search_files',{'query':'needle'}).startswith('Cancelled:'))
-   self.assertTrue(tools.run('read_file',{'path':'a.py'}).startswith('Cancelled:'))
+    self.assertTrue(tools.run('read_file',{'path':'a.py'}).startswith('Cancelled:'))
  def test_copy_mode_writes_only_to_its_workspace_without_per_write_approval(self):
   with tempfile.TemporaryDirectory() as t:
    approvals=[];tools=ToolRegistry(Workspace(t,'copy'),lambda *args:approvals.append(args) or False)

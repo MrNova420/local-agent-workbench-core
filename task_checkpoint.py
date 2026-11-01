@@ -275,6 +275,10 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
         rows = visible.get(key)
         if not isinstance(rows, list) or len(rows) <= minimum:
             return False
+        if key == "operations" and len(rows) == 1:
+            latest_id = rows[0].get("operation_id") if isinstance(rows[0], dict) else None
+            if isinstance(latest_id, str) and latest_id:
+                visible["latest_operation_reference"] = latest_id
         rows.pop(0)
         omissions[key] = omissions.get(key, 0) + 1
         visible["checkpoint_omissions"] = omissions.copy()
@@ -337,6 +341,12 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
                 continue
             if plan:
                 compacted = False
+                active_item = next((item for item in reversed(plan)
+                                    if isinstance(item, dict) and plan_item_is_open(item)), None)
+                if active_item is not None:
+                    action = active_item.get("title") or active_item.get("text")
+                    if isinstance(action, str) and action.strip():
+                        visible["active_plan_action"] = action.strip()
                 for item in plan:
                     if not isinstance(item, dict):
                         continue

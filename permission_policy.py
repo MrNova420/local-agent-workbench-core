@@ -108,7 +108,14 @@ def permission_decision(tool: str, args: dict[str, Any], rules: list[dict[str, A
         if "path_glob" in rule:
             pattern = str(rule["path_glob"]).replace("\\", "/").casefold()
             path_matches = [fnmatch.fnmatchcase(path, pattern) for path in path_values]
-            if not path_matches or (all(path_matches) if rule.get("decision") == "allow" else not any(path_matches)):
+            # An allow rule must cover every target of a multi-file operation.
+            # Ask/deny rules can match when any target falls within the scope.
+            # Inverting the allow predicate here would let a scoped allow grant
+            # access to a patch that also changes files outside the scope.
+            rule_matches = bool(path_matches) and (
+                all(path_matches) if rule.get("decision") == "allow" else any(path_matches)
+            )
+            if not rule_matches:
                 continue
         if "command_prefix" in rule:
             if tool not in {"run_command", "run_shell"} or not _command_matches(tool, args, rule["command_prefix"]):

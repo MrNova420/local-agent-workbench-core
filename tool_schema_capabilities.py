@@ -29,6 +29,13 @@ def unsupported_schema_features(schema: Any, *, max_depth: int = 64, max_nodes: 
     seen: set[int] = set()
     visited = 0
 
+    schema_maps = {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+    schema_singletons = {
+        "additionalProperties", "additionalItems", "not", "if", "then", "else",
+        "propertyNames", "contains",
+    }
+    schema_arrays = {"allOf", "anyOf", "oneOf", "prefixItems"}
+
     def visit(value: Any, path: str, depth: int) -> None:
         nonlocal visited
         if depth > max_depth:
@@ -53,11 +60,31 @@ def unsupported_schema_features(schema: Any, *, max_depth: int = 64, max_nodes: 
                     types = child if isinstance(child, list) else [child]
                     for schema_type in types:
                         if not isinstance(schema_type, str) or schema_type not in SUPPORTED_SCHEMA_TYPES:
-                            issues.add(f"{path}.type: unsupported type {schema_type!r}")
+                            issues.add(f"{path}.type: unsupported JSON Schema type {schema_type!r}")
                 elif key == "$ref" and (not isinstance(child, str) or (child != "#" and not child.startswith("#/"))):
-                    issues.add(f"{path}.$ref: only local references are supported")
-                if isinstance(child, (dict, list)):
+                    issues.add(f"{path}.$ref: external or invalid reference; only local references are supported")
+                # Descend only where JSON Schema defines a value as a schema.
+                # `properties` and `$defs` keys are user-selected names (such
+                # as `path` or `content`), not schema keywords. Annotation and
+                # example values can also be arbitrary JSON and must not be
+                # interpreted as nested schemas.
+                if key in schema_maps and isinstance(child, dict):
+                    for name, nested_schema in child.items():
+                        if isinstance(nested_schema, (dict, list)):
+                            visit(nested_schema, f"{path}.{key}.{name}", depth + 1)
+                elif key in schema_singletons and isinstance(child, (dict, list)):
                     visit(child, f"{path}.{key}", depth + 1)
+                elif key == "items":
+                    if isinstance(child, dict):
+                        visit(child, f"{path}.{key}", depth + 1)
+                    elif isinstance(child, list):
+                        for index, nested_schema in enumerate(child):
+                            if isinstance(nested_schema, (dict, list)):
+                                visit(nested_schema, f"{path}.{key}[{index}]", depth + 1)
+                elif key in schema_arrays and isinstance(child, list):
+                    for index, nested_schema in enumerate(child):
+                        if isinstance(nested_schema, (dict, list)):
+                            visit(nested_schema, f"{path}.{key}[{index}]", depth + 1)
         elif isinstance(value, list):
             identity = id(value)
             if identity in seen:

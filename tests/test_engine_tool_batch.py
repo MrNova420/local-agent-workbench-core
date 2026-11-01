@@ -117,8 +117,8 @@ class EngineToolBatchTests(unittest.TestCase):
 
             def stream(state, messages, cancel, emit):
                 if len(batches) == 1:
+                    captured["messages"] = messages
                     return batches.pop(0)
-                captured["messages"] = messages
                 return batches.pop(0)
 
             engine.runtime.stream = stream
@@ -128,7 +128,7 @@ class EngineToolBatchTests(unittest.TestCase):
             self.assertTrue(all(m["tool_name"] == "update_plan" for m in tool_messages))
             self.assertEqual(len([m for m in full_history if m.get("role") == "tool"]), 17)
             batch_event = next(row for row in events if row.get("type") == "tool_batch")
-            self.assertEqual(batch_event["request_index"], 0)
+            self.assertEqual(batch_event["request_index"], 1)
 
 
 if __name__ == "__main__":

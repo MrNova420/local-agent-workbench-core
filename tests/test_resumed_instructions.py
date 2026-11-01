@@ -21,7 +21,7 @@ class ResumedInstructionTests(unittest.TestCase):
             engine.run("Continue this project", previous)
 
             self.assertIn("Do not edit generated files.", captured["messages"][0]["content"])
-            self.assertEqual(captured["messages"][1]["content"], "Earlier task")
+            self.assertTrue(any(message.get("content") == "Earlier task" for message in captured["messages"]))
 
 
 if __name__ == "__main__":

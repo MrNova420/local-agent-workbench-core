@@ -72,7 +72,8 @@ def open_http_stream(request: Request, cancel: threading.Event,
 
 
 def interrupt_connection(connection: http.client.HTTPConnection | None,
-                          response: http.client.HTTPResponse | None = None) -> None:
+                          response: http.client.HTTPResponse | None = None,
+                          *, close: bool = True) -> None:
     """Interrupt socket I/O first, then release HTTP objects safely."""
     sock = connection.sock if connection is not None else None
     if sock is not None:
@@ -80,13 +81,16 @@ def interrupt_connection(connection: http.client.HTTPConnection | None,
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-    if response is not None:
-        try:
-            response.close()
-        except OSError:
-            pass
-    if connection is not None:
+    # Closing HTTPResponse first can wait on the same buffered-reader lock held
+    # by a thread blocked in readline(). Shut down and close the connection
+    # first so that read wakes; final cleanup closes the response afterward.
+    if close and connection is not None:
         try:
             connection.close()
+        except OSError:
+            pass
+    if close and response is not None:
+        try:
+            response.close()
         except OSError:
             pass
