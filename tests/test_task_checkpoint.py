@@ -170,3 +170,11 @@ def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_l
     agent_plan = copy.deepcopy(registry.plan)
     engine._advance_workbench_plan("write_file", "completed")
     assert registry.plan == agent_plan
+
+    resumed = AgentEngine(tmp_path, event=events.append, task_checkpoint={
+        "current": {"plan": [{"title": "Agent-owned plan", "status": "pending", "source": "agent"}]}
+    })
+    resumed_plan = copy.deepcopy(resumed.state["registry"].plan)
+    resumed._advance_workbench_plan("write_file", "completed")
+    assert resumed.state["registry"].plan == resumed_plan
+    assert resumed.state["registry"].plan_source == "agent"

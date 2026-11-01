@@ -1108,6 +1108,8 @@ class AgentEngine:
         registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result)
         checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
+        if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
+            registry.plan_source="agent"
         self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":registry,"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":checkpoint,"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
     def _advance_workbench_plan(self,name:str,status:str,*,final:bool=False,verification:str|None=None,project_changed:bool=False,post_change_inspection:bool=False)->None:
         """Reflect host-observed work in the starter checklist without rewriting agent plans."""
