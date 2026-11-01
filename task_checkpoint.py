@@ -4,25 +4,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import re
 import time
 from typing import Any
-
-
-def requests_implementation(prompt: str) -> bool:
-    folded = prompt.strip().casefold()
-    if not folded:
-        return False
-    if any(phrase in folded for phrase in (
-        "plan only", "just plan", "only plan", "review only", "analyze only", "analyse only",
-        "explain how to", "what should i change", "how do i fix", "how can i fix", "why does this", "why is this",
-    )):
-        return False
-    if re.match(r"^(what|why|how|when|where)\b", folded):
-        return False
-    if re.match(r"^plan\b", folded) and not re.search(r"\b(and|then)\s+(build|create|implement|fix|edit|write|modify)\b", folded):
-        return False
-    return re.search(r"\b(build|create|implement|add|fix|edit|write|modify|refactor|generate|develop|update)\b", folded) is not None
 
 
 def begin_task(
@@ -85,7 +68,7 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
             ("planning", "Refine this request into sequenced steps and surface assumptions", "pending"),
             ("present", "Present the plan without changing workspace files", "pending"),
         ]
-    elif intent == "implement" or requests_implementation(prompt):
+    elif intent == "implement":
         phases = [
             ("inspect", "Inspect relevant project context", "pending"),
             ("planning", "Refine the checklist with affected files and acceptance criteria", "pending"),

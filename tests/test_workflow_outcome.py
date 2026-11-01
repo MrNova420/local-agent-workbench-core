@@ -1,4 +1,4 @@
-from desktop_engine import AgentEngine, ToolRegistry, Workspace, _verification_report, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _implementation_evidence, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import initial_task_plan
 
 
@@ -74,8 +74,19 @@ def test_host_starter_plan_is_visible_and_intent_specific():
     ]
     assert [row["phase"] for row in plan[1:]] == ["inspect", "planning", "implementation", "verification"]
     assert all(row["source"] == "workbench" for row in plan)
-    assert automatic_plan and automatic_plan[0]["source"] == "workbench"
+    assert automatic_plan == []
     assert initial_task_plan("How do I fix this?", "auto") == []
+
+
+def test_automatic_implementation_uses_structured_evidence_not_prompt_wording():
+    open_agent_plan = [{"title": "Implement and inspect", "status": "pending"}]
+    assert _implementation_evidence("auto", "agent", open_agent_plan, False, False)
+    assert _implementation_evidence("auto", "none", [], True, False)
+    assert _implementation_evidence("auto", "none", [], False, False, mutation_attempted=True)
+    assert not _implementation_evidence("auto", "none", [], False, False)
+    assert _implementation_evidence("implement", "none", [], False, False)
+    assert not _implementation_evidence("plan", "agent", open_agent_plan, False, False)
+    assert not _implementation_evidence("discuss", "agent", open_agent_plan, False, False)
 
 
 def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp_path):

@@ -11,7 +11,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import checkpoint_omissions, current_task, finish_task, record_assistant_status, record_blocker, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
+from task_checkpoint import checkpoint_omissions, current_task, finish_task, record_assistant_status, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from permission_policy import permission_decision, validate_permission_rules
 from typing import Any, Callable
@@ -59,8 +59,6 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
     )
-
-_requests_implementation = requests_implementation
 
 def _command_timeout(args:dict[str,Any])->int|None:
     """No implicit deadline: a command runs until exit or explicit user cancellation."""
@@ -381,6 +379,17 @@ def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
         if str(item.get("status", "pending")).strip().casefold() in open_statuses:
             return True
     return False
+
+def _implementation_evidence(task_intent: str, plan_source: str, plan: list[dict[str, Any]],
+                             project_changed: bool, command_side_effects_possible: bool,
+                             mutation_attempted: bool = False) -> bool:
+    """Infer implementation obligation from explicit UI intent and observed structured state only."""
+    if task_intent == "implement":
+        return True
+    if task_intent != "auto":
+        return False
+    return bool(project_changed or command_side_effects_possible or mutation_attempted
+                or (plan_source == "agent" and _plan_has_open_work(plan)))
 
 def _continuation_progress_signature(task: dict[str, Any], plan: list[dict[str, Any]],
                                      verification_steps: list[dict[str, Any]]) -> str:
@@ -1543,7 +1552,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=(self.task_intent=="implement" or (self.task_intent=="auto" and _requests_implementation(prompt)))
+        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=self.task_intent=="implement"
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -1584,6 +1593,10 @@ class AgentEngine:
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
                     post_change_inspection=last_inspection_action_index>last_effect_action_index
+                    implementation_requested = _implementation_evidence(
+                        self.task_intent, self.state["registry"].plan_source,
+                        checkpoint_state.get("plan", []) if isinstance(checkpoint_state.get("plan", []), list) else [],
+                        completed_project_change, command_side_effects_possible, mutation_attempted)
                     review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
                     plan=checkpoint_state.get("plan",[])
                     plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
@@ -1727,6 +1740,12 @@ class AgentEngine:
                         if permission_decision(name,args,self.permission_rules)=="deny":
                             record_decision(checkpoint,{"kind":"permission_rule","tool":name,"decision":"deny"})
                         if status=="denied":action_denied=True
+                        # In Automatic mode, implementation intent comes from host-observed
+                        # operations or the agent's structured plan, never keyword matches
+                        # against the user's wording or the model's prose.
+                        if self.task_intent == "auto" and name in {"write_file", "append_file", "edit_file", "apply_patch"} and status != "denied":
+                            mutation_attempted=True
+                            implementation_requested=True
                         if name in {"write_file","append_file","edit_file","apply_patch"} and status=="completed":
                             completed_project_change=True
                             last_effect_action_index=tool_action_index
@@ -1756,6 +1775,9 @@ class AgentEngine:
                             }
                     if name=="update_plan" and not args_error:
                         record_plan(checkpoint,self.state["registry"].plan,args.get("acceptance_criteria"),args.get("decisions"))
+                        if (self.task_intent == "auto" and self.state["registry"].plan_source == "agent"
+                                and _plan_has_open_work(self.state["registry"].plan)):
+                            implementation_requested=True
                     prepared=prepared_batch.get(index)
                     output_budget=prepared["budget"] if prepared else self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
                     context_result=tool_result_for_context(str(out),output_budget,operation_id)

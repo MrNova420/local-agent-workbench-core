@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-01 prompt-wording-free Automatic implementation evidence (verification queued)
+
+- Removed keyword/regex classification of user prompts as implementation requests. Automatic mode recognizes implementation from an agent-owned open structured plan or observed mutation operations; explicit Implement remains authoritative, while Discussion and Plan remain non-implementing.
+- Automatic mode no longer fabricates a host checklist based on selected words. Agent-authored plans are live in the UI and drive continuation; observed writes/patches activate post-change inspection and continuation requirements.
+- Added regression assertions for structured evidence and the absence of wording classification. Tests, typecheck, live model, desktop app, and packaging checks remain queued.
+
 ## 2026-11-01 budget-safe checkpoint projection (verification queued)
 
 - Oversized checkpoints now compact only their inference projection against the requested budget. Long expandable plans preserve a usable outline where possible, with omitted plan entries/details recorded explicitly and the complete canonical plan unchanged for paged retrieval through `read_task_checkpoint`.
@@ -38,7 +44,7 @@
 
 ## 2026-11-01 task intent and read-only planning
 
-- Added persisted `auto`, `discuss`, `plan`, and `implement` task intents to the shared engine contract. Explicit implementation tasks and automatically detected build requests receive a Workbench-authored checklist before inference; the requested goal is preserved as its own item, and model `update_plan` calls can refine the live checklist.
+- Added persisted `auto`, `discuss`, `plan`, and `implement` task intents to the shared engine contract. Explicit Plan and Implement tasks receive a Workbench-authored checklist before inference; Automatic no longer relies on prompt keyword matching and uses agent-authored structured plans and observed project operations to identify implementation work. The requested goal is preserved in the explicit checklist, and model `update_plan` calls refine the live plan.
 - The starter checklist refers to the captured task brief instead of copying its full text a second time into the prompt checkpoint, preserving input budget for project context and work.
 - Plan and Discussion intents run with the engine's read-only access policy. Read-only access now omits write, patch, and command schemas from the model catalog and hides MCP tools for that run; runtime enforcement remains in place if the model submits an out-of-catalog tool call.
 - The shared engine also suppresses passed MCP schemas whenever the effective workspace access is `plan`, so the read-only boundary applies to the legacy engine entry point as well as the Electron sidecar.
