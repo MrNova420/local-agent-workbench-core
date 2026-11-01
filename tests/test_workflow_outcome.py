@@ -1,4 +1,4 @@
-from desktop_engine import ToolRegistry, Workspace, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _workflow_outcome, agent_system_prompt
 from task_checkpoint import initial_task_plan
 
 
@@ -52,4 +52,11 @@ def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp
 
     assert {"list_files", "search_files", "read_file", "git_diff", "update_plan"} <= names
     assert not {"write_file", "edit_file", "apply_patch", "run_command", "run_shell"} & names
+
+
+def test_plan_access_omits_external_mcp_tools(tmp_path):
+    external = [{"type": "function", "function": {"name": "mcp__anything", "parameters": {"type": "object"}}}]
+    engine = AgentEngine(tmp_path, access="plan", mcp_tools=external)
+
+    assert engine.mcp_tools == []
 
