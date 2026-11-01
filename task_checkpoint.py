@@ -243,8 +243,8 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
 
     # Compact inference copies use a short wrapper; the canonical checkpoint remains
     # complete on disk and can be paged through read_task_checkpoint.
-    header = "Task checkpoint (full saved record remains available):\n"
-    footer = "\nContinue this task from saved state. Recover omitted sections with read_task_checkpoint; never infer omitted details."
+    header = "Checkpoint:\n"
+    footer = "\nUse read_task_checkpoint for omitted details."
 
     # Canonical checkpoints on disk remain complete. Only the inference copy is
     # summarized, and every removed history category is counted in-band so the
@@ -386,8 +386,8 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
 def checkpoint_omissions(rendered: str) -> dict[str, int]:
     """Return explicit inference-only omissions embedded in a rendered checkpoint."""
     try:
-        payload = rendered.split("\n", 1)[1].split("\nContinue this task", 1)[0]
-        visible = json.loads(payload)
+        payload = rendered.split("\n", 1)[1].lstrip()
+        visible, _ = json.JSONDecoder().raw_decode(payload)
         value = visible.get("checkpoint_omissions", {}) if isinstance(visible, dict) else {}
         return {str(key): int(count) for key, count in value.items()
                 if isinstance(count, int) and not isinstance(count, bool) and count > 0}

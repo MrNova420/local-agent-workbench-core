@@ -48,6 +48,16 @@ def test_budgeted_checkpoint_preserves_goal_and_reports_goal_omissions():
     assert "checkpoint_omissions" in rendered
 
 
+def test_minimum_checkpoint_budget_stays_within_budget_and_keeps_omission_parser_working():
+    checkpoint = begin_task(None, prompt="Build a substantial application", turn_id="tiny-budget", workspace="C:/p", settings={})
+    record_plan(checkpoint, [{"title": f"Workstream {index}", "status": "in_progress"} for index in range(100)])
+
+    rendered = render_checkpoint(checkpoint, token_budget=64)
+
+    assert ContextManager.estimate(rendered) <= 64
+    assert checkpoint_omissions(rendered)
+
+
 def test_checkpoint_separates_user_decisions_blockers_and_next_action():
     checkpoint = begin_task(None, prompt="Implement feature", turn_id="t1", workspace="C:/p", settings={})
     record_decision(checkpoint, {"kind": "tool_approval", "tool": "run_command", "decision": "denied"})
