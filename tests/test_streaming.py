@@ -29,6 +29,19 @@ class StreamTests(unittest.TestCase):
   with patch('desktop_engine.open_http_stream',return_value=response):runtime.stream(state,[],threading.Event(),events.append)
   self.assertEqual([event['phase'] for event in events if event['type']=='phase'],['reasoning','generating'])
 
+ def test_incomplete_stream_preserves_partial_reasoning_and_reports_request_error(self):
+  lines=[json.dumps({'message':{'thinking':'partial plan before disconnect'}}).encode()+b'\n']
+  response=FakeResponse(lines);runtime=OllamaRuntime();events=[]
+  state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),
+         'temperature':0.2,'context':16384,'max_tokens':500,'runtime_options':{}}
+  with patch('desktop_engine.open_http_stream',return_value=response):
+   with self.assertRaisesRegex(RuntimeError,'without its final done=true record'):
+    runtime.stream(state,[],threading.Event(),events.append)
+  self.assertEqual(events[-1]['type'],'request_error')
+  self.assertEqual(events[-1]['phase'],'streaming_response')
+  self.assertTrue(any(event.get('type')=='thinking' and event.get('text')=='partial plan before disconnect' for event in events))
+  self.assertFalse(any(event['type']=='request_complete' for event in events))
+
  def test_requested_reasoning_is_sent_exactly_and_streamed_separately(self):
   lines=[json.dumps({'message':{'thinking':'plan ','content':'answer'},'done':True,'eval_count':4,'eval_duration':2000000000}).encode()+b'\n']
   response=FakeResponse(lines);runtime=OllamaRuntime();events=[];state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),'temperature':0.2,'context':16384,'max_tokens':500,'runtime_options':{},'reasoning':'high'}

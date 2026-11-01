@@ -1324,6 +1324,8 @@ class OllamaRuntime:
                         try:assembled["function"]["arguments"]=json.loads(raw or "{}")
                         except json.JSONDecodeError:pass
                 result["message"]["tool_calls"]=[calls[i] for i in sorted(calls)]
+            if result.get("done") is not True:
+                raise RuntimeError("Ollama stream closed without its final done=true record; received output was preserved as partial.")
             emit({"type":"request_complete","provider":"ollama","request_index":request_index,"provider_done":result.get("done")})
             return result
         except Exception as exc:

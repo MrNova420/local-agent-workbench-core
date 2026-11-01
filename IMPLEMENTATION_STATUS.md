@@ -271,3 +271,8 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Project listing, text search, file reads, and relevance retrieval now observe the shared cancellation event. Text search reads lines incrementally instead of materializing each full file, and cancellation produces an explicit cancelled result; already active reads can finish cooperatively without stopping Ollama.
 - Added `read_conversation_history` for paged recovery of omitted saved user/assistant/tool transcript, including emitted assistant reasoning; the system prompt is excluded. The engine points to this and `read_task_checkpoint` when compaction has omissions.
 - Added queued regressions for checkpoint paging, transcript/reasoning recovery, and cancellation during read operations. They have not been run. The app still requires an updated engine pin before this revision is consumable.
+
+## 2026-11-01 interrupted Ollama stream handling (source only)
+
+- The streaming adapter no longer treats EOF as successful completion unless Ollama supplied its terminal `done: true` record. A truncated stream raises a provider error with the `streaming_response` phase; text and reasoning already emitted remain in the desktop transcript and run checkpoint for recovery. This prevents partial reasoning from being mistaken for a complete answer and fed back into the continuation loop as a completed response.
+- Added a regression for EOF after partial reasoning. The test is queued and unrun; no live request, selected setting, timeout, or model process was changed.
