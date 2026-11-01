@@ -41,6 +41,7 @@ def begin_task(
             "changed_files": [],
             "verification": [],
             "plan": copy.deepcopy(plan or []),
+            "implementation_requested": settings.get("task_intent") == "implement",
             "acceptance_criteria": [],
             "acceptance_criteria_source": "awaiting_agent_refinement",
         }
@@ -49,6 +50,11 @@ def begin_task(
         updates.append({"turn_id": turn_id, "instruction": prompt})
         current["workspace"] = workspace
         current["settings"] = copy.deepcopy(settings)
+        intent = settings.get("task_intent")
+        if intent == "implement":
+            current["implementation_requested"] = True
+        elif intent in {"discuss", "plan"}:
+            current["implementation_requested"] = False
         # A new user turn can change a prior Automatic plan-only decision. Keep the
         # plan and progress, but let the agent classify this follow-up afresh.
         current["task_mode"] = "auto"
@@ -119,6 +125,12 @@ def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any
             saved.append({"kind": "agent_plan_decision", "text": decision.strip(), "timestamp": time.time()})
             existing.add(decision.strip())
             checkpoint["updated_at"] = time.time()
+
+
+def record_implementation_requested(checkpoint: dict[str, Any], requested: bool = True) -> None:
+    task = _current(checkpoint)
+    task["implementation_requested"] = bool(requested)
+    task["updated_at"] = time.time()
 
 
 def record_decision(checkpoint: dict[str, Any], decision: dict[str, Any]) -> None:
@@ -198,7 +210,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
         for key in (
             "schema_version", "task_id", "status", "task_mode", "plan_source", "goal", "user_updates", "workspace",
             "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
-            "acceptance_criteria", "acceptance_criteria_source",
+            "implementation_requested", "acceptance_criteria", "acceptance_criteria_source",
             "last_assistant_update", "next_action",
         )
         if checkpoint.get(key) not in (None, [], "")
@@ -209,7 +221,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
     if isinstance(history, list) and history:
         previous = history[-1]
         if isinstance(previous, dict):
-            prior_keys = ("task_id", "status", "task_mode", "plan_source", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan", "acceptance_criteria",
+            prior_keys = ("task_id", "status", "task_mode", "plan_source", "implementation_requested", "workflow_outcome", "goal", "workspace", "decisions", "blockers", "plan", "acceptance_criteria",
                           "changed_files", "verification", "last_assistant_update", "next_action")
             prior = {key: copy.deepcopy(previous[key]) for key in prior_keys
                      if previous.get(key) not in (None, [], "")}

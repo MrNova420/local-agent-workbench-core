@@ -25,6 +25,11 @@
 - Updated the Automatic-mode settings explanation to make the distinction visible. Added a queued engine regression for plan → write → inspect → completed plan → final response. No tests, typecheck, build, packaged app, or model run were performed.
 - Auto now has a distinct structured `plan_only` state for a user-requested no-edit plan. A nonempty agent `plan` phase remains implementation work even if the model marks its items complete; explicit UI intent still overrides the model state. The paired sidecar persists the mode and plan provenance into the session activity/checkpoint. Regressions are authored and queued across engine and sidecar; none have run.
 
+## 2026-11-01 Sticky implementation obligation (verification queued)
+
+- Task checkpoints now persist whether implementation was requested. Auto follow-ups retain this state across compaction/session recovery; explicit Discuss/Plan follow-ups clear it, and explicit Implement sets it. Continuation progress signatures and the compacted checkpoint include the field so a completed-looking plan cannot erase an interrupted implementation request.
+- Queued regressions cover checkpoint persistence, explicit read-only reset, and state-based continuation. No tests, typecheck, build, UI, package, or model run was performed.
+
 ## 2026-11-01 Saved plan provenance and resume continuation (verification queued)
 
 - Task checkpoints now persist whether their current plan came from the agent or the Workbench. Session restoration restores that source, and open agent plans or Workbench implementation checklists in Automatic mode re-establish their implementation obligation before the first resumed inference request.

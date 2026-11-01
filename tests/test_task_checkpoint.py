@@ -1,7 +1,7 @@
 import copy
 
 from desktop_engine import ContextManager
-from task_checkpoint import begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
+from task_checkpoint import begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
 
 
 def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
@@ -9,8 +9,10 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
                        settings={"context": 65536, "max_tokens": 8192})
     record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}])
     record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}], task_mode="plan", plan_source="agent")
+    record_implementation_requested(first)
     assert '"task_mode":"plan"' in render_checkpoint(first)
     assert '"plan_source":"agent"' in render_checkpoint(first)
+    assert '"implementation_requested":true' in render_checkpoint(first)
     record_operation(first, {"operationId": "op1", "name": "write_file", "status": "completed",
                              "affectedFiles": ["index.html"], "result": "Wrote index.html"})
     second = begin_task(first, prompt="Keep the visual style, then verify", turn_id="t2",
@@ -20,6 +22,7 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     assert checkpoint["task_id"] == "t1"
     assert checkpoint["task_mode"] == "auto"
     assert checkpoint["plan_source"] == "agent"
+    assert checkpoint["implementation_requested"] is True
     assert checkpoint["user_updates"] == [{"turn_id": "t2", "instruction": "Keep the visual style, then verify"}]
     assert checkpoint["changed_files"] == ["index.html"]
     assert checkpoint["operations"][0]["result_ref"] == "op1"
@@ -38,6 +41,16 @@ def test_automatic_plan_only_mode_is_persisted_then_reclassified_on_followup():
     assert restored["current"]["task_mode"] == "auto"
     assert restored["current"]["plan_source"] == "agent"
     assert '"task_mode":"auto"' in render_checkpoint(restored)
+
+
+def test_explicit_read_only_followup_clears_prior_implementation_obligation():
+    checkpoint = begin_task(None, prompt="Build a feature", turn_id="build", workspace="C:/p", settings={"task_intent": "auto"})
+    record_implementation_requested(checkpoint)
+
+    followup = begin_task(checkpoint, prompt="Now only explain the plan", turn_id="explain", workspace="C:/p",
+                          settings={"task_intent": "plan"})
+
+    assert followup["current"]["implementation_requested"] is False
 
 
 def test_operation_checkpoint_records_content_fingerprints_without_copying_large_content():

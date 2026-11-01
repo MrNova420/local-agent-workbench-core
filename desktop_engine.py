@@ -11,7 +11,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import checkpoint_omissions, current_task, finish_task, initial_task_plan, record_assistant_status, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
+from task_checkpoint import checkpoint_omissions, current_task, finish_task, initial_task_plan, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from permission_policy import permission_decision, validate_permission_rules
 from typing import Any, Callable
@@ -435,6 +435,7 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
         "plan_source": task.get("plan_source", "workbench"),
+        "implementation_requested": bool(task.get("implementation_requested", False)),
         "plan": plan_state,
         "acceptance_criteria": task.get("acceptance_criteria", []),
         "operations": operation_state,
@@ -1607,10 +1608,14 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=(
-            self.task_intent=="implement" or _restored_plan_requests_implementation(
+        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        implementation_requested=(
+            True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
+            bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
                 self.task_intent,self.state["registry"].task_mode,self.state["registry"].plan_source,
                 checkpoint_state.get("plan",[])))
+        )
+        record_implementation_requested(checkpoint,implementation_requested)
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -1657,7 +1662,8 @@ class AgentEngine:
                     implementation_requested = _implementation_evidence(
                         self.task_intent, self.state["registry"].task_mode, self.state["registry"].plan_source,
                         checkpoint_state.get("plan", []) if isinstance(checkpoint_state.get("plan", []), list) else [],
-                        completed_project_change, command_side_effects_possible, mutation_attempted)
+                        completed_project_change, command_side_effects_possible, mutation_attempted) or implementation_requested
+                    record_implementation_requested(checkpoint,implementation_requested)
                     review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
                     plan=checkpoint_state.get("plan",[])
                     plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
@@ -1833,6 +1839,7 @@ class AgentEngine:
                         if self.task_intent == "auto" and name in {"write_file", "append_file", "edit_file", "apply_patch"} and status != "denied":
                             mutation_attempted=True
                             implementation_requested=True
+                            record_implementation_requested(checkpoint)
                         if name in {"write_file","append_file","edit_file","apply_patch"} and status=="completed":
                             completed_project_change=True
                             last_effect_action_index=tool_action_index
@@ -1867,6 +1874,7 @@ class AgentEngine:
                                 self.state["registry"].task_mode, self.state["registry"].plan_source,
                                 self.state["registry"].plan)):
                             implementation_requested=True
+                            record_implementation_requested(checkpoint)
                     prepared=prepared_batch.get(index)
                     output_budget=prepared["budget"] if prepared else self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
                     context_result=tool_result_for_context(str(out),output_budget,operation_id)

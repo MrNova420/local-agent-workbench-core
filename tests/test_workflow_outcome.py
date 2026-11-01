@@ -150,6 +150,11 @@ def test_structured_task_mode_change_counts_as_continuation_progress():
         {"task_mode": "implement"}, [])
 
 
+def test_saved_implementation_obligation_counts_as_continuation_state():
+    assert _continuation_progress_signature({"implementation_requested": False}, []) != _continuation_progress_signature(
+        {"implementation_requested": True}, [])
+
+
 def test_replanning_without_new_evidence_does_not_count_as_progress():
     assert _continuation_progress_signature({"task_mode": "implement"}, []) == _continuation_progress_signature(
         {"task_mode": "implement", "operations": [{"name": "update_plan", "status": "completed",
