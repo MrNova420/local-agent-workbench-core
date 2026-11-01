@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-01 budget-safe checkpoint projection (verification queued)
+
+- Oversized checkpoints now compact only their inference projection against the requested budget. Long expandable plans preserve a usable outline where possible, with omitted plan entries/details recorded explicitly and the complete canonical plan unchanged for paged retrieval through `read_task_checkpoint`.
+- Oversized goal/status prose and low-priority history are reduced only in the inference copy, with omission metadata. Tiny-budget fallback preserves task identity and omission status when possible; the engine does not change the selected model context or output limit.
+- Added regressions for large evolving plans, strict projected size, explicit omissions, and canonical checkpoint preservation. Tests remain queued and were not run.
+
 ## 2026-11-01 structured user clarification (verification queued)
 
 - The desktop engine exposes `ask_user` only when the host supplies an answer handler; standalone/CLI registries do not advertise an unsupported tool. Plan-only sessions can use it because asking a requirement does not mutate the workspace.

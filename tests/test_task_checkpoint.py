@@ -1,6 +1,7 @@
 import copy
 
-from task_checkpoint import begin_task, finish_task, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
+from desktop_engine import ContextManager
+from task_checkpoint import begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
 
 
 def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
@@ -19,6 +20,32 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     assert checkpoint["operations"][0]["result_ref"] == "op1"
     assert "Build a site" in render_checkpoint(second)
     assert "65536" in render_checkpoint(second)
+
+
+def test_inference_checkpoint_compacts_large_expandable_plan_without_mutating_saved_plan():
+    plan = [{"title": f"Workstream {index}: " + ("inspect and implement detailed subsystem behavior " * 8),
+             "text": "Preserve all findings and continue the full project workflow. " * 4,
+             "status": "in_progress", "source": "agent"} for index in range(60)]
+    checkpoint = begin_task(None, prompt="Build the whole project", turn_id="t1", workspace="C:/p", settings={})
+    record_plan(checkpoint, plan)
+    original = copy.deepcopy(checkpoint["current"]["plan"])
+
+    rendered = render_checkpoint(checkpoint, token_budget=700)
+
+    assert ContextManager.estimate(rendered) <= 700
+    assert checkpoint["current"]["plan"] == original
+    omissions = checkpoint_omissions(rendered)
+    assert omissions.get("plan_items", 0) > 0 or omissions.get("plan_details", 0) > 0
+    assert "read_task_checkpoint" in rendered
+
+
+def test_budgeted_checkpoint_preserves_goal_and_reports_goal_omissions():
+    checkpoint = begin_task(None, prompt="Build the requested feature. " * 250, turn_id="t-long", workspace="C:/p", settings={})
+    rendered = render_checkpoint(checkpoint, token_budget=700)
+
+    assert ContextManager.estimate(rendered) <= 700
+    assert "t-long" in rendered
+    assert "checkpoint_omissions" in rendered
 
 
 def test_checkpoint_separates_user_decisions_blockers_and_next_action():

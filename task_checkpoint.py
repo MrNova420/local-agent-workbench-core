@@ -241,6 +241,11 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
     if token_budget is None or token_estimate(encode()) <= max(1, int(token_budget)):
         return encode()
 
+    # Compact inference copies use a short wrapper; the canonical checkpoint remains
+    # complete on disk and can be paged through read_task_checkpoint.
+    header = "Task checkpoint (full saved record remains available):\n"
+    footer = "\nContinue this task from saved state. Recover omitted sections with read_task_checkpoint; never infer omitted details."
+
     # Canonical checkpoints on disk remain complete. Only the inference copy is
     # summarized, and every removed history category is counted in-band so the
     # model knows what is omitted and can consult session operations/files.
@@ -255,6 +260,26 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
         visible["checkpoint_omissions"] = omissions.copy()
         return True
 
+    def note_omission(key: str, count: int = 1) -> None:
+        omissions[key] = omissions.get(key, 0) + count
+        visible["checkpoint_omissions"] = omissions.copy()
+
+    def shorten_string(key: str) -> bool:
+        value = visible.get(key)
+        if not isinstance(value, str) or not value:
+            return False
+        if len(value) > 64:
+            target = max(32, len(value) // 2)
+            left = target // 2
+            right = target - left
+            shortened = value[:left] + "…" + value[-right:]
+            note_omission(f"{key}_characters", len(value) - len(shortened))
+            visible[key] = shortened
+        else:
+            note_omission(f"{key}_fields")
+            visible.pop(key, None)
+        return True
+
     # Historical task and prose are less important than the active request, plan,
     # safety decisions, and most recent operation references.
     previous = visible.pop("immediately_preceding_task", None)
@@ -262,10 +287,6 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
         omissions["immediately_preceding_task"] = 1
         visible["checkpoint_omissions"] = omissions.copy()
     last_update = visible.get("last_assistant_update")
-    if isinstance(last_update, str) and len(last_update) > 1200:
-        visible["last_assistant_update"] = last_update[-1200:]
-        omissions["last_assistant_update_characters"] = len(last_update) - 1200
-        visible["checkpoint_omissions"] = omissions.copy()
 
     def current_size() -> int:
         return token_estimate(encode())
@@ -288,6 +309,36 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
                 omissions["plan_completed_items"] = omissions.get("plan_completed_items", 0) + 1
                 visible["checkpoint_omissions"] = omissions.copy()
                 continue
+            # Keep the ends of an evolving plan visible while the full, unlimited
+            # plan remains in the canonical checkpoint for paged retrieval.
+            if len(plan) > 2:
+                plan.pop(len(plan) // 2)
+                note_omission("plan_items")
+                continue
+            if plan:
+                compacted = False
+                for item in plan:
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ("text", "description", "details", "acceptance_criteria", "acceptanceCriteria"):
+                        if key in item:
+                            item.pop(key)
+                            note_omission("plan_details")
+                            compacted = True
+                    for key in ("title",):
+                        value = item.get(key)
+                        if isinstance(value, str) and len(value) > 64:
+                            target = max(32, len(value) // 2)
+                            left = target // 2
+                            right = target - left
+                            item[key] = value[:left] + "…" + value[-right:]
+                            note_omission("plan_title_characters", len(value) - len(item[key]))
+                            compacted = True
+                if compacted:
+                    continue
+                note_omission("plan_items", len(plan))
+                visible.pop("plan", None)
+                continue
         if isinstance(last_update, str) and last_update:
             current = visible.get("last_assistant_update")
             if isinstance(current, str) and current:
@@ -297,7 +348,38 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
                     omissions.get("last_assistant_update_characters", 0), len(last_update) - len(shortened))
                 visible["checkpoint_omissions"] = omissions.copy()
                 continue
-        break
+        # Remove remaining low-priority historical details before falling back to
+        # a compact identity/goal record. Every omission is explicit and recoverable.
+        for key in ("acceptance_criteria", "user_updates", "operations", "decisions", "changed_files", "blockers"):
+            if omit_oldest(key, minimum=0):
+                reduced = True
+                break
+        if reduced:
+            continue
+        shortened = next((key for key in ("last_assistant_update", "goal", "next_action") if shorten_string(key)), None)
+        if shortened:
+            continue
+        removable = next((key for key in ("settings", "workspace", "acceptance_criteria_source", "workflow_outcome", "schema_version")
+                          if key in visible), None)
+        if removable:
+            note_omission(f"{removable}_fields")
+            visible.pop(removable, None)
+            continue
+        # Tiny budgets can be smaller than the detail fields themselves. Preserve
+        # task identity, terminal state, and an omission ledger; full data stays saved.
+        minimal = {key: copy.deepcopy(visible[key]) for key in ("task_id", "status") if key in visible}
+        minimal["checkpoint_omissions"] = omissions.copy()
+        visible = minimal
+        if current_size() > token_budget:
+            for key in ("task_id", "status"):
+                if key in visible:
+                    visible.pop(key)
+                    note_omission(f"{key}_fields")
+                    if current_size() <= token_budget:
+                        break
+            if current_size() > token_budget:
+                visible["checkpoint_omissions"] = {"checkpoint_details": 1}
+            break
     return encode()
 
 
