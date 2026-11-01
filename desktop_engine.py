@@ -11,7 +11,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import checkpoint_omissions, current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
+from task_checkpoint import checkpoint_omissions, current_task, finish_task, record_assistant_status, record_blocker, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from permission_policy import permission_decision, validate_permission_rules
 from typing import Any, Callable
@@ -356,6 +356,8 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
     if action_denied:
         return "blocked"
     status = str(verification.get("status", "not_verified"))
+    if status == "implementation_incomplete":
+        return status
     if status == "command_failed":
         return "command_failed"
     if status == "command_incomplete":
@@ -382,6 +384,36 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
     if plan:
         return "plan_only"
     return "discussion"
+
+def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
+    open_statuses = {"pending", "in_progress", "in progress", "queued", "todo", "not_started", "not started", "blocked"}
+    for item in plan:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status", "pending")).strip().casefold() in open_statuses:
+            return True
+    return False
+
+def _continuation_progress_signature(task: dict[str, Any], plan: list[dict[str, Any]],
+                                     verification_steps: list[dict[str, Any]]) -> str:
+    """Compare observable progress, not elapsed time or a fixed continuation count."""
+    plan_state = [
+        {key: item.get(key) for key in ("id", "phase", "title", "text", "status", "acceptance_criteria") if key in item}
+        for item in plan if isinstance(item, dict)
+    ]
+    operations = task.get("operations", [])
+    operation_state = sorted({
+        json.dumps({key: item.get(key) for key in ("name", "status", "affected_files", "arguments_fingerprint", "result_fingerprint") if key in item},
+                   ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        for item in operations if isinstance(item, dict)
+    }) if isinstance(operations, list) else []
+    evidence = {
+        "plan": plan_state,
+        "operations": operation_state,
+        "verification": verification_steps,
+        "changed_files": task.get("changed_files", []),
+    }
+    return json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool,
                          command_side_effects_possible: bool = False, post_effect_inspection: bool = False) -> dict[str, Any]:
@@ -1444,7 +1476,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;continuation_attempted=False;verification_continuation_attempted=False;approval_continuation_attempted=False;completed_project_change=False;command_side_effects_possible=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=(self.task_intent=="implement" or (self.task_intent=="auto" and _requests_implementation(prompt)))
+        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=(self.task_intent=="implement" or (self.task_intent=="auto" and _requests_implementation(prompt)))
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -1484,24 +1516,38 @@ class AgentEngine:
                     asks_for_action_approval=_asks_for_action_approval(content)
                     post_change_inspection=last_inspection_action_index>last_effect_action_index
                     review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
-                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or review_required)
-                    can_continue=(not completed_project_change and not command_side_effects_possible and not continuation_attempted and not verification_continuation_attempted) or (review_required and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted) or (asks_for_action_approval and not approval_continuation_attempted)
-                    if unfinished and can_continue:
+                    plan=checkpoint_state.get("plan",[])
+                    plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
+                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or asks_for_action_approval or review_required or plan_remaining)
+                    progress_signature=_continuation_progress_signature(checkpoint_state,plan if isinstance(plan,list) else [],verification_steps)
+                    if unfinished and progress_signature!=last_continuation_signature:
+                        last_continuation_signature=progress_signature
                         if asks_for_action_approval:
-                            approval_continuation_attempted=True
                             continuation="Your previous response asked permission to run a command in plain text. If that action is still required by the user's task, call the exact structured run_command or run_shell tool now so the workbench can show its normal approval dialog. The tool request itself is not approval; wait for the host's approval result before execution. If the action is no longer needed, explain why instead of asking again."
                             reason="model asked for command approval in prose instead of requesting the structured tool"
                         elif review_required:
-                            verification_continuation_attempted=True
                             continuation="A project-writing tool or approved command may have changed project state, but no later workspace inspection is recorded. Inspect the workspace after that action now using read_file, git_status, or git_diff as applicable. Identify changed files where the tools can observe them. Do not claim a command passed tests unless its output confirms that specific check. If effects cannot be determined, state that limitation."
                             reason="implementation action or command returned without a later workspace inspection"
+                        elif plan_remaining:
+                            continuation="Continue from the saved implementation plan. Its agent-owned checklist still contains open work: complete the next actionable item or report its concrete blocker, update the checklist as work progresses, and keep implementing until the requested work and its verifiable acceptance criteria are addressed. Do not merely restate or polish the plan."
+                            reason="agent-owned implementation plan still contains open work"
                         else:
-                            continuation_attempted=True
                             continuation="This request requires an actual project change. Continue now using the available structured tools; the previous assistant response was only a plan/progress note, not completion. Use the normal access and approval rules. If a real blocker prevents work, state that blocker instead of asking for approval in prose."
                             reason="implementation task returned without completing its next project action"
                         msgs[0]["content"] += "\n\n"+continuation
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
+                    if unfinished:
+                        blocker="The model returned without completing the implementation and made no new observable tool, plan, or verification progress after the continuation request. Review the saved plan and resume from the next action; no runtime deadline or token setting was changed."
+                        record_blocker(checkpoint,blocker)
+                        verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
+                            command_side_effects_possible,post_change_inspection)
+                        verification["status"]="implementation_incomplete"
+                        verification["incomplete_reason"]=blocker
+                        workflow_outcome="implementation_incomplete"
+                        finish_task(checkpoint,"stopped",verification,blocker=blocker,outcome=workflow_outcome)
+                        self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome})
+                        return msgs
                     verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
                         command_side_effects_possible,post_change_inspection)
                     self._advance_workbench_plan("run_command", "completed", final=True,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import time
@@ -157,6 +158,11 @@ def record_operation(checkpoint: dict[str, Any], event: dict[str, Any]) -> None:
         result_characters=len(str(event.get("result", ""))),
         updated_at=event.get("completedAt", time.time()),
     )
+    if "arguments" in event:
+        encoded_arguments = json.dumps(event["arguments"], ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        row["arguments_fingerprint"] = hashlib.sha256(encoded_arguments.encode("utf-8")).hexdigest()
+    if "result" in event:
+        row["result_fingerprint"] = hashlib.sha256(str(event["result"]).encode("utf-8")).hexdigest()
     changed = checkpoint.setdefault("changed_files", [])
     for path in row["affected_files"]:
         if path and path not in changed and row["name"] in {"write_file", "append_file", "edit_file", "apply_patch"} and row["status"] == "completed":

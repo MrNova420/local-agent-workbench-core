@@ -22,6 +22,20 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     assert "65536" in render_checkpoint(second)
 
 
+def test_operation_checkpoint_records_content_fingerprints_without_copying_large_content():
+    checkpoint = begin_task(None, prompt="Implement a file", turn_id="t1", workspace="C:/p", settings={})
+    large_content = "source line\n" * 10000
+    record_operation(checkpoint, {"operationId": "op1", "name": "append_file", "status": "completed",
+                                  "arguments": {"path": "large.py", "content": large_content},
+                                  "affectedFiles": ["large.py"], "result": "Appended large.py"})
+
+    row = checkpoint["current"]["operations"][0]
+    assert row["arguments_fingerprint"]
+    assert row["result_fingerprint"]
+    assert row["result_characters"] == len("Appended large.py")
+    assert "content" not in row
+
+
 def test_inference_checkpoint_compacts_large_expandable_plan_without_mutating_saved_plan():
     plan = [{"title": f"Workstream {index}: " + ("inspect and implement detailed subsystem behavior " * 8),
              "text": "Preserve all findings and continue the full project workflow. " * 4,
