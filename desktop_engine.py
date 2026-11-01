@@ -445,6 +445,7 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
         "implementation_requested": bool(task.get("implementation_requested", False)),
         "plan": plan_state,
         "acceptance_criteria": task.get("acceptance_criteria", []),
+        "decisions": task.get("decisions", []),
         "operations": operation_state,
         "verification": verification_steps,
         "changed_files": task.get("changed_files", []),

@@ -32,6 +32,7 @@
 - Legacy checkpoints without plan provenance migrate using saved item markers first and the saved `plan`/`implement` mode when markers are absent. Explicit Workbench-owned rows remain Workbench plans.
 - In Auto, a structured `plan_only` classification can clear a sticky implementation obligation only before any mutation, observed file change, or command side effect. After effects begin, the task remains obligated to inspect and report them safely.
 - Plan status interpretation is shared by continuation, Workbench checklist advancement, and checkpoint `next_action`. Unknown states remain open across compaction/recovery rather than being kept active with no resumable action.
+- New saved decisions count as structured continuation progress alongside plan, acceptance criteria, operation, and verification changes; repeating an unchanged decision does not create a new checkpoint entry.
 
 ## 2026-11-01 Saved plan provenance and resume continuation (verification queued)
 

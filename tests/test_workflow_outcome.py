@@ -162,6 +162,11 @@ def test_saved_implementation_obligation_counts_as_continuation_state():
         {"implementation_requested": True}, [])
 
 
+def test_saved_user_relevant_decisions_count_as_continuation_progress():
+    assert _continuation_progress_signature({"decisions": []}, []) != _continuation_progress_signature(
+        {"decisions": [{"kind": "agent_plan_decision", "text": "Keep the existing router."}]}, [])
+
+
 def test_replanning_without_new_evidence_does_not_count_as_progress():
     assert _continuation_progress_signature({"task_mode": "implement"}, []) == _continuation_progress_signature(
         {"task_mode": "implement", "operations": [{"name": "update_plan", "status": "completed",
