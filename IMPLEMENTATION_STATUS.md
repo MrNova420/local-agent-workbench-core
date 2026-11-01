@@ -1,5 +1,13 @@
 # Implementation and verification status
 
+## 2026-11-01 unpublished continuity source work
+
+- Added a factual task checkpoint module for continuing the same user task across turns and compaction, retaining plan, captured settings, completed operation references, changed files, and verification. Older flat checkpoints migrate forward; terminal tasks remain in local checkpoint history.
+- Compaction injects the checkpoint alongside the configured system prompt and recent complete-turn tail, and emits omitted/retained turns plus checkpoint inclusion and estimated size. Context/output/reasoning values remain unmodified.
+- The Ollama stream adapter now retains prompt_eval_cached_count when the provider returns it.
+- Added queued checkpoint migration/continuation and cache-counter regression cases. No tests, typecheck, package, or live model request were run for this source work.
+- The paired Electron sidecar must pass session-owned checkpoint state into AgentEngine and durably mirror its context-compaction metadata. Update app core pins only after this engine milestone is committed. See the paired app's docs/SESSION_CONTINUITY_IMPLEMENTATION.md for the full fault-injection and visible acceptance queue.
+
 Date: 2026-10-30
 Git baseline: `2e10b37`; post-audit work is committed in small changes.
 Current status: active development; **not approved for unrestricted real-project work**.

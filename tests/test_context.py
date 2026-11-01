@@ -28,6 +28,22 @@ class ContextTests(unittest.TestCase):
         messages += [{'role':'user','content':f'turn {i} '+'x'*400} for i in range(40)]
         events=[];compacted=manager.compact(messages,on_compact=events.append);self.assertEqual(compacted[0],messages[0]);notice=next(m for m in compacted if 'earlier complete conversation turn(s) were omitted' in str(m.get('content')));self.assertEqual(notice['role'],'user');self.assertEqual(compacted[-1],messages[-1]);self.assertGreater(events[0]['omittedTurns'],0)
         self.assertEqual(len(messages),41,'request compaction must not mutate the canonical session history')
+    def test_compaction_injects_checkpoint_and_discloses_its_inclusion(self):
+        manager=ContextManager(context=4096,reserve=1024)
+        messages=[{'role':'system','content':'SYSTEM'}]
+        messages += [{'role':'user','content':f'turn {i} '+'x'*400} for i in range(40)]
+        checkpoint={'current':{'task_id':'task-1','goal':'Finish the website','status':'active',
+                               'workspace':'C:/fixture','settings':{'context':4096,'max_tokens':512},
+                               'plan':[{'title':'Implement page','status':'pending'}],
+                               'operations':[{'operation_id':'op-1','status':'completed','result_ref':'op-1'}]}}
+        events=[]
+        compacted=manager.compact(messages,output_tokens=512,on_compact=events.append,checkpoint=checkpoint)
+        checkpoint_message=next(message for message in compacted if 'Active task continuity checkpoint' in str(message.get('content','')))
+        self.assertIn('Finish the website',checkpoint_message['content'])
+        self.assertIn('Implement page',checkpoint_message['content'])
+        self.assertGreater(events[0]['omittedTurns'],0)
+        self.assertTrue(events[0]['checkpointIncluded'])
+        self.assertGreater(events[0]['checkpointEstimate'],0)
     def test_compaction_preserves_tool_call_and_result_pairs(self):
         manager=ContextManager(context=4096,reserve=1024)
         messages=[{'role':'system','content':'SYSTEM'}]

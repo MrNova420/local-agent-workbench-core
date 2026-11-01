@@ -16,7 +16,7 @@ class SessionStore:
             try:
                 with tempfile.NamedTemporaryFile('w',encoding='utf8',delete=False,dir=self.root,prefix=path.stem+'-',suffix='.tmp') as handle:
                     tmp=Path(handle.name);json.dump(state,handle,indent=2,ensure_ascii=False);handle.flush();os.fsync(handle.fileno())
-                os.replace(tmp,path);return path
+                _replace_with_retry(tmp,path);return path
             finally:
                 if tmp is not None:tmp.unlink(missing_ok=True)
     def load(self,sid:str)->dict:
@@ -61,3 +61,17 @@ class SessionStore:
     def _safe(sid:str)->str:
         if not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}',sid):raise ValueError('Invalid session id')
         return sid
+
+
+def _replace_with_retry(source:Path,destination:Path)->None:
+    """Retry transient Windows sharing violations without hiding permanent failures."""
+    delay=0.05
+    for attempt in range(7):
+        try:
+            os.replace(source,destination)
+            return
+        except PermissionError:
+            if attempt==6:
+                raise
+            time.sleep(delay)
+            delay=min(delay*2,0.4)

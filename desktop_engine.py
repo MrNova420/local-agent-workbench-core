@@ -8,6 +8,7 @@ from urllib.parse import unquote
 from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled
+from task_checkpoint import current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -36,6 +37,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. The checkpoint is factual state, while complete transcript, reasoning text, and operation results remain in session history.\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
     )
@@ -705,16 +707,20 @@ class ContextManager:
         if omitted_for_budget:notice+=(" " if notice else "")+"[Additional relevant excerpts did not fit this request's remaining context budget; use search_files/read_file to inspect more.]"
         if notice and self.estimate((result+"\n\n" if result else "")+notice)<=limit:result+=("\n\n" if result else "")+notice
         return result
-    def compact(self,messages:list[dict],tools:list[dict]|None=None,output_tokens:int=0,on_compact:Callable[[dict],None]|None=None)->list[dict]:
+    def compact(self,messages:list[dict],tools:list[dict]|None=None,output_tokens:int=0,on_compact:Callable[[dict],None]|None=None,checkpoint:dict[str,Any]|None=None)->list[dict]:
         tools=tools or [];budget=self.budget(output_tokens)
         def request_size(rows):return self.estimate(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))
         tool_size=self.estimate(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
         if tool_size+max(self.reserve,output_tokens+1024)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
-        total=request_size(messages)
-        if total<=budget:return messages
-        if len(messages)<3:raise ValueError(f"Request exceeds input budget for {self.context:,}-token context; context was not reduced.")
         system=messages[:1] if messages and messages[0].get("role")=="system" else []
+        checkpoint_text=render_checkpoint(checkpoint)
+        continuity=[{"role":"system","content":checkpoint_text}] if checkpoint_text else []
+        base=system+continuity
         conversation=messages[len(system):]
+        request=base+conversation
+        total=request_size(request)
+        if total<=budget:return request
+        if len(messages)<3:raise ValueError(f"Request exceeds input budget for {self.context:,}-token context; context was not reduced.")
         # Compact only at complete user-turn boundaries. Keep assistant tool-call messages
         # together with every corresponding tool result; partial pairs are invalid provider input.
         turns=[];current=[]
@@ -730,8 +736,8 @@ class ContextManager:
             dropped=len(turns)-len(candidate)
             notice=[]
             if dropped:
-                notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request to fit the configured input budget. Their details are unknown here; do not assume their contents or claim they were reviewed.]"}]
-            proposed=system+notice+[m for group in candidate for m in group]
+                notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript and tool results remain saved; use the task checkpoint and saved operation references to continue. Do not claim omitted material was reviewed unless the checkpoint or a tool result confirms it.]"}]
+            proposed=base+notice+[m for group in candidate for m in group]
             if request_size(proposed)>budget:
                 if not kept:
                     raise ValueError(f"The current complete conversation turn exceeds the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
@@ -740,18 +746,18 @@ class ContextManager:
         dropped=len(turns)-len(kept)
         notice=[]
         if dropped:
-            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request to fit the configured input budget. Their details are unknown here; do not assume their contents or claim they were reviewed.]"}]
-        compacted=system+notice+[m for group in kept for m in group]
+            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript and tool results remain saved; use the task checkpoint and saved operation references to continue. Do not claim omitted material was reviewed unless the checkpoint or a tool result confirms it.]"}]
+        compacted=base+notice+[m for group in kept for m in group]
         # If the notice itself pushes the request over budget, discard complete older turns,
         # never individual assistant/tool messages or fragments of user text.
         while request_size(compacted)>budget and len(kept)>1:
             kept=kept[1:];dropped=len(turns)-len(kept)
-            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request to fit the configured input budget. Their details are unknown here; do not assume their contents or claim they were reviewed.]"}]
-            compacted=system+notice+[m for group in kept for m in group]
+            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript and tool results remain saved; use the task checkpoint and saved operation references to continue. Do not claim omitted material was reviewed unless the checkpoint or a tool result confirms it.]"}]
+            compacted=base+notice+[m for group in kept for m in group]
         if request_size(compacted)>budget:
             raise ValueError(f"Current turn and context notice exceed the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
         if on_compact:
-            on_compact({"type":"context_compacted","omittedTurns":dropped,"retainedTurns":len(kept),"configuredContext":self.context,"inputBudget":budget,"reason":"safe complete-turn boundary compaction"})
+            on_compact({"type":"context_compacted","omittedTurns":dropped,"retainedTurns":len(kept),"configuredContext":self.context,"inputBudget":budget,"checkpointIncluded":bool(checkpoint_text),"checkpointEstimate":self.estimate(checkpoint_text) if checkpoint_text else 0,"reason":"rolling task checkpoint plus recent complete-turn tail"})
         return compacted
 
 class OllamaRuntime:
@@ -822,7 +828,7 @@ class OllamaRuntime:
                     args=fn.get("arguments","")
                     if isinstance(args,str):slot["function"]["arguments"]+=args
                     elif isinstance(args,dict):slot["function"]["arguments"]=args
-                for key in ("done","total_duration","load_duration","prompt_eval_count","eval_count","prompt_eval_duration","eval_duration"):
+                for key in ("done","total_duration","load_duration","prompt_eval_count","prompt_eval_cached_count","eval_count","prompt_eval_duration","eval_duration"):
                     if key in item:result[key]=item[key]
             if cancel.is_set():
                 partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
@@ -846,16 +852,24 @@ class OllamaRuntime:
             except (UnboundLocalError,OSError,AttributeError):pass
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard"):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.mcp_tools=mcp_tools or [];self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
-        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event),"mcp_tools":self.mcp_tools,"messages":[]}
+        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event),"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":task_checkpoint if isinstance(task_checkpoint,dict) else {}}
     def _approval(self,name:str,args:Any)->bool:
-        if self.approval_mode=="auto":return True
-        if self.approval_mode=="per-task" and self.approved_task:return True
+        checkpoint=self.state["task_checkpoint"]
+        if self.approval_mode=="auto":
+            record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"auto-approved","mode":"auto"})
+            return True
+        if self.approval_mode=="per-task" and self.approved_task:
+            record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"covered-by-prior-task-approval","mode":"per-task"})
+            return True
         ok=self.approve(name,args)
-        if self.cancel_event.is_set():raise RequestCancelled("Cancelled while waiting for approval")
+        if self.cancel_event.is_set():
+            record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"cancelled","mode":self.approval_mode})
+            raise RequestCancelled("Cancelled while waiting for approval")
+        record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"approved" if ok else "denied","mode":self.approval_mode})
         if ok and self.approval_mode=="per-task":self.approved_task=True
         return ok
     def cancel(self):self.cancel_event.set();self.runtime.cancel()
@@ -905,15 +919,24 @@ class AgentEngine:
         remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
         retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining)
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
+        checkpoint=self.state["task_checkpoint"]
+        checkpoint_state=current_task(checkpoint)
+        checkpoint_state.setdefault("goal",prompt)
+        checkpoint_state["workspace"]=str(self.workspace.root)
+        checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
+        checkpoint_state["status"]="active"
+        checkpoint_state["updated_at"]=time.time()
         start=time.monotonic();continuation_attempted=False;verification_continuation_attempted=False;approval_continuation_attempted=False;completed_project_change=False;action_denied=False;verification_steps=[];implementation_requested=_requests_implementation(prompt)
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
                 if self.stop_after_operation.is_set():
+                    finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
-                request_messages=self.context.compact(msgs,tools,self.state["max_tokens"],self.event)
+                request_messages=self.context.compact(msgs,tools,self.state["max_tokens"],self.event,checkpoint=checkpoint)
                 self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
+                record_assistant_status(checkpoint,msg)
                 calls=msg.get("tool_calls") or []
                 if calls:
                     self.event({"type":"tool_batch","assistantMessage":{"role":"assistant",**msg},"calls":[
@@ -923,6 +946,7 @@ class AgentEngine:
                 if calls and self.stop_after_operation.is_set():
                     for index,call in enumerate(calls):
                         fn=call.get("function") or {};msgs.append({"role":"tool","tool_name":fn.get("name","unknown_tool"),"content":"Not executed: the user chose to stop after the current operation."})
+                    finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
                     content=str(msg.get("content", ""))
@@ -953,6 +977,7 @@ class AgentEngine:
                     elif commands:verification_status="command_not_completed"
                     else:verification_status="not_verified"
                     verification={"status":verification_status,"steps":verification_steps}
+                    finish_task(checkpoint,"completed",verification)
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification});return msgs
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
@@ -967,12 +992,20 @@ class AgentEngine:
                     if not name:args_error=args_error or "Tool call is missing its function name."
                     elif schema is None:args_error=args_error or f"Unknown tool: {name}. Use only a tool listed in the current request."
                     elif not args_error:args_error=_validate_tool_arguments(args,schema)
-                    if self.cancel_event.is_set():out="Cancelled before this tool action ran."
+                    if self.cancel_event.is_set():
+                        out="Cancelled before this tool action ran."
+                        operation_id=uuid.uuid4().hex;operation_started=time.time()
+                        self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
+                        operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","result":out,"status":"cancelled","affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()}
+                        record_operation(checkpoint,operation_event)
+                        self.event(operation_event)
                     elif args_error:
                         out=f"Invalid tool call: {args_error} Correct the arguments to match the tool schema and try again."
                         operation_id=uuid.uuid4().hex;operation_started=time.time()
                         self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
-                        self.event({"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","result":out,"status":"failed","affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()})
+                        operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","result":out,"status":"failed","affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()}
+                        record_operation(checkpoint,operation_event)
+                        self.event(operation_event)
                     else:
                         operation_id=uuid.uuid4().hex
                         operation_started=time.time()
@@ -1001,11 +1034,16 @@ class AgentEngine:
                             verification_steps.append({"kind":"inspection","tool":name,"result":"completed"})
                         elif completed_project_change and name in {"run_command","run_shell"}:
                             verification_steps.append({"kind":"command","tool":name,"result":status})
-                        self.event({"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
+                        operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()}
+                        record_operation(checkpoint,operation_event)
+                        self.event(operation_event)
+                    if name=="update_plan" and not args_error:
+                        record_plan(checkpoint,args.get("items",[]))
                     msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":str(out)})
                     if self.stop_after_operation.is_set():
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             pending_fn=pending.get("function") or {};msgs.append({"role":"tool","tool_name":pending_fn.get("name","unknown_tool"),"content":"Not executed: the user chose to stop after the active operation."})
+                        finish_task(checkpoint,"stopped")
                         self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                     if self.cancel_event.is_set():
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
@@ -1015,9 +1053,14 @@ class AgentEngine:
             partial=exc.partial_message
             if isinstance(partial,dict) and any(partial.get(key) for key in ("content","thinking")):
                 msgs.append({"role":"assistant",**{key:partial[key] for key in ("content","thinking") if partial.get(key)}})
+            finish_task(checkpoint,"cancelled")
             self.event({"type":"cancelled","elapsed":time.monotonic()-start})
-        except MCPRequestCancelled:self.event({"type":"cancelled","elapsed":time.monotonic()-start})
-        except Exception as exc:self.event({"type":"error","error":f"{type(exc).__name__}: {exc}"})
+        except MCPRequestCancelled:
+            finish_task(checkpoint,"cancelled")
+            self.event({"type":"cancelled","elapsed":time.monotonic()-start})
+        except Exception as exc:
+            finish_task(checkpoint,"failed")
+            self.event({"type":"error","error":f"{type(exc).__name__}: {exc}"})
         return msgs
 
 
