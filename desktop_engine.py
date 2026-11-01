@@ -376,11 +376,13 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
     return "discussion"
 
 def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
-    open_statuses = {"pending", "in_progress", "in progress", "queued", "todo", "not_started", "not started", "blocked"}
+    terminal_statuses = {"done", "complete", "completed", "verified", "not_required", "not required",
+                         "skipped", "cancelled", "canceled", "deferred"}
     for item in plan:
         if not isinstance(item, dict):
             continue
-        if str(item.get("status", "pending")).strip().casefold() in open_statuses:
+        status=str(item.get("status", "pending")).strip().casefold()
+        if status not in terminal_statuses:
             return True
     return False
 
