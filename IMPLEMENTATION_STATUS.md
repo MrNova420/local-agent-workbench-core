@@ -8,6 +8,13 @@
 - Added queued checkpoint migration/continuation and cache-counter regression cases. No tests, typecheck, package, or live model request were run for this source work.
 - The paired Electron sidecar must pass session-owned checkpoint state into AgentEngine and durably mirror its context-compaction metadata. Update app core pins only after this engine milestone is committed. See the paired app's docs/SESSION_CONTINUITY_IMPLEMENTATION.md for the full fault-injection and visible acceptance queue.
 
+## 2026-11-01 task intent and read-only planning
+
+- Added persisted `auto`, `discuss`, `plan`, and `implement` task intents to the shared engine contract. Explicit implementation tasks and automatically detected build requests receive a Workbench-authored checklist before inference; the requested goal is preserved as its own item, and model `update_plan` calls can refine the live checklist.
+- Plan and Discussion intents run with the engine's read-only access policy. Read-only access now omits write, patch, and command schemas from the model catalog and hides MCP tools for that run; runtime enforcement remains in place if the model submits an out-of-catalog tool call.
+- The existing implementation-request classifier now lives in the checkpoint/workflow module so host plan seeding and engine continuation decisions use the same wording rules. Task intent is added to the assembled prompt without modifying model reasoning or token settings.
+- Added queued coverage for intent guidance, automatic plan seeding, explicit planning, and the read-only tool catalog. No test suite or typecheck was run. The Electron sidecar integration and app revision pin remain pending until the shared engine commit lands.
+
 Date: 2026-10-30
 Git baseline: `2e10b37`; post-audit work is committed in small changes.
 Current status: active development; **not approved for unrestricted real-project work**.

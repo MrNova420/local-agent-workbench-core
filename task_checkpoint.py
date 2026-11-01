@@ -3,8 +3,25 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import time
 from typing import Any
+
+
+def requests_implementation(prompt: str) -> bool:
+    folded = prompt.strip().casefold()
+    if not folded:
+        return False
+    if any(phrase in folded for phrase in (
+        "plan only", "just plan", "only plan", "review only", "analyze only", "analyse only",
+        "explain how to", "what should i change", "how do i fix", "how can i fix", "why does this", "why is this",
+    )):
+        return False
+    if re.match(r"^(what|why|how|when|where)\b", folded):
+        return False
+    if re.match(r"^plan\b", folded) and not re.search(r"\b(and|then)\s+(build|create|implement|fix|edit|write|modify)\b", folded):
+        return False
+    return re.search(r"\b(build|create|implement|add|fix|edit|write|modify|refactor|generate|develop|update)\b", folded) is not None
 
 
 def begin_task(
@@ -51,6 +68,34 @@ def begin_task(
     current.update(status="active", active_turn_id=turn_id, updated_at=time.time())
     current.pop("next_action", None)
     return {"task_history": history, "current": current}
+
+
+def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
+    """Create a visible, factual starter checklist before a model call begins."""
+    if intent not in {"plan", "implement", "auto"}:
+        return []
+    goal = " ".join(str(prompt).split())
+    if not goal:
+        return []
+    if intent == "plan":
+        phases = [
+            ("Inspect relevant project context", "pending"),
+            ("Refine this request into sequenced steps and surface assumptions", "pending"),
+            ("Present the plan without changing workspace files", "pending"),
+        ]
+    elif intent == "implement" or requests_implementation(prompt):
+        phases = [
+            ("Inspect relevant project context", "pending"),
+            ("Refine the checklist with affected files and acceptance criteria", "pending"),
+            ("Implement the requested changes under the selected access and approval rules", "pending"),
+            ("Inspect the changes and run relevant approved checks", "pending"),
+        ]
+    else:
+        return []
+    return [
+        {"title": "Requested outcome", "text": goal, "status": "pending", "source": "workbench"},
+        *({"title": title, "status": status, "source": "workbench"} for title, status in phases),
+    ]
 
 
 def record_plan(checkpoint: dict[str, Any], items: Any) -> None:
