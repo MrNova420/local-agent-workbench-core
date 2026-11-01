@@ -11,7 +11,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import checkpoint_omissions, current_task, finish_task, record_assistant_status, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
+from task_checkpoint import checkpoint_omissions, current_task, finish_task, initial_task_plan, record_assistant_status, record_blocker, record_decision, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from permission_policy import permission_decision, validate_permission_rules
 from typing import Any, Callable
@@ -1707,6 +1707,17 @@ class AgentEngine:
                         operation_id=prepared["operation_id"] if prepared else uuid.uuid4().hex
                         operation_started=prepared["started"] if prepared else time.time()
                         registry=self.state["registry"]
+                        if (not prepared and self.task_intent == "auto"
+                                and name in {"write_file", "append_file", "edit_file", "apply_patch"}
+                                and not registry.plan):
+                            # A real structured write request is reliable evidence that
+                            # Automatic mode needs an implementation checklist. Publish
+                            # it before the write runs; do not guess from prompt wording.
+                            registry.plan=initial_task_plan(prompt,"implement")
+                            registry.plan_source="workbench"
+                            record_plan(checkpoint,registry.plan,[])
+                            self.event({"type":"plan","items":copy.deepcopy(registry.plan),
+                                        "acceptanceCriteria":[],"source":"workbench"})
                         tool_call_id=call.get("id",f"call-{index}")
                         if prepared:
                             out=prepared["output"]

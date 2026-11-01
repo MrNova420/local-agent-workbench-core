@@ -6,6 +6,11 @@
 - Automatic mode no longer fabricates a host checklist based on selected words. Agent-authored plans are live in the UI and drive continuation; observed writes/patches activate post-change inspection and continuation requirements.
 - Added regression assertions for structured evidence and the absence of wording classification. Tests, typecheck, live model, desktop app, and packaging checks remain queued.
 
+## 2026-11-01 Automatic checklist from first structured write (verification queued)
+
+- If Automatic mode reaches a structured file mutation without an existing agent plan, the host now emits and saves the implementation checklist before the operation is executed. The trigger is the actual requested tool operation, not guessed prompt vocabulary.
+- This gives the user a visible plan even when the model skips `update_plan`, and the resulting write still enters the post-change inspection/verification flow. A regression checks plan-event ordering before the write event; it remains unrun.
+
 ## 2026-11-01 budget-safe checkpoint projection (verification queued)
 
 - Oversized checkpoints now compact only their inference projection against the requested budget. Long expandable plans preserve a usable outline where possible, with omitted plan entries/details recorded explicitly and the complete canonical plan unchanged for paged retrieval through `read_task_checkpoint`.

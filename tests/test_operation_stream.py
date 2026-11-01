@@ -365,6 +365,32 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["workflowOutcome"], "inspected")
             self.assertFalse(any(event.get("type") == "implementation_incomplete" for event in events))
 
+    def test_automatic_direct_write_gets_a_live_plan_without_prompt_keyword_matching(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append, task_intent="auto")
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "write", "function": {"name": "write_file", "arguments": {"path": "app.py", "content": "print('ready')\\n"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect", "function": {"name": "read_file", "arguments": {"path": "app.py"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The requested file is written and inspected."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Make this usable")
+
+            plan_index = next(index for index, event in enumerate(events)
+                              if event.get("type") == "plan" and event.get("source") == "workbench")
+            write_index = next(index for index, event in enumerate(events)
+                               if event.get("type") == "tool_start" and event.get("name") == "write_file")
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertLess(plan_index, write_index)
+            self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
+            self.assertEqual(completion["workflowOutcome"], "inspected")
+
     def test_repeated_identical_plan_tool_calls_are_detected_as_no_progress(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
