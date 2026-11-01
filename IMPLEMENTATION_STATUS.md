@@ -118,3 +118,10 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Terminal coding turns now record an outcome derived from host-observed tool results: discussion, plan-only, blocked, changed, inspected, command-completed, or command-failed. A successful command is deliberately not called a passing test or verified project.
 - The outcome is stored in the task checkpoint and emitted with the terminal event. Checkpoint completion records the outcome separately from the transport/run status.
 - Regression cases cover each classification and checkpoint persistence. They remain queued and have not been run.
+
+## 2026-11-01 implementation completion evidence in progress
+
+- An implementation-intent turn that returns without a host-observed project change now ends as `implementation_incomplete`, rather than being mislabeled as discussion. Explicit Implement with read-only access reports blocked; Auto with read-only access remains plan-only.
+- Verification records carry a compact evidence contract: whether a project change was observed, whether a post-change inspection completed, and the results of approved commands. A successful command is explicitly not a test-pass claim.
+- After a successful change, the engine's bounded continuation now asks for a post-change inspection even when a command already ran. If the model still does not inspect, the terminal record remains unverified and names the missing evidence.
+- Regression tests cover outcome precedence and evidence records. They are queued; no tests or model calls were run for this change.

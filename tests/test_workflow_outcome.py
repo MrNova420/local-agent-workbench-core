@@ -1,4 +1,4 @@
-from desktop_engine import AgentEngine, ToolRegistry, Workspace, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import initial_task_plan
 
 
@@ -12,6 +12,24 @@ def test_workflow_outcome_distinguishes_plan_change_inspection_and_command():
     assert _workflow_outcome("ask", False, False, {"status": "not_verified"}, []) == "discussion"
     assert _workflow_outcome("plan", False, False, {"status": "not_verified"}, [], "discuss") == "discussion"
     assert _workflow_outcome("plan", False, False, {"status": "not_verified"}, [], "plan") == "plan_only"
+    assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [], "implement", True) == "implementation_incomplete"
+    assert _workflow_outcome("plan", False, False, {"status": "not_verified"}, [], "implement", True) == "blocked"
+    assert _workflow_outcome("plan", False, False, {"status": "not_verified"}, [], "auto", True) == "plan_only"
+    assert _workflow_outcome("edit", False, False, {"status": "command_completed"}, [], "implement", True) == "implementation_incomplete"
+    assert _workflow_outcome("edit", False, False, {"status": "command_failed"}, [], "implement", True) == "command_failed"
+
+
+def test_verification_report_distinguishes_missing_change_review_and_command_evidence():
+    missing = _verification_report([], True, False)
+    inspected = _verification_report([{"kind": "inspection", "tool": "git_diff", "result": "completed"}], True, True)
+    checked = _verification_report([{"kind": "command", "tool": "run_command", "result": "completed"}], True, True)
+
+    assert missing["status"] == "not_implemented"
+    assert missing["contract"]["project_change"] == "not_observed"
+    assert inspected["contract"]["post_change_inspection"] == "completed"
+    assert checked["status"] == "command_completed"
+    assert checked["contract"]["post_change_inspection"] == "missing"
+    assert checked["contract"]["command_success_is_test_pass"] is False
 
 
 def test_explicit_task_intent_has_read_only_guidance_and_implementation_contract():

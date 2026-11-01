@@ -277,26 +277,60 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "failed"
     return "completed"
 
-def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, verification: dict[str, Any], plan: list[dict[str, Any]], task_intent: str = "auto") -> str:
+def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, verification: dict[str, Any], plan: list[dict[str, Any]], task_intent: str = "auto", implementation_requested: bool = False) -> str:
     """Describe only outcomes supported by host-observed tool activity."""
     if action_denied:
         return "blocked"
     status = str(verification.get("status", "not_verified"))
     if status == "command_failed":
         return "command_failed"
+    if task_intent == "discuss":
+        return "discussion"
+    if task_intent == "plan":
+        return "plan_only"
+    if task_intent == "implement" and access == "plan":
+        return "blocked"
+    if access == "plan":
+        return "plan_only"
+    if implementation_requested and not project_changed:
+        return "implementation_incomplete"
     if status == "command_completed":
         return "command_completed"
     if status == "inspected":
         return "inspected"
     if project_changed:
         return "changed"
-    if task_intent == "discuss":
-        return "discussion"
-    if task_intent == "plan":
-        return "plan_only"
-    if access == "plan" or plan:
+    if plan:
         return "plan_only"
     return "discussion"
+
+def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool) -> dict[str, Any]:
+    """Summarize host-observed evidence without treating a completed command as a passing test."""
+    inspections = [step for step in steps if step.get("kind") == "inspection"]
+    commands = [step for step in steps if step.get("kind") == "command"]
+    if any(step.get("result") == "failed" for step in commands):
+        status = "command_failed"
+    elif any(step.get("result") == "completed" for step in commands):
+        status = "command_completed"
+    elif inspections:
+        status = "inspected"
+    elif commands:
+        status = "command_not_completed"
+    elif implementation_requested and not project_changed:
+        status = "not_implemented"
+    else:
+        status = "not_verified"
+    return {
+        "status": status,
+        "steps": copy.deepcopy(steps),
+        "contract": {
+            "implementation_requested": implementation_requested,
+            "project_change": "observed" if project_changed else "not_observed" if implementation_requested else "not_required",
+            "post_change_inspection": "completed" if inspections else "missing" if project_changed else "not_applicable",
+            "approved_command_results": [step.get("result") for step in commands],
+            "command_success_is_test_pass": False,
+        },
+    }
 
 class Workspace:
     def __init__(self, root: Path | str, access: str = "ask"):
@@ -984,8 +1018,9 @@ class AgentEngine:
                 if not calls:
                     content=str(msg.get("content", ""))
                     asks_for_action_approval=_asks_for_action_approval(content)
-                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or not verification_steps)
-                    can_continue=(not completed_project_change and not continuation_attempted) or (completed_project_change and not verification_steps and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted) or (asks_for_action_approval and not approval_continuation_attempted)
+                    post_change_inspection=any(step.get("kind")=="inspection" for step in verification_steps)
+                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or not post_change_inspection)
+                    can_continue=(not completed_project_change and not continuation_attempted) or (completed_project_change and not post_change_inspection and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted) or (asks_for_action_approval and not approval_continuation_attempted)
                     if unfinished and can_continue:
                         if asks_for_action_approval:
                             approval_continuation_attempted=True
@@ -1002,15 +1037,8 @@ class AgentEngine:
                         msgs[0]["content"] += "\n\n"+continuation
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
-                    inspections=[step for step in verification_steps if step.get("kind")=="inspection"]
-                    commands=[step for step in verification_steps if step.get("kind")=="command"]
-                    if any(step.get("result")=="failed" for step in commands):verification_status="command_failed"
-                    elif any(step.get("result")=="completed" for step in commands):verification_status="command_completed"
-                    elif inspections:verification_status="inspected"
-                    elif commands:verification_status="command_not_completed"
-                    else:verification_status="not_verified"
-                    verification={"status":verification_status,"steps":verification_steps}
-                    workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent)
+                    verification=_verification_report(verification_steps,implementation_requested,completed_project_change)
+                    workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested)
                     finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
                 for index,call in enumerate(calls):

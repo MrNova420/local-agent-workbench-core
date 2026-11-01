@@ -131,7 +131,60 @@ class OperationStreamTests(unittest.TestCase):
             completion=next(event for event in events if event.get("type")=="complete")
             self.assertEqual(completion["verification"]["status"],"inspected")
             self.assertEqual(completion["verification"]["steps"],[{"kind":"inspection","tool":"read_file","result":"completed"}])
+            self.assertEqual(completion["verification"]["contract"]["project_change"], "observed")
+            self.assertEqual(completion["verification"]["contract"]["post_change_inspection"], "completed")
             self.assertEqual(messages[-1]["content"], "The page is ready.")
+
+    def test_implementation_with_command_but_no_review_continues_for_inspection(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            actions = []
+            engine.state["registry"].run = lambda name, _args: (
+                actions.append(name) or {
+                    "write_file": "Wrote app.py",
+                    "run_command": "Checks completed [exit 0]",
+                    "read_file": "Reviewed app.py",
+                }[name]
+            )
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "write", "function": {"name": "write_file", "arguments": {"path": "app.py", "content": "pass"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "command", "function": {"name": "run_command", "arguments": {"argv": ["python", "-m", "compileall", "."]}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The command completed successfully."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect", "function": {"name": "read_file", "arguments": {"path": "app.py"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The change is implemented and reviewed."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Implement a small application change.")
+
+            self.assertEqual(actions, ["write_file", "run_command", "read_file"])
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["verification"]["contract"]["post_change_inspection"], "completed")
+            self.assertEqual(completion["verification"]["contract"]["approved_command_results"], ["completed"])
+            self.assertFalse(completion["verification"]["contract"]["command_success_is_test_pass"])
+
+    def test_implementation_that_uses_its_continuation_without_a_change_is_not_discussion(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            responses = [
+                {"message": {"role": "assistant", "content": "I will implement the requested change."}},
+                {"message": {"role": "assistant", "content": "I could not make the change."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Implement a small application change.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
+            self.assertEqual(completion["verification"]["status"], "not_implemented")
 
     def test_plan_only_request_does_not_force_a_tool_followup(self):
         with tempfile.TemporaryDirectory() as root:
