@@ -154,6 +154,7 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 ## 2026-11-01 provider request and returned usage attribution
 
 - Each runtime now attaches a monotonically increasing request index and emits provider/API route, selected model versus API model ID, stream/tool count, exact context/output/reasoning/keep-alive fields, runtime request options, and input-estimate method immediately before dispatch. llama.cpp also reports its already-loaded runtime context and reasoning mode when available. No request setting is modified.
+- The request evidence also includes non-option body fields that affect behavior (Ollama's optional `think` override and llama.cpp's `stream_options`), keeping their absence distinct from their presence.
 - The Ollama sidecar wrapper attributes provider-returned token and timing counters to that same request index. Mocked Ollama and llama.cpp coverage was added; it is queued and has not been run.
 
 ## 2026-11-01 request-only cancellation while awaiting headers

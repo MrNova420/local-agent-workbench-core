@@ -198,6 +198,7 @@ class LlamaCppRuntime:
               "reasoning_override": None, "reasoning_field_sent": False,
               "runtime_reasoning": status.get("reasoning"),
               "request_options": {"temperature": payload["temperature"], "max_tokens": payload["max_tokens"]},
+              "additional_fields": {"stream_options": payload["stream_options"]},
               "runtime_context": status["context"]})
         req = urllib.request.Request(self.server.base_url + "/v1/chat/completions", data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json", "Accept": "text/event-stream"}, method="POST")

@@ -52,6 +52,7 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     assert settings["stream"] is True
     assert settings["reasoning_field_sent"] is False
     assert settings["runtime_context"] == 32768
+    assert settings["additional_fields"] == {"stream_options": {"include_usage": True}}
     assert settings["max_output_tokens"] == 100
     assert settings["request_options"] == {"temperature": 0.1, "max_tokens": 100}
     assert [event["type"] for event in events].count("thinking") == 1
