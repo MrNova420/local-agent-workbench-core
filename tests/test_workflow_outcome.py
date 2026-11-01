@@ -1,4 +1,4 @@
-from desktop_engine import AgentEngine, ToolRegistry, Workspace, _implementation_evidence, _plan_requests_implementation, _verification_report, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _implementation_evidence, _plan_requests_implementation, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import initial_task_plan
 
 
@@ -104,6 +104,12 @@ def test_open_plan_requests_implementation_only_when_task_mode_is_not_plan_only(
     assert _plan_requests_implementation("auto", "agent", pending)
     assert _plan_requests_implementation("implement", "agent", pending)
     assert not _plan_requests_implementation("auto", "workbench", pending)
+
+
+def test_final_content_requires_user_visible_text_after_tool_work():
+    assert _assistant_has_final_content({"content": "The page is ready."})
+    assert not _assistant_has_final_content({"content": "  \n", "thinking": "Working through the result."})
+    assert not _assistant_has_final_content({"content": None})
 
 
 def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp_path):

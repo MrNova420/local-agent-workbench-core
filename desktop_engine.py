@@ -388,6 +388,11 @@ def _plan_requests_implementation(task_mode: str, plan_source: str, plan: list[d
     """An open agent plan drives Automatic continuation unless it is explicitly plan-only."""
     return task_mode not in {"discussion", "plan"} and plan_source == "agent" and _plan_has_open_work(plan)
 
+def _assistant_has_final_content(message: dict[str, Any]) -> bool:
+    """Only user-visible assistant content counts as a completed response."""
+    content = message.get("content")
+    return isinstance(content, str) and bool(content.strip())
+
 def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str, plan: list[dict[str, Any]],
                              project_changed: bool, command_side_effects_possible: bool,
                              mutation_attempted: bool = False) -> bool:
@@ -1604,9 +1609,11 @@ class AgentEngine:
                             "deferred_tool_names":list(self._deferred_tool_names)})
                 self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 self.state["request_index"] = request_index
-                result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
-                record_assistant_status(checkpoint,msg)
+                result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"]
                 calls=msg.get("tool_calls") or []
+                if calls or _assistant_has_final_content(msg) or (isinstance(msg.get("thinking"),str) and msg["thinking"].strip()):
+                    msgs.append({"role":"assistant",**msg})
+                record_assistant_status(checkpoint,msg)
                 assistant_tool_message={"role":"assistant",**msg}
                 batch_tool_messages=[]
                 if calls:
@@ -1620,6 +1627,7 @@ class AgentEngine:
                     finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
+                    missing_final_response = not _assistant_has_final_content(msg)
                     post_change_inspection=last_inspection_action_index>last_effect_action_index
                     implementation_requested = _implementation_evidence(
                         self.task_intent, self.state["registry"].task_mode, self.state["registry"].plan_source,
@@ -1630,9 +1638,12 @@ class AgentEngine:
                     plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
                     unfinished=_needs_implementation_continuation(implementation_requested,self.workspace.access,action_denied,completed_project_change,review_required,plan_remaining)
                     progress_signature=_continuation_progress_signature(checkpoint_state,plan if isinstance(plan,list) else [],verification_steps)
-                    if unfinished and progress_signature!=last_continuation_signature:
+                    if (unfinished or missing_final_response) and progress_signature!=last_continuation_signature:
                         last_continuation_signature=progress_signature
-                        if review_required:
+                        if missing_final_response and not unfinished:
+                            continuation="Return a concise user-visible response for the user. Summarize only work confirmed by saved tool results and state the terminal status or the remaining blocker. Do not start another operation unless the saved plan or evidence shows work remains."
+                            reason="model produced no user-visible final response"
+                        elif review_required:
                             continuation="A project-writing tool or approved command may have changed project state, but no later workspace inspection is recorded. Inspect the workspace after that action now using read_file, git_status, or git_diff as applicable. Identify changed files where the tools can observe them. Do not claim a command passed tests unless its output confirms that specific check. If effects cannot be determined, state that limitation."
                             reason="implementation action or command returned without a later workspace inspection"
                         elif plan_remaining:
@@ -1654,6 +1665,17 @@ class AgentEngine:
                         workflow_outcome="implementation_incomplete"
                         finish_task(checkpoint,"stopped",verification,blocker=blocker,outcome=workflow_outcome)
                         self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome})
+                        return msgs
+                    if missing_final_response:
+                        blocker="The model returned no user-visible final response after a follow-up request. Review the saved plan and completed operations, then resume if needed; completed operations are not replayed automatically."
+                        record_blocker(checkpoint,blocker)
+                        verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
+                            command_side_effects_possible,post_change_inspection)
+                        verification["status"]="response_missing"
+                        verification["incomplete_reason"]=blocker
+                        finish_task(checkpoint,"failed",verification,blocker=blocker,outcome="response_missing")
+                        self.event({"type":"error","error":blocker,"workflowOutcome":"response_missing",
+                                    "verification":verification,"elapsed":time.monotonic()-start})
                         return msgs
                     verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
                         command_side_effects_possible,post_change_inspection)

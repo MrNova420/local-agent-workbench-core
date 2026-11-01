@@ -17,6 +17,12 @@
 - An open plan-only checklist does not trigger implementation continuation. A structured write in Automatic mode still creates implementation evidence and activates review, even if the model had previously selected plan-only mode.
 - A new user follow-up retains the plan, decisions, and completed work but resets an earlier Automatic mode selection to `auto`; the engine can classify the follow-up afresh. This prevents a previous plan-only choice from suppressing later requested implementation.
 - Verification remains queued; these are source changes only.
+
+## 2026-11-01 Missing final response recovery (verification queued)
+
+- The engine now treats empty assistant content as incomplete after a tool-free model response. It requests a user-visible terminal summary and checks for observable progress; if the same state repeats, it fails with `response_missing`, preserving completed operations and verification instead of reporting generic success.
+- A blank assistant bubble is not added to the transcript. The complete response, blocker, and terminal status remain recoverable; this adds no overall deadline and does not change model settings.
+- Regression coverage is authored but not run.
 - Added helper, schema, and sidecar-persistence regressions. All tests remain queued and unrun.
 
 ## 2026-11-01 budget-safe checkpoint projection (verification queued)
