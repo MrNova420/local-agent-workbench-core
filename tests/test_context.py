@@ -163,9 +163,21 @@ class ContextTests(unittest.TestCase):
             engine.mcp_tools=[schema];engine.state['mcp_tools']=engine.mcp_tools
             base=[{'role':'system','content':'system'},{'role':'user','content':'build the project'}]
             result=engine._load_tools({'names':['mcp__build__check'],'limit':20},base)
-            self.assertIn('selected for the next request',result)
+            self.assertIn('mcp__build__check',result)
             self.assertIn('mcp__build__check',engine._selected_tool_names)
             self.assertIn('mcp__build__check',{t['function']['name'] for t in engine._tools_for_request(base)})
+    def test_tool_catalog_pages_to_the_available_response_budget_without_a_fixed_page_cap(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from desktop_engine import AgentEngine
+        with TemporaryDirectory() as directory:
+            engine=AgentEngine(Path(directory),context=8192,max_tokens=512)
+            engine.mcp_tools=[engine.state['registry']._schema(f'mcp__catalog__{i}', 'Distinct tool capability '+('description '*10), {'value':{'type':'string'}}, ['value']) for i in range(12)]
+            engine.state['mcp_tools']=engine.mcp_tools
+            base=[{'role':'system','content':'system'},{'role':'user','content':'discover tools'}]
+            page=json.loads(engine._load_tools({'query':'mcp__catalog__','offset':0},base,response_byte_budget=1500))
+            self.assertLess(len(page['schemas']),12)
+            self.assertIsNotNone(page['next_offset'])
     def test_budget_refuses_to_silently_lower_context(self):
         manager=ContextManager(context=4096,reserve=1024);huge=[{'role':'system','content':'s'},{'role':'user','content':'x'*50000}]
         with self.assertRaisesRegex(ValueError,'context was not reduced'):manager.compact(huge)

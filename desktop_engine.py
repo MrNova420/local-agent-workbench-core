@@ -499,7 +499,7 @@ class ToolRegistry:
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
           self._schema("git_log", "Show recent commit subjects for this project when it is the Git repository root", {"limit":{"type":"integer","minimum":1,"maximum":100}}, []),
-          self._schema("load_tools", "Discover the complete built-in and configured MCP tool catalog, or select tools by exact name to include their full schemas in the next model request. Choose a useful page size with limit and continue from next_offset. Selection does not execute tools or grant permissions; access and approval rules still apply.", {"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},"names":{"type":"array","items":{"type":"string"}}}, ["limit"]),
+          self._schema("load_tools", "Discover the complete built-in and configured MCP tool catalog, or select tools by exact name to include their full schemas in the next model request. Optionally choose a page size with limit; otherwise the host fits as many catalog entries as the current response budget allows. Continue from next_offset. Selection does not execute tools or grant permissions; access and approval rules still apply.", {"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},"names":{"type":"array","items":{"type":"string"}}}, []),
           self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode. For content larger than one model response, write an initial chunk and use append_file for ordered additional chunks.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("append_file", "Append UTF-8 text to an existing project file without resending its existing contents. Use ordered chunks for files larger than one model response; inspect the completed file. This appends only and cannot insert or overwrite. Subject to active access and approval settings.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
@@ -1477,14 +1477,14 @@ class AgentEngine:
         self._catalog_skill_names=[item["name"] for item in selected]
         self.state["deferred_tool_names"]=list(self._deferred_tool_names)
         return tools
-    def _load_tools(self,args:dict,base_messages:list[dict])->str:
+    def _load_tools(self,args:dict,base_messages:list[dict],response_byte_budget:int|None=None)->str:
         query=args.get("query","")
         offset=args.get("offset",0)
         limit=args.get("limit")
         requested=args.get("names",[])
         if not isinstance(query,str):return "Invalid query: expected text."
         if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
-        if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
+        if limit is not None and (not isinstance(limit,int) or isinstance(limit,bool) or limit<1):return "Invalid limit: expected a positive integer."
         if not isinstance(requested,list) or any(not isinstance(name,str) for name in requested):return "Invalid names: expected an array of exact tool names."
         catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
         by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
@@ -1498,7 +1498,18 @@ class AgentEngine:
         needle=query.casefold().strip()
         rows=[tool for tool in catalog if (not requested or tool.get("function",{}).get("name") in requested)
               and (not needle or needle in json.dumps(tool,ensure_ascii=False).casefold())]
-        page=rows[offset:offset+limit]
+        if limit is not None:
+            page=rows[offset:offset+limit]
+        elif response_byte_budget is None:
+            page=rows[offset:]
+        else:
+            page=[]
+            for row in rows[offset:]:
+                candidate=page+[row]
+                preview={"total_matches":len(rows),"offset":offset,"next_offset":offset+len(candidate),
+                         "selected_for_next_request":sorted(self._selected_tool_names),"schemas":candidate}
+                if page and len(json.dumps(preview,ensure_ascii=False).encode("utf8"))>max(256,response_byte_budget):break
+                page=candidate
         next_offset=offset+len(page)
         result={"total_matches":len(rows),"offset":offset,"next_offset":next_offset if next_offset<len(rows) else None,
                 "selected_for_next_request":sorted(self._selected_tool_names),"schemas":page}
@@ -1703,7 +1714,9 @@ class AgentEngine:
                             registry.event=lambda event,op=operation_id:self.event({**event,"operationId":op})
                             self.event({"type":"tool_start","operationId":operation_id,"toolCallId":tool_call_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
                             try:
-                                if name=="load_tools":out=self._load_tools(args,base_request)
+                                if name=="load_tools":
+                                    discovery_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
+                                    out=self._load_tools(args,base_request,discovery_budget)
                                 elif name.startswith("mcp__") and self.mcp_call:
                                     if not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)

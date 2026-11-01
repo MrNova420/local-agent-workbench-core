@@ -29,7 +29,7 @@ Project-scoped file operations and approval states are application-level control
 
 Unstable beta development dependency. The desktop repository pins the compatible engine commit in `core-revision.txt`. Do not update that pin without running the app, sidecar, and engine source gates.
 
-The current in-progress source adds context-adaptive per-request tool schemas. `load_tools` pages the project-visible catalog and can include exact built-in or MCP schemas in the next request. This makes schemas discoverable under smaller contexts; it does not guarantee a model can complete every task within a 4K–8K request budget. If required schemas plus the configured output reserve do not fit, the engine reports the constraint without changing either setting. Regression tests are queued and this source has not been verified.
+The current in-progress source adds context-adaptive per-request tool schemas. `load_tools` pages the project-visible catalog to the available response budget (or a caller-selected page size) and can include exact built-in or MCP schemas in the next request. This makes schemas discoverable under smaller contexts; it does not guarantee a model can complete every task within a 4K–8K request budget. If required schemas plus the configured output reserve do not fit, the engine reports the constraint without changing either setting. Regression tests are queued and this source has not been verified.
 
 ## License
 
