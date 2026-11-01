@@ -46,7 +46,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "When the host provides ask_user, use it only when a missing requirement or user choice would materially change the implementation; keep working from reasonable defaults otherwise. It is for task clarification, never for permission to run a file change or command. "
         "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. "
         "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
-        "Do not claim that an action ran unless its tool result confirms it. Put file contents in the write_file tool arguments, not in a chat message. "
+        "Do not claim that an action ran unless its tool result confirms it. Put file contents in structured file-tool arguments, not in a chat message. For files too large for one response, create them with write_file and add ordered chunks using append_file; inspect the finished file. "
         "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
         "When list_files or search_files says more results are available, continue with its exact next offset when needed; do not assume the first page is complete. "
         "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
@@ -326,7 +326,7 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "failed"
     if name == "read_file" and folded.startswith(("invalid start_line:", "invalid end_line:")):
         return "failed"
-    if name in {"list_files", "search_files", "git_status", "git_diff", "write_file", "edit_file"} and folded.startswith("invalid "):
+    if name in {"list_files", "search_files", "git_status", "git_diff", "write_file", "append_file", "edit_file"} and folded.startswith("invalid "):
         return "failed"
     if folded.startswith(("git diff unavailable:", "no git repository rooted", "requested lines ")):
         return "failed"
@@ -336,6 +336,8 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "completed" if text.startswith("Updated: ") else "failed"
     if name == "write_file":
         return "completed" if text.startswith("Wrote ") else "failed"
+    if name == "append_file":
+        return "completed" if text.startswith(("Appended ", "No change: append content is empty.")) else "failed"
     if name == "edit_file":
         return "completed" if text.startswith("Edited ") else "failed"
     if name in {"run_command", "run_shell"}:
@@ -464,7 +466,8 @@ class ToolRegistry:
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
           self._schema("git_log", "Show recent commit subjects for this project when it is the Git repository root", {"limit":{"type":"integer","minimum":1,"maximum":100}}, []),
-          self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
+          self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode. For content larger than one model response, write an initial chunk and use append_file for ordered additional chunks.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
+          self._schema("append_file", "Append UTF-8 text to an existing project file without resending its existing contents. Use ordered chunks for files larger than one model response; inspect the completed file. This appends only and cannot insert or overwrite. Subject to active access and approval settings.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
           self._schema("apply_patch", "Apply a unified diff in the active workspace, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
           self._schema("run_command", "Run an argv command in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. The exact command ['pwd'] returns the selected project root. Other commands launch directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1}}, ["argv"]),
@@ -656,7 +659,7 @@ class ToolRegistry:
             if has_more:result+=f"\n\nMore results are available. Next offset {args.get('offset',0)+len(hits)}; continue with limit {limit}."
             if capped:result+=f"\n\n[Search scan capped at {scanned} files or {bytes_read:,} bytes; results may be incomplete. Narrow the query or project path.]"
             return result
-        if name in {"write_file", "edit_file"}:
+        if name in {"write_file", "append_file", "edit_file"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
             if self.workspace.access == "ask" and not policy_approved and not self.approval(name,args): return "Denied by user."
             path=self.workspace.resolve(args["path"])
@@ -665,6 +668,13 @@ class ToolRegistry:
                 if not isinstance(content,str):return "Invalid content: expected text."
                 self._atomic_write(path,content.encode("utf-8"))
                 return "Wrote " + args["path"]
+            if name == "append_file":
+                content=args["content"]
+                if not isinstance(content,str):return "Invalid content: expected text."
+                if not path.is_file():return f"Cannot append to {args['path']}: the project file does not exist. Create it with write_file first."
+                if not content:return "No change: append content is empty."
+                self._atomic_append(path,content.encode("utf-8"))
+                return "Appended " + args["path"]
             old_text=args.get("old_text");new_text=args.get("new_text");replace_all=args.get("replace_all",False)
             if not isinstance(old_text,str) or not old_text:return "Invalid old_text: provide a non-empty exact string to replace."
             if not isinstance(new_text,str):return "Invalid new_text: expected text."
@@ -728,11 +738,44 @@ class ToolRegistry:
         try:
             with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
                 temp_path=Path(handle.name);handle.write(data);handle.flush();os.fsync(handle.fileno())
-            os.replace(temp_path,path)
+            ToolRegistry._replace_with_retry(temp_path,path)
         finally:
             if temp_path is not None:
                 try:temp_path.unlink(missing_ok=True)
                 except OSError:pass
+    @staticmethod
+    def _atomic_append(path:Path,data:bytes)->None:
+        before=path.stat()
+        temp_path=None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
+                temp_path=Path(handle.name)
+                with path.open("rb") as source:
+                    while True:
+                        chunk=source.read(1024*1024)
+                        if not chunk:break
+                        handle.write(chunk)
+                after=path.stat()
+                if (before.st_size,before.st_mtime_ns,getattr(before,"st_ino",None)) != (after.st_size,after.st_mtime_ns,getattr(after,"st_ino",None)):
+                    raise RuntimeError(f"{path.name} changed while preparing the append; reread it before retrying.")
+                handle.write(data);handle.flush();os.fsync(handle.fileno())
+            ToolRegistry._replace_with_retry(temp_path,path)
+        finally:
+            if temp_path is not None:
+                try:temp_path.unlink(missing_ok=True)
+                except OSError:pass
+    @staticmethod
+    def _replace_with_retry(source:Path,destination:Path)->None:
+        """Retry transient Windows sharing violations without hiding permanent failures."""
+        delay=0.05
+        for attempt in range(7):
+            try:
+                os.replace(source,destination)
+                return
+            except PermissionError:
+                if attempt==6:raise
+                time.sleep(delay)
+                delay=min(delay*2,0.4)
     def _patch(self, patch: str) -> str:
         import os,re,tempfile
         lines=patch.splitlines(keepends=True);i=0;plans=[];seen=set()
@@ -1238,8 +1281,8 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None):
-        self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False):
+        self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
@@ -1266,7 +1309,7 @@ class AgentEngine:
         plan=registry.plan
         if not plan or registry.plan_source!="workbench":return
         inspect_tools={"list_files","search_files","read_file","git_status","git_diff","git_log"}
-        write_tools={"write_file","edit_file","apply_patch"}
+        write_tools={"write_file","append_file","edit_file","apply_patch"}
         changed=False
         for item in plan:
             if not isinstance(item,dict):continue
@@ -1323,12 +1366,16 @@ class AgentEngine:
         if self.approval_mode=="per-task" and self.approved_task:
             record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"covered-by-prior-task-approval","mode":"per-task"})
             return True
+        if self.approval_mode=="per-session" and self.approved_session:
+            record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"covered-by-prior-session-approval","mode":"per-session"})
+            return True
         ok=self.approve(name,args)
         if self.cancel_event.is_set():
             record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"cancelled","mode":self.approval_mode})
             raise RequestCancelled("Cancelled while waiting for approval")
         record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"approved" if ok else "denied","mode":self.approval_mode})
         if ok and self.approval_mode=="per-task":self.approved_task=True
+        if ok and self.approval_mode=="per-session":self.approved_session=True
         return ok
     def cancel(self):self.cancel_event.set();self.runtime.cancel()
     def finish_after_operation(self):self.stop_after_operation.set()
@@ -1557,7 +1604,7 @@ class AgentEngine:
                                 else:out=f"Tool error: {type(exc).__name__}: {exc}"
                             finally:registry.event=previous_event
                         affected=[]
-                        if name in {"read_file","write_file","edit_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
+                        if name in {"read_file","write_file","append_file","edit_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
                         elif name=="apply_patch":
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
                         status = _tool_activity_status(name, str(out))
@@ -1565,7 +1612,7 @@ class AgentEngine:
                         if permission_decision(name,args,self.permission_rules)=="deny":
                             record_decision(checkpoint,{"kind":"permission_rule","tool":name,"decision":"deny"})
                         if status=="denied":action_denied=True
-                        if name in {"write_file","edit_file","apply_patch"} and status=="completed":
+                        if name in {"write_file","append_file","edit_file","apply_patch"} and status=="completed":
                             completed_project_change=True
                             last_effect_action_index=tool_action_index
                         if name in {"run_command","run_shell"} and implementation_requested and status not in {"denied","blocked"}:

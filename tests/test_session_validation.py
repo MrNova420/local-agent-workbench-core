@@ -32,6 +32,20 @@ class SessionValidationTests(unittest.TestCase):
             self.assertEqual(loaded["reasoning"], "high")
             self.assertEqual(loaded["max_tokens"], 1000000)
 
+    def test_saved_chat_session_approval_mode_and_grant_round_trip(self):
+        from sessions import SessionStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "project"
+            workspace.mkdir()
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(str(workspace), "model-a:latest", 4096)
+            state.update(approval_mode="per-session", session_approval_granted=True)
+            store.save(state)
+            loaded = store.load(state["session_id"])
+            self.assertEqual(loaded["approval_mode"], "per-session")
+            self.assertTrue(loaded["session_approval_granted"])
+
     def test_load_rejects_malformed_message_history(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SessionStore(Path(directory) / "sessions")

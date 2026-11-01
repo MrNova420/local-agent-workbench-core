@@ -83,7 +83,7 @@ def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp
     names = {schema["function"]["name"] for schema in registry.schemas}
 
     assert {"list_files", "search_files", "read_file", "git_diff", "update_plan"} <= names
-    assert not {"write_file", "edit_file", "apply_patch", "run_command", "run_shell"} & names
+    assert not {"write_file", "append_file", "edit_file", "apply_patch", "run_command", "run_shell"} & names
 
 
 def test_optional_ask_user_tool_is_available_in_read_only_runs_only_when_host_supports_it(tmp_path):

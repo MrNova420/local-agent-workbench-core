@@ -75,3 +75,24 @@ def test_hard_deny_overrides_auto_approval_and_rule_ask_still_opens_prompt(tmp_p
     assert asked._approval("run_command", {"argv": ["python", "-V"]}) is True
     assert len(prompts) == 1
 
+
+def test_session_approval_carries_forward_but_explicit_ask_and_deny_rules_override(tmp_path):
+    from desktop_engine import AgentEngine
+
+    calls = []
+    trusted = AgentEngine(tmp_path, approval_mode="per-session", session_approval_granted=True,
+                          approve=lambda *args: calls.append(args) or True)
+    assert trusted._approval("write_file", {"path": "src/new.py"}) is True
+    assert calls == []
+
+    denied = AgentEngine(tmp_path, approval_mode="per-session", session_approval_granted=True,
+                         approve=lambda *args: calls.append(args) or True,
+                         permission_rules=[{"tool": "write_file", "decision": "deny"}])
+    assert denied._approval("write_file", {"path": "src/new.py"}) is False
+
+    asked = AgentEngine(tmp_path, approval_mode="per-session", session_approval_granted=True,
+                        approve=lambda *args: calls.append(args) or True,
+                        permission_rules=[{"tool": "write_file", "decision": "ask"}])
+    assert asked._approval("write_file", {"path": "src/new.py"}) is True
+    assert len(calls) == 1
+

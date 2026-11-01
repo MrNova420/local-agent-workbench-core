@@ -159,7 +159,7 @@ def record_operation(checkpoint: dict[str, Any], event: dict[str, Any]) -> None:
     )
     changed = checkpoint.setdefault("changed_files", [])
     for path in row["affected_files"]:
-        if path and path not in changed and row["name"] in {"write_file", "edit_file", "apply_patch"} and row["status"] == "completed":
+        if path and path not in changed and row["name"] in {"write_file", "append_file", "edit_file", "apply_patch"} and row["status"] == "completed":
             changed.append(path)
     checkpoint["updated_at"] = time.time()
     checkpoint["next_action"] = "Continue from the saved plan and inspect the completed operation result before retrying or changing files."

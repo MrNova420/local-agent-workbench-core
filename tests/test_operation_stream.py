@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import unittest
@@ -7,6 +8,10 @@ from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace, _t
 
 
 class OperationStreamTests(unittest.TestCase):
+    def test_append_file_result_has_truthful_activity_status(self):
+        self.assertEqual(_tool_activity_status("append_file", "Appended src/generated.ts"), "completed")
+        self.assertEqual(_tool_activity_status("append_file", "Cannot append to missing.ts: no file"), "failed")
+
     def test_cancelled_or_timed_out_command_is_marked_uncertain_about_partial_effects(self):
         self.assertEqual(_tool_activity_status("run_command", "output\n[command cancelled by user]"), "uncertain")
         self.assertEqual(_tool_activity_status("run_shell", "partial output\n[command timed out after 30s]"), "uncertain")
@@ -42,6 +47,48 @@ class OperationStreamTests(unittest.TestCase):
 
         self.assertEqual(event["status"], "failed")
         self.assertIn("Tool error: OSError", event["result"])
+
+    def test_append_file_builds_large_unicode_files_in_multiple_atomic_chunks(self):
+        with tempfile.TemporaryDirectory() as root:
+            registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
+            self.assertIn("write_file", {row["function"]["name"] for row in registry.schemas})
+            self.assertIn("append_file", {row["function"]["name"] for row in registry.schemas})
+            self.assertEqual(registry.run("write_file", {"path": "large.txt", "content": "start\n"}), "Wrote large.txt")
+            self.assertEqual(registry.run("append_file", {"path": "large.txt", "content": "雪\n" * 12000}), "Appended large.txt")
+            self.assertEqual(Path(root, "large.txt").read_text(encoding="utf-8"), "start\n" + "雪\n" * 12000)
+
+    def test_atomic_file_replace_retries_transient_windows_sharing_violation(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "large.txt")
+            path.write_text("before", encoding="utf-8")
+            registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
+            real_replace = os.replace
+            attempts = []
+
+            def replace_with_one_transient_lock(source, destination):
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise PermissionError("temporary Windows sharing violation")
+                return real_replace(source, destination)
+
+            with patch("desktop_engine.os.replace", side_effect=replace_with_one_transient_lock):
+                self.assertEqual(registry.run("append_file", {"path": "large.txt", "content": "after"}), "Appended large.txt")
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(path.read_text(encoding="utf-8"), "beforeafter")
+
+    def test_append_file_requires_an_existing_project_file_and_respects_access(self):
+        with tempfile.TemporaryDirectory() as root:
+            editable = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
+            self.assertIn("does not exist", editable.run("append_file", {"path": "missing.txt", "content": "x"}))
+            self.assertFalse(Path(root, "missing.txt").exists())
+            Path(root, "existing.txt").write_text("kept", encoding="utf-8")
+            ask = ToolRegistry(Workspace(root, "ask"), lambda *_: False)
+            self.assertEqual(ask.run("append_file", {"path": "existing.txt", "content": "x"}), "Denied by user.")
+            self.assertEqual(Path(root, "existing.txt").read_text(encoding="utf-8"), "kept")
+            readonly = ToolRegistry(Workspace(root, "plan"), lambda *_: True)
+            self.assertEqual(readonly.run("append_file", {"path": "missing.txt", "content": "x"}), "Blocked: project is in read-only plan mode.")
 
     def test_error_like_file_contents_remain_completed(self):
         event = self._run_one_tool("read_file", {"path": "x.txt"}, lambda *_: "Invalid unified diff is an example")
