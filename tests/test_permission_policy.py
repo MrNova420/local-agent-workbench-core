@@ -12,6 +12,10 @@ def test_rule_validation_rejects_unknown_fields_and_project_escape_patterns():
         validate_permission_rules([{"tool": "read_file", "decision": "allow", "path_glob": r"..\secrets\**"}])
     with pytest.raises(ValueError, match="project-relative"):
         validate_permission_rules([{"tool": "read_file", "decision": "deny", "path_glob": r"C:\secrets\**"}])
+    with pytest.raises(ValueError, match="project-relative"):
+        validate_permission_rules([{"tool": "read_file", "decision": "deny", "path_glob": "C:secrets/**"}])
+    with pytest.raises(ValueError, match="decision"):
+        validate_permission_rules([{"tool": "read_file", "decision": []}])
 
 
 def test_hard_deny_wins_even_when_an_allow_rule_matches():

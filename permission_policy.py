@@ -24,7 +24,7 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
         decision = item.get("decision")
         if not isinstance(tool, str) or not tool.strip():
             raise ValueError(f"Permission rule {index + 1} needs a tool name.")
-        if decision not in DECISIONS:
+        if not isinstance(decision, str) or decision not in DECISIONS:
             raise ValueError(f"Permission rule {index + 1} decision must be allow, ask, or deny.")
         rule: dict[str, Any] = {"tool": tool.strip(), "decision": decision}
         path_glob = item.get("path_glob")
@@ -33,7 +33,7 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
             posix_glob = PurePosixPath(normalized_glob)
             windows_glob = PureWindowsPath(normalized_glob)
             if (not normalized_glob or posix_glob.is_absolute() or windows_glob.is_absolute()
-                    or ".." in posix_glob.parts or (posix_glob.parts and posix_glob.parts[0].endswith(":"))):
+                    or windows_glob.drive or ".." in posix_glob.parts):
                 raise ValueError(f"Permission rule {index + 1} path_glob must be a project-relative pattern.")
             rule["path_glob"] = normalized_glob
         command_prefix = item.get("command_prefix")
