@@ -77,6 +77,24 @@ def test_slot_metrics_expose_token_counts_without_prompt_text(tmp_path):
     assert "must not leak" not in json.dumps(metrics)
 
 
+def test_reasoning_phase_transitions_to_generation_only_when_user_facing_text_arrives():
+    chunks = [
+        {"choices": [{"delta": {"reasoning_content": "considering"}}]},
+        {"choices": [{"delta": {"content": "answer"}}]},
+    ]
+    server = Mock()
+    server.status.return_value = {"running": True, "context": 4096}
+    server.base_url = "http://127.0.0.1:11436"
+    runtime = LlamaCppRuntime(server)
+    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 4096, "max_tokens": 128,
+             "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
+    events = []
+    with patch("llama_cpp_runtime.open_http_stream", return_value=FakeSSE(chunks)):
+        runtime.stream(state, [], threading.Event(), events.append)
+
+    assert [event["phase"] for event in events if event["type"] == "phase"] == ["reasoning", "generating"]
+
+
 def test_server_refuses_existing_external_endpoint_and_never_claims_ownership(tmp_path):
     server = LlamaCppServer(tmp_path)
     binary = tmp_path / "llama-server.exe"; binary.write_bytes(b"test")

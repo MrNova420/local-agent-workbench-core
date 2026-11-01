@@ -203,7 +203,7 @@ class LlamaCppRuntime:
                                      headers={"Content-Type": "application/json", "Accept": "text/event-stream"}, method="POST")
         result: dict[str, Any] = {"message": {"role": "assistant", "content": ""}}
         calls: dict[int, dict[str, Any]] = {}
-        started, first_output = time.monotonic(), True
+        started, first_output, user_facing_output = time.monotonic(), True, False
         done_marker_received = False
         dispatch_time: dict[str, float | None] = {"value": None}
         request_index = state.get("request_index")
@@ -268,6 +268,11 @@ class LlamaCppRuntime:
                     thinking = delta.get("reasoning_content") or ""
                     if first_output and (text or thinking or delta.get("tool_calls")):
                         first_output = False
+                        phase = "generating" if text or delta.get("tool_calls") else "reasoning"
+                        user_facing_output = phase == "generating"
+                        emit({"type": "phase", "phase": phase, "elapsed": time.monotonic() - started})
+                    elif not user_facing_output and (text or delta.get("tool_calls")):
+                        user_facing_output = True
                         emit({"type": "phase", "phase": "generating", "elapsed": time.monotonic() - started})
                     if thinking:
                         result["message"]["thinking"] = result["message"].get("thinking", "") + thinking
