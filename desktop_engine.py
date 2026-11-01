@@ -12,6 +12,7 @@ from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import checkpoint_omissions, current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
+from permission_policy import permission_decision, validate_permission_rules
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -40,6 +41,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         + "The selected model controls its own reasoning default.\n\n"
         "Execution rule: when the user asks you to build, create, implement, fix, or change project files, planning is an intermediate step. Continue directly to structured tools in the same task and verify the result. Do not stop after announcing what you are about to do. Only provide a plan without edits when the user explicitly asks for plan-only/review-only work or access is read-only.\n\n"
         "Tool and approval protocol: perform project operations by calling the structured tools provided to you. Do not narrate an intended tool call and then stop. "
+        "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. "
         "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in the write_file tool arguments, not in a chat message. "
         "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
@@ -431,7 +433,7 @@ class Workspace:
 
 class ToolRegistry:
     """Explicit project tools; approved shell commands run as the host user without OS sandboxing."""
-    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None):
+    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
@@ -440,6 +442,7 @@ class ToolRegistry:
         self.skills_enabled=bool(skills_enabled)
         self.skill_sources=tuple(("project", "user") if skill_sources is None else skill_sources)
         self.operation_result_lookup=operation_result_lookup
+        self.permission_rules=validate_permission_rules(permission_rules or [])
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [
           self._schema("list_files", "List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; continue with the returned offset and limit when more results exist.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
@@ -466,6 +469,13 @@ class ToolRegistry:
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
         return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required,"additionalProperties":False}}}
     def run(self, name: str, args: dict) -> str:
+        policy=permission_decision(name,args,self.permission_rules)
+        policy_approved=False
+        if policy in {"allow","ask"}:
+            if not self.approval(name,args):return "Denied by user or permission policy."
+            policy_approved=True
+        elif policy=="deny":
+            return "Denied by user: a persistent deny permission rule blocks this action."
         if name == "read_operation_result":
             operation_id=str(args.get("operation_id", "")).strip()
             if not operation_id:return "Invalid operation_id: provide the exact saved operation ID from the task checkpoint."
@@ -570,7 +580,7 @@ class ToolRegistry:
             return result
         if name in {"write_file", "edit_file"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
-            if self.workspace.access == "ask" and not self.approval(name,args): return "Denied by user."
+            if self.workspace.access == "ask" and not policy_approved and not self.approval(name,args): return "Denied by user."
             path=self.workspace.resolve(args["path"])
             if name == "write_file":
                 content=args["content"]
@@ -605,11 +615,11 @@ class ToolRegistry:
         if name in {"apply_patch", "run_command", "run_shell"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
             if name == "apply_patch":
-                if self.workspace.access == "ask" and not self.approval(name,args): return "Denied by user."
+                if self.workspace.access == "ask" and not policy_approved and not self.approval(name,args): return "Denied by user."
                 self._patch_approved=True
                 try:return self._patch(args["patch"])
                 finally:self._patch_approved=False
-            if not self.approval(name,args): return "Denied by user."
+            if not policy_approved and not self.approval(name,args): return "Denied by user."
             return self._command(args,shell=name=="run_shell")
         return f"Unknown tool: {name}"
     @staticmethod
@@ -1091,7 +1101,7 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
@@ -1105,7 +1115,8 @@ class AgentEngine:
                 saved=operation_result_lookup(operation_id)
                 if saved is not None:return saved
             return self.operation_results.get(operation_id)
-        registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result)
+        self.permission_rules=validate_permission_rules(permission_rules or [])
+        registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result,permission_rules=self.permission_rules)
         checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
         if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
@@ -1139,6 +1150,20 @@ class AgentEngine:
             self.event({"type":"plan","items":copy.deepcopy(plan),"acceptanceCriteria":copy.deepcopy(current.get("acceptance_criteria",[])),"source":"workbench"})
     def _approval(self,name:str,args:Any)->bool:
         checkpoint=self.state["task_checkpoint"]
+        policy=permission_decision(name,args,self.permission_rules)
+        if policy=="deny":
+            record_decision(checkpoint,{"kind":"permission_rule","tool":name,"decision":"deny"})
+            return False
+        if policy=="allow":
+            record_decision(checkpoint,{"kind":"permission_rule","tool":name,"decision":"allow"})
+            return True
+        if policy=="ask":
+            ok=self.approve(name,args)
+            if self.cancel_event.is_set():
+                record_decision(checkpoint,{"kind":"permission_rule","tool":name,"decision":"cancelled","rule":"ask"})
+                raise RequestCancelled("Cancelled while waiting for permission-rule approval")
+            record_decision(checkpoint,{"kind":"permission_rule","tool":name,"decision":"approved" if ok else "denied","rule":"ask"})
+            return ok
         if self.approval_mode=="auto":
             record_decision(checkpoint,{"kind":"tool_approval","tool":name,"decision":"auto-approved","mode":"auto"})
             return True
@@ -1332,6 +1357,8 @@ class AgentEngine:
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
                         status = _tool_activity_status(name, str(out))
                         tool_action_index+=1
+                        if permission_decision(name,args,self.permission_rules)=="deny":
+                            record_decision(checkpoint,{"kind":"permission_rule","tool":name,"decision":"deny"})
                         if status=="denied":action_denied=True
                         if name in {"write_file","edit_file","apply_patch"} and status=="completed":
                             completed_project_change=True

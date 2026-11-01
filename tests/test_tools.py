@@ -122,6 +122,32 @@ class ToolTests(unittest.TestCase):
    approvals=[];tools=ToolRegistry(Workspace(t,'edit'),lambda *args:approvals.append(args) or False)
    self.assertEqual(tools.run('write_file',{'path':'x','content':'draft'}),'Wrote x')
    self.assertEqual(approvals,[])
+ def test_persistent_deny_blocks_writes_even_in_edit_mode_without_prompting(self):
+  with tempfile.TemporaryDirectory() as t:
+   prompts=[]
+   tools=ToolRegistry(Workspace(t,'edit'),lambda *args:prompts.append(args) or True,
+                      permission_rules=[{'tool':'write_file','decision':'deny'}])
+   self.assertIn('persistent deny',tools.run('write_file',{'path':'x','content':'no'}).casefold())
+   self.assertFalse((Path(t)/'x').exists())
+   self.assertEqual(prompts,[])
+ def test_persistent_ask_forces_a_prompt_even_when_file_access_is_edit(self):
+  with tempfile.TemporaryDirectory() as t:
+   path=Path(t)/'x';prompts=[]
+   tools=ToolRegistry(Workspace(t,'edit'),lambda *args:prompts.append(args) or False,
+                      permission_rules=[{'tool':'write_file','decision':'ask'}])
+   self.assertIn('denied',tools.run('write_file',{'path':'x','content':'no'}).casefold())
+   self.assertFalse(path.exists())
+   self.assertEqual([row[0] for row in prompts],['write_file'])
+ def test_scoped_allow_bypasses_normal_ask_mode_only_for_matching_path(self):
+  from desktop_engine import AgentEngine
+  with tempfile.TemporaryDirectory() as t:
+   prompts=[]
+   engine=AgentEngine(Path(t),access='ask',approve=lambda *args:prompts.append(args) or False,
+                      permission_rules=[{'tool':'write_file','decision':'allow','path_glob':'generated/**'}])
+   tools=engine.state['registry']
+   self.assertEqual(tools.run('write_file',{'path':'generated/output.txt','content':'yes'}),'Wrote generated/output.txt')
+   self.assertEqual(tools.run('write_file',{'path':'src/output.txt','content':'no'}),'Denied by user.')
+   self.assertEqual([row[0] for row in prompts],['write_file'])
  def test_edit_file_replaces_one_exact_match_without_rewriting_unrelated_text(self):
   with tempfile.TemporaryDirectory() as t:
    path=Path(t)/'app.py';path.write_text('alpha = 1\nbeta = 2\n',encoding='utf-8')

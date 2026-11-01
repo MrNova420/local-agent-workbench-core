@@ -2,6 +2,7 @@
 
 ## 2026-11-01 unpublished continuity source work
 
+- Added an app-wide persistent permission-rule evaluator for exact/wildcard tools, project-relative path globs, and command prefixes. Deny wins over allow and run auto-approval; ask rules force the ordinary approval UI; absent rules preserve existing behavior. Rules are captured with the run and checkpointed; the paired Electron source adds a Settings editor. Regression cases are queued and unrun; Windows process containment remains a separate pending gap.
 - Seeded implementation checklists now advance from host-observed reads, writes, commands, and post-change inspection. Model-authored plans take ownership when `update_plan` is called and are never overwritten by automatic progress. Acceptance criteria remain attached to host progress events. Queued regression covers progression and agent-plan ownership; it has not been run.
 
 - The inference copy of an oversized task checkpoint is now budgeted independently from the configured model context. It preserves the full saved checkpoint, active goal/plan/settings, newest operation references and recent updates, and reports each omitted history category. The compaction event exposes these counts to the desktop so the user can see what was summarized. Context/output/reasoning settings are unchanged. Regressions are queued and unrun.
