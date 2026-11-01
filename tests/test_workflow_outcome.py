@@ -146,6 +146,23 @@ def test_replanning_without_new_evidence_does_not_count_as_progress():
         read, [])
 
 
+def test_real_plan_expansion_and_phase_changes_count_as_progress():
+    original = {"task_mode": "plan", "plan_source": "agent", "plan": [
+        {"title": "Inspect project", "phase": "inspect", "status": "pending"},
+    ]}
+    expanded = {**original, "plan": [*original["plan"],
+        {"title": "Build feature", "phase": "implementation", "status": "pending"}]}
+    advanced = {**original, "plan": [
+        {"title": "Inspect project", "phase": "inspect", "status": "completed"},
+    ], "acceptance_criteria": ["The feature works"]}
+
+    assert _continuation_progress_signature(original, []) == _continuation_progress_signature(
+        {**original, "operations": [{"name": "update_plan", "status": "completed",
+                                      "arguments_fingerprint": "same", "result_fingerprint": "same"}]}, [])
+    assert _continuation_progress_signature(original, []) != _continuation_progress_signature(expanded, [])
+    assert _continuation_progress_signature(original, []) != _continuation_progress_signature(advanced, [])
+
+
 def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp_path):
     registry = ToolRegistry(Workspace(tmp_path, "plan"), lambda *_: False)
     names = {schema["function"]["name"] for schema in registry.schemas}

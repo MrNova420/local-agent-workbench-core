@@ -425,9 +425,16 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
                    ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         for item in operations if isinstance(item, dict) and item.get("name") != "update_plan"
     }) if isinstance(operations, list) else []
+    plan = task.get("plan", [])
+    plan_state = [
+        {key: copy.deepcopy(item[key]) for key in ("id", "phase", "group", "title", "text", "status", "depends_on") if key in item}
+        for item in plan if isinstance(item, dict)
+    ] if isinstance(plan, list) else []
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
         "plan_source": task.get("plan_source", "workbench"),
+        "plan": plan_state,
+        "acceptance_criteria": task.get("acceptance_criteria", []),
         "operations": operation_state,
         "verification": verification_steps,
         "changed_files": task.get("changed_files", []),
