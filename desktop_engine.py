@@ -404,10 +404,10 @@ def _continuation_progress_signature(task: dict[str, Any], plan: list[dict[str, 
     return json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 def _needs_implementation_continuation(implementation_requested:bool,access:str,action_denied:bool,
-                                       observable_effect:bool,review_required:bool,plan_remaining:bool)->bool:
+                                       project_change_observed:bool,review_required:bool,plan_remaining:bool)->bool:
     """Decide from structured work evidence only; assistant prose cannot mark a task done or pending."""
     return bool(implementation_requested and access!="plan" and not action_denied
-                and (not observable_effect or review_required or plan_remaining))
+                and (not project_change_observed or review_required or plan_remaining))
 
 def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool,
                          command_side_effects_possible: bool = False, post_effect_inspection: bool = False) -> dict[str, Any]:
@@ -1587,8 +1587,7 @@ class AgentEngine:
                     review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
                     plan=checkpoint_state.get("plan",[])
                     plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
-                    observable_effect=completed_project_change or command_side_effects_possible
-                    unfinished=_needs_implementation_continuation(implementation_requested,self.workspace.access,action_denied,observable_effect,review_required,plan_remaining)
+                    unfinished=_needs_implementation_continuation(implementation_requested,self.workspace.access,action_denied,completed_project_change,review_required,plan_remaining)
                     progress_signature=_continuation_progress_signature(checkpoint_state,plan if isinstance(plan,list) else [],verification_steps)
                     if unfinished and progress_signature!=last_continuation_signature:
                         last_continuation_signature=progress_signature
