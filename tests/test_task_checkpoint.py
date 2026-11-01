@@ -191,6 +191,22 @@ def test_agent_can_expand_plan_without_replacing_existing_independent_workstream
     assert registry.plan[-1]["group"] == "Accessibility"
 
 
+def test_task_checkpoint_reader_recovers_complete_plan_and_paged_omitted_details(tmp_path):
+    from desktop_engine import ToolRegistry, Workspace
+
+    checkpoint = begin_task(None, prompt="Build the project", turn_id="turn-1", workspace=str(tmp_path), settings={})
+    registry = ToolRegistry(Workspace(tmp_path, "plan"), lambda *_args: True, task_checkpoint=checkpoint)
+    checkpoint["current"]["plan"] = [{"title": f"Workstream {index}", "status": "completed", "group": "Backend"} for index in range(80)]
+
+    first = registry.run("read_task_checkpoint", {"section": "plan", "offset": 0, "length": 180})
+    later = registry.run("read_task_checkpoint", {"section": "plan", "offset": 180, "length": 240})
+
+    assert '"Workstream 0"' in first
+    assert "Continue with section=plan, offset=180" in first
+    assert '"Workstream' in later
+    assert any(row["function"]["name"] == "read_task_checkpoint" for row in registry.schemas)
+
+
 def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_left_alone(tmp_path):
     from desktop_engine import AgentEngine
 

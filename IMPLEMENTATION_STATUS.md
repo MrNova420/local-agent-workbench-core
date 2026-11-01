@@ -219,3 +219,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Ollama request construction now prevents generic `runtime_options` from overriding the selected temperature, context (`num_ctx`), or output cap (`num_predict`). Non-conflicting runtime options still pass through.
 - Any conflicting persisted option values are recorded in request provenance as ignored overrides so the user can see why the exact payload differs from stale configuration. A queued request-payload regression covers context/output/temperature collisions and safe pass-through of `num_thread`; no tests or model requests were run.
 - Added queued validation coverage for no implicit timeout, large explicit values, and invalid values. No command or long-running task was launched.
+
+## 2026-11-01 continuity retrieval and responsive project reads
+
+- Added `read_task_checkpoint`, a read-only paged tool for the complete saved current plan, decisions, user updates, operation references, changed files, verification, and prior task history. The model is instructed to retrieve checkpoint sections when compaction reports omissions; canonical checkpoint content remains complete on disk.
+- Project listing, text search, file reads, and relevance retrieval now observe the shared cancellation event. Text search reads lines incrementally instead of materializing each full file, and cancellation produces an explicit cancelled result; already active reads can finish cooperatively without stopping Ollama.
+- Added queued regressions for checkpoint paging and cancellation during read operations. They have not been run. The app still requires an updated engine pin before this revision is consumable.

@@ -26,6 +26,19 @@ class ContextTests(unittest.TestCase):
     def test_tool_results_under_budget_are_unchanged(self):
         self.assertEqual(tool_result_for_context("complete result 雪", 512, "op"), "complete result 雪")
 
+    def test_dynamic_tool_result_budget_tracks_actual_prior_batch_content(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from desktop_engine import AgentEngine
+        with TemporaryDirectory() as directory:
+            engine = AgentEngine(Path(directory), context=8192, max_tokens=512)
+            messages = [{"role": "system", "content": "system"}, {"role": "user", "content": "inspect"}]
+            assistant = {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "read_file", "arguments": {"path": "a.py"}}}]}
+            tools = engine.state["registry"].schemas
+            available = engine._tool_output_budget(messages, assistant, [], tools, engine.state["task_checkpoint"], "read_file", 1)
+            after_large_result = engine._tool_output_budget(messages, assistant, [{"role": "tool", "tool_name": "read_file", "content": "x" * 4000}], tools, engine.state["task_checkpoint"], "read_file", 1)
+            self.assertGreater(available, after_large_result)
+
     def test_target_model_and_full_context_are_defaults(self):
         self.assertEqual(MODEL, 'hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M')
         self.assertEqual(CONTEXT_MAX, 262144)

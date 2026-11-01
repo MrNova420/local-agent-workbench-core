@@ -157,6 +157,15 @@ class ToolTests(unittest.TestCase):
    tools=ToolRegistry(Workspace(t,'ask'),lambda *_:False)
    self.assertEqual(tools.run('write_file',{'path':'x','content':'no'}),'Denied by user.')
    self.assertFalse((Path(t)/'x').exists())
+ def test_cancelled_file_search_and_read_return_explicit_cancelled_results(self):
+   import threading
+   with tempfile.TemporaryDirectory() as t:
+    root=Path(t);(root/'a.py').write_text('needle\n',encoding='utf8')
+    cancelled=threading.Event();cancelled.set()
+    tools=ToolRegistry(Workspace(root),lambda *_:True,cancel_event=cancelled)
+    self.assertTrue(tools.run('list_files',{}).startswith('Cancelled:'))
+    self.assertTrue(tools.run('search_files',{'query':'needle'}).startswith('Cancelled:'))
+   self.assertTrue(tools.run('read_file',{'path':'a.py'}).startswith('Cancelled:'))
  def test_copy_mode_writes_only_to_its_workspace_without_per_write_approval(self):
   with tempfile.TemporaryDirectory() as t:
    approvals=[];tools=ToolRegistry(Workspace(t,'copy'),lambda *args:approvals.append(args) or False)

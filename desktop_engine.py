@@ -52,7 +52,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "For long builds, tests, installs, and other approved work, omit timeout_seconds unless a task-specific timeout is required; the host's Cancel control remains available. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
-        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revisit, broaden, or resequence the plan whenever new evidence, quality improvements, or user direction warrant it. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When earlier tool output is absent from the recent transcript, use read_operation_result with its checkpoint operation_id; request offset/length slices for output too large to fit. The checkpoint is factual state, while complete transcript, emitted reasoning text, and operation results remain in session history.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revisit, broaden, or resequence the plan whenever new evidence, quality improvements, or user direction warrant it. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When checkpoint omissions are reported, use read_task_checkpoint to recover omitted plan, decisions, updates, operation references, or verification; use read_operation_result for full tool output and exact ranges. The checkpoint is factual state, while complete transcript, emitted reasoning text, and operation results remain in session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
@@ -454,6 +454,7 @@ class ToolRegistry:
           self._schema("search_files", f"Search project text for a literal substring. Use path/include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Choose a useful page size with limit and continue at the returned offset. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, ["query"]),
           self._schema("read_file", f"Read the complete project file by default; optional 1-based line bounds and start_column let you continue through large files. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
+          self._schema("read_task_checkpoint", "Recover saved task continuity details when the compacted prompt reports omissions. Read the current task, plan, decisions, user updates, operation references, changed files, verification, or prior task history in character-offset pages. No project files are changed.", {"section":{"type":"string","enum":["current","plan","decisions","user_updates","operations","changed_files","verification","task_history"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, []),
           self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
@@ -468,7 +469,7 @@ class ToolRegistry:
         if not self.skills_enabled:
             self.schemas=[schema for schema in self.schemas if schema.get("function",{}).get("name")!="skill"]
         if self.workspace.access == "plan":
-            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "git_status", "git_diff", "git_log", "update_plan", "skill"}
+            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint", "git_status", "git_diff", "git_log", "update_plan", "skill"}
             self.schemas = [schema for schema in self.schemas if schema.get("function", {}).get("name") in read_only_tools]
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
@@ -496,6 +497,20 @@ class ToolRegistry:
             if length is None and offset==0:return excerpt
             stop=min(len(result),end) if end is not None else len(result)
             return f"Saved operation result characters {offset}-{stop} of {len(result)}:\n{excerpt}"
+        if name == "read_task_checkpoint":
+            if not isinstance(self.task_checkpoint,dict) or not self.task_checkpoint:return "No saved task checkpoint is available."
+            section=args.get("section","current");offset=args.get("offset",0);length=args.get("length")
+            if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
+            if length is not None and (not isinstance(length,int) or isinstance(length,bool) or length<1):return "Invalid length: expected a positive integer."
+            if section=="current":value=current_task(self.task_checkpoint)
+            elif section=="task_history":value=self.task_checkpoint.get("task_history",[])
+            elif section in {"plan","decisions","user_updates","operations","changed_files","verification"}:value=current_task(self.task_checkpoint).get(section,[])
+            else:return "Invalid section. Choose current, plan, decisions, user_updates, operations, changed_files, verification, or task_history."
+            encoded=json.dumps(value,ensure_ascii=False,indent=2)
+            if length is None:length=max(1,(active_output_budget-180)//2) if active_output_budget is not None else len(encoded)
+            stop=min(len(encoded),offset+length);excerpt=encoded[offset:stop]
+            next_page=f"\nContinue with section={section}, offset={stop}, length={length}." if stop<len(encoded) else ""
+            return f"Task checkpoint {section} characters {offset}-{stop} of {len(encoded)}:\n{excerpt}{next_page}"
         if name in {"git_status", "git_diff", "git_log"}:
             import subprocess
             try:
@@ -540,9 +555,10 @@ class ToolRegistry:
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
             if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
             import fnmatch
-            matches=[];matched=0;scanned=0;used_bytes=0;has_more=False;scan_capped=False
+            matches=[];matched=0;scanned=0;used_bytes=0;has_more=False;scan_capped=False;cancelled=False
             list_scan_max=PROJECT_LIST_SCAN_LIMIT+1 if PROJECT_LIST_SCAN_LIMIT is not None else None
             for p in iter_project_files(base,max_files=list_scan_max):
+                if self.cancel_event.is_set():cancelled=True;break
                 scanned+=1
                 if PROJECT_LIST_SCAN_LIMIT is not None and scanned>PROJECT_LIST_SCAN_LIMIT:scan_capped=True;break
                 relative=p.relative_to(base).as_posix()
@@ -558,6 +574,7 @@ class ToolRegistry:
                         matches.append(item);used_bytes+=item_bytes
                     else:has_more=True;break
             result="\n".join(matches)
+            if cancelled:result="Cancelled: project file listing stopped by the user; returned paths may be incomplete.\n"+result
             if not result and not has_more and not scan_capped:
                 result=f"No project files found under '{args.get('path', '.')}'. The directory is empty or contains only ignored files."
             if has_more:
@@ -571,7 +588,7 @@ class ToolRegistry:
             return result
         if name == "search_files":
             search_root=self.workspace.resolve(args.get("path","."));include=str(args.get("include","*")).strip() or "*"
-            query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;used_bytes=0;capped=False;has_more=False
+            query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;used_bytes=0;capped=False;has_more=False;cancelled=False
             offset=args.get("offset",0);limit=args.get("limit",100)
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
             if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
@@ -579,6 +596,7 @@ class ToolRegistry:
             import fnmatch
             scan_max_files=self.search_file_limit+1 if self.search_file_limit is not None else None
             for p in iter_project_files(search_root,max_files=scan_max_files):
+                if self.cancel_event.is_set():cancelled=True;break
                 scanned+=1
                 if self.search_file_limit is not None and scanned>self.search_file_limit:capped=True;break
                 if p.suffix.casefold() not in TEXT_EXT:continue
@@ -589,26 +607,30 @@ class ToolRegistry:
                 else:matched=fnmatch.fnmatchcase(p.name.casefold(),include.casefold())
                 if not matched:continue
                 try:
-                    size=p.stat().st_size
-                    if self.search_byte_limit is not None and bytes_read+size>self.search_byte_limit:capped=True;break
-                    lines=p.read_text(encoding="utf8").splitlines();bytes_read+=size
+                    with p.open("r",encoding="utf8") as handle:
+                        for i,line in enumerate(handle,1):
+                            if self.cancel_event.is_set():cancelled=True;break
+                            line_bytes=len(line.encode("utf8"))
+                            if self.search_byte_limit is not None and bytes_read+line_bytes>self.search_byte_limit:
+                                capped=True;break
+                            bytes_read+=line_bytes
+                            if query in line.casefold():
+                                if offset>0:offset-=1;continue
+                                if len(hits)>=limit:has_more=True;break
+                                path_line=f"{p.relative_to(self.workspace.root).as_posix()}:{i}: "
+                                content=line.rstrip("\r\n")
+                                budget=active_output_budget
+                                if budget is not None and len((path_line+content).encode("utf8"))>budget:
+                                    content=f"[matching line exceeds the result budget; inspect with read_file at line {i}]"
+                                record=path_line+content
+                                record_bytes=len(record.encode("utf8"))+(1 if hits else 0)
+                                if budget is not None and used_bytes+record_bytes>budget and hits:
+                                    has_more=True;break
+                                hits.append(record);used_bytes+=record_bytes
                 except (OSError,UnicodeError): continue
-                for i,line in enumerate(lines,1):
-                    if query in line.casefold():
-                        if offset>0:offset-=1;continue
-                        if len(hits)>=limit:has_more=True;break
-                        path_line=f"{p.relative_to(self.workspace.root).as_posix()}:{i}: "
-                        content=line
-                        budget=active_output_budget
-                        if budget is not None and len((path_line+content).encode("utf8"))>budget:
-                            content=f"[matching line exceeds the result budget; inspect with read_file at line {i}]"
-                        record=path_line+content
-                        record_bytes=len(record.encode("utf8"))+(1 if hits else 0)
-                        if budget is not None and used_bytes+record_bytes>budget and hits:
-                            has_more=True;break
-                        hits.append(record);used_bytes+=record_bytes
-                if has_more:break
+                if capped or has_more or cancelled:break
             result="\n".join(hits) or "No matches."
+            if cancelled:result="Cancelled: project search stopped by the user; returned matches may be incomplete.\n"+result
             if has_more:result+=f"\n\nMore results are available. Next offset {args.get('offset',0)+len(hits)}; continue with limit {limit}."
             if capped:result+=f"\n\n[Search scan capped at {scanned} files or {bytes_read:,} bytes; results may be incomplete. Narrow the query or project path.]"
             return result
@@ -643,8 +665,9 @@ class ToolRegistry:
             if not isinstance(start_column,int) or isinstance(start_column,bool) or start_column<1:return "Invalid start_column: expected a positive 1-based character column."
             with p.open("r",encoding="utf8") as handle:
                 selected=[];used_bytes=0;truncated=False;next_position=None
-                line_number=1;column=1
+                line_number=1;column=1;cancelled=False
                 while True:
+                    if self.cancel_event.is_set():cancelled=True;break
                     chunk=handle.read(4096)
                     if not chunk:break
                     for char in chunk:
@@ -664,7 +687,8 @@ class ToolRegistry:
                 if truncated:
                     next_line,next_column=next_position or (start,1)
                     selected.append(f"\n[Read result is incomplete; this context-budgeted excerpt is not the whole file. Continue with read_file at line {next_line}, column {next_column}.]")
-                return "".join(selected) if selected else f"Requested lines {start}-{end or 'end'} are beyond end of file."
+                if cancelled:return "Cancelled: file read stopped by the user.\n"+"".join(selected)
+                return "".join(selected) if selected or truncated else f"Requested lines {start}-{end or 'end'} are beyond end of file."
         if name in {"apply_patch", "run_command", "run_shell"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
             if name == "apply_patch":
@@ -934,13 +958,14 @@ class ContextManager:
         # UTF-8 bytes are not tokens. Two bytes per token is deliberately
         # conservative for prose and compact JSON tool schemas.
         return max(1,(len(text.encode("utf8"))+1)//2)
-    def retrieve(self,root:Path,prompt:str,limit:int|None=None)->str:
+    def retrieve(self,root:Path,prompt:str,limit:int|None=None,cancel_event:threading.Event|None=None)->str:
         limit=self.budget() if limit is None else max(0,limit)
         stop_words={"about","after","also","and","are","but","can","could","does","from","have","into","like","make","need","please","that","the","this","want","with","would"}
         terms={w.casefold() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}",prompt)}-stop_words; ranked=[];examined=0;bytes_read=0;capped=False
         if not terms:return ""
         retrieval_scan_max=self.scan_file_limit+1 if self.scan_file_limit is not None else None
         for p in iter_project_files(root,max_files=retrieval_scan_max):
+            if cancel_event is not None and cancel_event.is_set():capped=True;break
             examined+=1
             if self.scan_file_limit is not None and examined>self.scan_file_limit:
                 capped=True;break
@@ -954,6 +979,7 @@ class ContextManager:
                 matching_lines={};content_score=0;capturing_until=0;recent=[];match_count=0
                 with p.open("r",encoding="utf8") as handle:
                     for line_number,line in enumerate(handle,1):
+                        if cancel_event is not None and cancel_event.is_set():capped=True;break
                         folded=line.casefold();line_terms={term for term in terms if term in folded}
                         if line_terms:
                             match_count+=1;content_score+=min(8,len(line_terms)*2)
@@ -1328,7 +1354,7 @@ class AgentEngine:
         base_request=[system,{"role":"user","content":retrieval_prefix}]
         tools=self._tools_for_request(base_request)
         remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
-        retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining)
+        retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining,cancel_event=self.cancel_event)
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
         checkpoint=self.state["task_checkpoint"]
         checkpoint_state=current_task(checkpoint)
@@ -1406,7 +1432,7 @@ class AgentEngine:
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
                 # Run independent read-only calls together. Mixed batches, writes,
                 # commands, MCP, and permission-prompted actions stay ordered.
-                readonly_names={"list_files","search_files","read_file","read_operation_result","git_status","git_diff","git_log"}
+                readonly_names={"list_files","search_files","read_file","read_operation_result","read_task_checkpoint","git_status","git_diff","git_log"}
                 prepared_batch:dict[int,dict[str,Any]]={}
                 if len(calls)>1:
                     parsed_batch=[];batch_is_readonly=True
