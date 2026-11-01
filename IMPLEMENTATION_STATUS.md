@@ -18,6 +18,12 @@
 - A new user follow-up retains the plan, decisions, and completed work but resets an earlier Automatic mode selection to `auto`; the engine can classify the follow-up afresh. This prevents a previous plan-only choice from suppressing later requested implementation.
 - Verification remains queued; these are source changes only.
 
+## 2026-11-01 Automatic plan-to-implementation continuation (verification queued)
+
+- In Automatic intent, an agent-authored `task_mode=plan` now represents the planning phase. Pending items in that plan trigger implementation continuation and remain incomplete until host-observed work closes them; the model cannot turn an open implementation checklist into a plan-only terminal outcome by labeling the phase `plan`.
+- Explicit Workbench Plan-only and Discuss intents remain read-only and authoritative. A completed agent plan can still end as a plan outcome; a pending plan that cannot make progress is reported as implementation incomplete, not successful plan-only completion.
+- Updated the Automatic-mode settings explanation to make the distinction visible. Added a queued engine regression for plan → write → inspect → completed plan → final response. No tests, typecheck, build, packaged app, or model run were performed.
+
 ## 2026-11-01 Missing final response recovery (verification queued)
 
 - The engine now treats empty assistant content as incomplete after a tool-free model response. It requests a user-visible terminal summary and checks for observable progress; if the same state repeats, it fails with `response_missing`, preserving completed operations and verification instead of reporting generic success.

@@ -81,7 +81,7 @@ def test_host_starter_plan_is_visible_and_intent_specific():
 def test_automatic_implementation_uses_structured_evidence_not_prompt_wording():
     open_agent_plan = [{"title": "Implement and inspect", "status": "pending"}]
     assert _implementation_evidence("auto", "auto", "agent", open_agent_plan, False, False)
-    assert not _implementation_evidence("auto", "plan", "agent", open_agent_plan, False, False)
+    assert _implementation_evidence("auto", "plan", "agent", open_agent_plan, False, False)
     assert not _implementation_evidence("auto", "discussion", "agent", open_agent_plan, False, False)
     assert _implementation_evidence("auto", "implement", "none", [], False, False)
     assert _implementation_evidence("auto", "plan", "none", [], True, False)
@@ -93,14 +93,15 @@ def test_automatic_implementation_uses_structured_evidence_not_prompt_wording():
 
 
 def test_automatic_task_mode_controls_terminal_outcome_without_changing_user_settings():
-    assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [{"status": "pending"}], "auto", False, "plan") == "plan_only"
+    assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [{"status": "pending"}], "auto", True, "plan") == "implementation_incomplete"
+    assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [{"status": "completed"}], "auto", False, "plan") == "plan_only"
     assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [], "auto", False, "discussion") == "discussion"
 
 
-def test_open_plan_requests_implementation_only_when_task_mode_is_not_plan_only():
+def test_open_agent_plan_requests_implementation_unless_task_is_discussion():
     pending = [{"status": "pending"}]
     assert not _plan_requests_implementation("discussion", "agent", pending)
-    assert not _plan_requests_implementation("plan", "agent", pending)
+    assert _plan_requests_implementation("plan", "agent", pending)
     assert _plan_requests_implementation("auto", "agent", pending)
     assert _plan_requests_implementation("implement", "agent", pending)
     assert not _plan_requests_implementation("auto", "workbench", pending)

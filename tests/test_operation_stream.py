@@ -162,18 +162,23 @@ class OperationStreamTests(unittest.TestCase):
             self.assertIn("not executed", messages[-1]["content"].lower())
             self.assertTrue(any(event.get("type") == "stopped_after_operation" for event in events))
 
-    def test_explicit_build_task_continues_to_tools_after_plan_only_response(self):
+    def test_automatic_plan_phase_continues_into_project_implementation(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
             engine = AgentEngine(root, access="edit", event=events.append)
             calls = []
             responses = [
-                {"message": {"role": "assistant", "content": "I will create the page and then verify it."}},
+                {"message": {"role": "assistant", "content": "I have a plan.", "tool_calls": [
+                    {"id": "call-plan", "function": {"name": "update_plan", "arguments": {"task_mode": "plan", "items": [{"title": "Create and inspect the page", "status": "pending"}]}}}
+                ]}},
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
                     {"id": "call-write", "function": {"name": "write_file", "arguments": {"path": "index.html", "content": "<h1>Ready</h1>"}}}
                 ]}},
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
                     {"id": "call-inspect", "function": {"name": "read_file", "arguments": {"path": "index.html"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call-finish-plan", "function": {"name": "update_plan", "arguments": {"task_mode": "implement", "items": [{"title": "Create and inspect the page", "status": "completed"}]}}}
                 ]}},
                 {"message": {"role": "assistant", "content": "The page is ready."}},
             ]
@@ -184,11 +189,12 @@ class OperationStreamTests(unittest.TestCase):
 
             messages = engine.run("Build a simple website in this project.")
 
-            self.assertEqual(calls, ["model", "model", "model", "model"])
+            self.assertEqual(calls, ["model", "model", "model", "model", "model"])
             self.assertEqual((Path(root) / "index.html").read_text(encoding="utf-8"), "<h1>Ready</h1>")
             self.assertTrue(any(event.get("type") == "tool_done" and event.get("status") == "completed" for event in events))
             self.assertTrue(any(event.get("type") == "complete" for event in events))
             completion=next(event for event in events if event.get("type")=="complete")
+            self.assertTrue(completion["implementationRequested"])
             self.assertEqual(completion["verification"]["status"],"inspected")
             self.assertEqual(completion["verification"]["steps"],[{"kind":"inspection","tool":"read_file","result":"completed"}])
             self.assertEqual(completion["verification"]["contract"]["project_change"], "observed")
@@ -416,11 +422,11 @@ class OperationStreamTests(unittest.TestCase):
     def test_plan_only_request_does_not_force_a_tool_followup(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
-            engine = AgentEngine(root, access="edit", event=events.append)
+            engine = AgentEngine(root, access="plan", event=events.append, task_intent="plan")
             calls = []
             engine.runtime.stream = lambda *_args: (calls.append("model") or {"message": {"role": "assistant", "content": "Here is the plan."}})
 
-            engine.run("Plan only: describe how to build a simple website.")
+            engine.run("Describe how to build a simple website.")
 
             self.assertEqual(calls, ["model"])
 

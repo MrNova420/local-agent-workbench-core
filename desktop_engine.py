@@ -32,7 +32,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
-        "auto": "Task intent: automatic. Use the request and project evidence to choose discussion, plan-only, or implementation. For substantial tasks, call update_plan with task_mode set to discussion, plan, or implement; this structured choice controls whether open plan items require implementation continuation. Respect the actual access policy below.",
+        "auto": "Task intent: automatic. Use discussion for informational work that needs no project change. For actionable project work, planning is a phase, not a terminal result: an agent-authored plan with pending items must continue into implementation and verification. Set task_mode to implement for implementation work; task_mode=plan records the planning phase and does not make pending work plan-only. Plan-only is guaranteed by the explicit Workbench Plan only intent. Respect the actual access policy and approval rules below.",
         "discuss": "Task intent: discussion. Explain or investigate the request without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "plan": "Task intent: plan only. Refine the visible starter checklist, analyze dependencies and risks, and present actionable steps without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "implement": "Task intent: implementation. Refine the visible starter checklist, then carry the requested project work through structured tools and relevant verification; follow the actual access and approval policy below.",
@@ -367,7 +367,7 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
         return "inspected"
     if task_intent == "auto" and not project_changed and task_mode == "discussion":
         return "discussion"
-    if task_intent == "auto" and not project_changed and task_mode == "plan":
+    if task_intent == "auto" and not project_changed and task_mode == "plan" and not _plan_has_open_work(plan):
         return "plan_only"
     if project_changed:
         return "changed"
@@ -385,8 +385,8 @@ def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
     return False
 
 def _plan_requests_implementation(task_mode: str, plan_source: str, plan: list[dict[str, Any]]) -> bool:
-    """An open agent plan drives Automatic continuation unless it is explicitly plan-only."""
-    return task_mode not in {"discussion", "plan"} and plan_source == "agent" and _plan_has_open_work(plan)
+    """Open agent work drives Automatic continuation; only discussion suppresses it."""
+    return task_mode != "discussion" and plan_source == "agent" and _plan_has_open_work(plan)
 
 def _assistant_has_final_content(message: dict[str, Any]) -> bool:
     """Only user-visible assistant content counts as a completed response."""
@@ -401,7 +401,7 @@ def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str,
         return True
     if task_intent != "auto":
         return False
-    if task_mode in {"discussion", "plan"} and not (project_changed or command_side_effects_possible or mutation_attempted):
+    if task_mode == "discussion" and not (project_changed or command_side_effects_possible or mutation_attempted):
         return False
     if task_mode == "implement":
         return True
