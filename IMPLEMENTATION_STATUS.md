@@ -68,3 +68,10 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Completion evidence now distinguishes a post-change file/diff inspection, a command that completed, a failed command, and no evidence. A completed command is not represented as a passing test, and the paired UI warns when recorded command verification failed. Regression checks remain queued.
 - Updated the existing build-task regression expectation to assert an inspection outcome and structured evidence. It was not run in this development phase.
 - Automated tests, typecheck, sidecar integration, and visible application acceptance for this continuation are deliberately queued for the next final verification gate. This engine commit is not yet included in an app package.
+
+## 2026-10-31 paired app roadmap reconciliation
+
+- The active Electron app worktree now pins this repository's commit `e5158359cca2e780ca506cfd98e8b8015c63852a` in `core-revision.txt` and both app workflows. This supersedes the earlier note above that said the app did not yet pin the continuation; that note remains historical for its original point in time.
+- The engine commit is not yet in the published app package, and the latest paired app/engine regression batch has not yet passed its final verification gate. Do not call it packaged or release-ready.
+- For the current product-wide source promotion, test, package, visible acceptance, and release sequence, see the paired app repository's `docs/MASTER_ROADMAP.md`. Keep this engine repo as the engine implementation/status authority.
+- The engine is currently consumed by the desktop product as an immutable commit SHA. Do not create an independent engine version or release tag for app-only updates. Revisit separate engine releases only if a separately supported distributable/API contract is approved.
