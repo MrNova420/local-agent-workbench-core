@@ -111,6 +111,7 @@ def test_restored_open_agent_plan_keeps_automatic_implementation_obligation():
     pending = [{"title": "Implement and inspect", "status": "pending"}]
     assert _restored_plan_requests_implementation("auto", "plan", "agent", pending)
     assert _restored_plan_requests_implementation("auto", "auto", "agent", pending)
+    assert _restored_plan_requests_implementation("auto", "implement", "workbench", pending)
     assert not _restored_plan_requests_implementation("auto", "discussion", "agent", pending)
     assert not _restored_plan_requests_implementation("auto", "plan", "workbench", pending)
     assert not _restored_plan_requests_implementation("plan", "plan", "agent", pending)

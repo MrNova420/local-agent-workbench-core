@@ -26,7 +26,7 @@
 
 ## 2026-11-01 Saved plan provenance and resume continuation (verification queued)
 
-- Task checkpoints now persist whether their current plan came from the agent or the Workbench. Session restoration restores that source, and an open agent plan in Automatic mode re-establishes its implementation obligation before the first resumed inference request.
+- Task checkpoints now persist whether their current plan came from the agent or the Workbench. Session restoration restores that source, and open agent plans or Workbench implementation checklists in Automatic mode re-establish their implementation obligation before the first resumed inference request.
 - Compaction includes plan provenance, and continuation progress signatures include it. Explicit Discuss/Plan UI intents still override resumed implementation state. Added queued checkpoint provenance and restored-plan continuation regressions. No tests, typecheck, build, packaged app, or model run were performed.
 - Continuation treats only explicit terminal plan states as closed. New or model-specific status labels therefore stay open instead of silently ending implementation; an explicit `deferred` state remains closed.
 

@@ -392,8 +392,10 @@ def _plan_requests_implementation(task_mode: str, plan_source: str, plan: list[d
 
 def _restored_plan_requests_implementation(task_intent: str, task_mode: str, plan_source: str,
                                            plan: list[dict[str, Any]]) -> bool:
-    """Restore implementation obligation from a saved open agent plan."""
-    return task_intent == "auto" and _plan_requests_implementation(task_mode, plan_source, plan)
+    """Restore implementation obligation from any saved open implementation plan."""
+    if task_intent != "auto" or task_mode == "discussion" or not _plan_has_open_work(plan):
+        return False
+    return plan_source == "agent" or task_mode == "implement"
 
 def _assistant_has_final_content(message: dict[str, Any]) -> bool:
     """Only user-visible assistant content counts as a completed response."""
