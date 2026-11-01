@@ -15,7 +15,8 @@ class TurnContextTests(unittest.TestCase):
                 workspace=Path(root), model="model-a", context=262144,
                 access="ask", approval_mode="per-action", max_tokens=4096,
                 temperature=0.2, runtime_options=runtime_options, prompt="task",
-                session=session, mcp_tools=[{"name": "tool-a"}],
+                session=session, mcp_tools=[{"name": "tool-a"}], skills_enabled=False,
+                skill_sources=["project"],
             )
 
         session["messages"].append({"role": "user", "content": "later"})
@@ -27,6 +28,8 @@ class TurnContextTests(unittest.TestCase):
         self.assertEqual(turn.session["messages"][-1]["content"], "old")
         self.assertEqual(turn.runtime_options["num_thread"], 4)
         self.assertEqual(turn.mcp_tools[0]["name"], "tool-a")
+        self.assertFalse(turn.skills_enabled)
+        self.assertEqual(turn.skill_sources, ("project",))
 
 
 if __name__ == "__main__":

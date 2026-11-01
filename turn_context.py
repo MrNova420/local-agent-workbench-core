@@ -57,6 +57,8 @@ class TurnContext:
     access: str
     approval_mode: str
     harness_profile: str
+    skills_enabled: bool
+    skill_sources: tuple[str, ...]
     max_tokens: int
     temperature: float
     runtime_options: dict[str, Any]
@@ -74,6 +76,8 @@ class TurnContext:
         access: str,
         approval_mode: str,
         harness_profile: str = "standard",
+        skills_enabled: bool = True,
+        skill_sources: tuple[str, ...] | list[str] = ("project", "user"),
         max_tokens: int,
         temperature: float,
         runtime_options: dict[str, Any],
@@ -88,6 +92,8 @@ class TurnContext:
             access=str(access),
             approval_mode=str(approval_mode),
             harness_profile=harness_profile if harness_profile in {"standard", "small-model"} else "standard",
+            skills_enabled=bool(skills_enabled),
+            skill_sources=tuple(source for source in skill_sources if source in {"project", "user"}),
             max_tokens=int(max_tokens),
             temperature=float(temperature),
             runtime_options=deepcopy(runtime_options),

@@ -71,9 +71,14 @@ class ProjectKnowledge:
             pass
         return [directory / relative for directory in directories for relative in SKILL_ROOTS]
 
-    def skills(self, roots: list[Path] | None = None) -> list[dict[str, str]]:
-        project_roots = self._project_skill_roots() if roots is None else roots
-        candidates = project_roots + [Path.home() / p for p in GLOBAL_SKILL_ROOTS] if roots is None else roots
+    def skills(self, roots: list[Path] | None = None, sources: set[str] | list[str] | tuple[str, ...] | None = None) -> list[dict[str, str]]:
+        selected_sources = {"project", "user"} if sources is None else set(sources)
+        unknown = selected_sources - {"project", "user"}
+        if unknown:
+            raise ValueError("Skill sources must be project and/or user.")
+        project_roots = self._project_skill_roots() if roots is None and "project" in selected_sources else (roots or [])
+        user_roots = [Path.home() / p for p in GLOBAL_SKILL_ROOTS] if roots is None and "user" in selected_sources else []
+        candidates = project_roots + user_roots if roots is None else roots
         # Project definitions take precedence over user-global definitions with the same name.
         found: dict[str, dict[str, str]] = {}
         for base in candidates:

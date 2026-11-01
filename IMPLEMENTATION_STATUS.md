@@ -97,3 +97,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Task checkpoints record explicit blockers and include the immediately preceding archived task summary when a new task starts, while full prior history and tool results remain in session storage.
 - Added regression coverage for checkpoint carry-forward and exact request settings; these tests are queued and have not been run.
 - Paired desktop work is in progress. The app must pin the resulting engine commit and both workflows must use the same SHA before any package is built. No release is authorized by this source work.
+
+## 2026-11-01 explicit skill access controls in progress
+
+- `ProjectKnowledge.skills` can filter by project/user source. A disabled skill tool is omitted from the model request and direct engine invocation is rejected; selected source lists are captured with each immutable turn.
+- Standalone engine defaults preserve the prior skill behavior for existing CLI callers. The paired desktop app now adds Workbench-owned enable/source controls and persists them per app/session. It does not read or modify Codex/OpenCode skill settings.
+- Regression cases cover source filtering, disabled-tool exclusion, and turn capture. They are queued with the broader final gate and have not been executed.
