@@ -1147,6 +1147,10 @@ class AgentEngine:
             checkpoint=self.state["task_checkpoint"]
             current=current_task(checkpoint)
             current["plan"]=copy.deepcopy(plan)
+            pending=next((item for item in plan if isinstance(item,dict)
+                          and str(item.get("status","pending")).casefold() in {"pending","in_progress","in progress"}),None)
+            current["next_action"]=(str((pending or {}).get("title") or (pending or {}).get("text") or "Continue the active task plan.")
+                                    if pending else "")
             self.event({"type":"plan","items":copy.deepcopy(plan),"acceptanceCriteria":copy.deepcopy(current.get("acceptance_criteria",[])),"source":"workbench"})
     def _approval(self,name:str,args:Any)->bool:
         checkpoint=self.state["task_checkpoint"]

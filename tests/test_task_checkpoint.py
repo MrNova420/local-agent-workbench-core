@@ -155,6 +155,7 @@ def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_l
 
     engine._advance_workbench_plan("read_file", "completed")
     assert engine.state["registry"].plan[0]["status"] == "completed"
+    assert engine.state["task_checkpoint"]["current"]["next_action"] == "Refine the checklist with affected files and acceptance criteria"
     assert events[-1]["type"] == "plan"
     assert events[-1]["acceptanceCriteria"] == ["The page renders."]
 
