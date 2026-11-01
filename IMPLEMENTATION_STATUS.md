@@ -194,3 +194,8 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The system/checkpoint instructions tell the model to retrieve omitted output and inspect uncertain effects before retrying. The app stores and displays the number of omitted in-task exchange groups alongside omitted turns and the configured context/input budget.
 - Queued regressions cover compaction of a single long task, complete call/result boundaries, full/ranged result recovery, captured-session scope, and persisted compaction metadata. They remain unrun.
 - Standalone AgentEngine/CLI sessions now also retain completed operation results in engine memory for `read_operation_result`; the desktop's captured-session store remains the durable source and takes precedence. Cancelled, invalid, uncertain, blocked, and successful operation outcomes are eligible for lookup during the engine lifetime. This closes the advertised-tool gap when no app storage callback exists. Regression added and queued; not run.
+
+## 2026-11-01 local runtime process telemetry
+
+- Resource snapshots now report Ollama/llama.cpp worker process count, summed CPU, and resident memory separately from the Agent Workbench sidecar and whole-system readings. NVIDIA compute-process VRAM is matched by worker PID where available; unavailable attribution stays unavailable rather than appearing as zero.
+- System GPU utilization, memory, and power remain device-wide; runtime worker VRAM is labeled as shared runtime process data and is not attributed to the selected model. Added mocked telemetry coverage; tests and hardware acceptance are queued and have not been run.
