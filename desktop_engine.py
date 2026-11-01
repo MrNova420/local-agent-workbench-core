@@ -945,7 +945,14 @@ class AgentEngine:
                         msgs[0]["content"] += "\n\n"+continuation
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
-                    verification={"status":"check_ran" if verification_steps else "not_verified","steps":verification_steps}
+                    inspections=[step for step in verification_steps if step.get("kind")=="inspection"]
+                    commands=[step for step in verification_steps if step.get("kind")=="command"]
+                    if any(step.get("result")=="failed" for step in commands):verification_status="command_failed"
+                    elif any(step.get("result")=="completed" for step in commands):verification_status="command_completed"
+                    elif inspections:verification_status="inspected"
+                    elif commands:verification_status="command_not_completed"
+                    else:verification_status="not_verified"
+                    verification={"status":verification_status,"steps":verification_steps}
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification});return msgs
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
@@ -990,8 +997,10 @@ class AgentEngine:
                         status = _tool_activity_status(name, str(out))
                         if status=="denied":action_denied=True
                         if name in {"write_file","edit_file","apply_patch"} and status=="completed":completed_project_change=True
-                        if completed_project_change and status=="completed" and name in {"read_file","git_diff","run_command","run_shell"}:
-                            verification_steps.append({"tool":name,"result":"completed"})
+                        if completed_project_change and name in {"read_file","git_diff"} and status=="completed":
+                            verification_steps.append({"kind":"inspection","tool":name,"result":"completed"})
+                        elif completed_project_change and name in {"run_command","run_shell"}:
+                            verification_steps.append({"kind":"command","tool":name,"result":status})
                         self.event({"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()})
                     msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":str(out)})
                     if self.stop_after_operation.is_set():
