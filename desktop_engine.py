@@ -32,7 +32,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
-        "auto": "Task intent: automatic. Use discussion for informational work that needs no project change. For actionable project work, planning is a phase, not a terminal result: an agent-authored plan with pending items must continue into implementation and verification. Set task_mode to implement for implementation work; task_mode=plan records the planning phase and does not make pending work plan-only. Plan-only is guaranteed by the explicit Workbench Plan only intent. Respect the actual access policy and approval rules below.",
+        "auto": "Task intent: automatic. Use discussion for informational work that needs no project change. Use task_mode=plan_only only when the user explicitly asks for a plan with no implementation; that is different from task_mode=plan, which is an intermediate planning phase. For actionable project work, an agent-authored plan must continue into implementation and verification even if its items are marked complete prematurely. Set task_mode=implement for implementation work. Respect the actual access policy and approval rules below.",
         "discuss": "Task intent: discussion. Explain or investigate the request without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "plan": "Task intent: plan only. Refine the visible starter checklist, analyze dependencies and risks, and present actionable steps without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "implement": "Task intent: implementation. Refine the visible starter checklist, then carry the requested project work through structured tools and relevant verification; follow the actual access and approval policy below.",
@@ -367,7 +367,7 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
         return "inspected"
     if task_intent == "auto" and not project_changed and task_mode == "discussion":
         return "discussion"
-    if task_intent == "auto" and not project_changed and task_mode == "plan" and not _plan_has_open_work(plan):
+    if task_intent == "auto" and not project_changed and task_mode == "plan_only":
         return "plan_only"
     if project_changed:
         return "changed"
@@ -387,15 +387,19 @@ def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
     return False
 
 def _plan_requests_implementation(task_mode: str, plan_source: str, plan: list[dict[str, Any]]) -> bool:
-    """Open agent work drives Automatic continuation; only discussion suppresses it."""
-    return task_mode != "discussion" and plan_source == "agent" and _plan_has_open_work(plan)
+    """Agent plan phases and open work drive Automatic implementation continuation."""
+    if task_mode in {"discussion", "plan_only"}:
+        return False
+    if task_mode == "implement":
+        return True
+    if task_mode == "plan" and plan_source == "agent" and bool(plan):
+        return True
+    return plan_source == "agent" and _plan_has_open_work(plan)
 
 def _restored_plan_requests_implementation(task_intent: str, task_mode: str, plan_source: str,
                                            plan: list[dict[str, Any]]) -> bool:
     """Restore implementation obligation from any saved open implementation plan."""
-    if task_intent != "auto" or task_mode == "discussion" or not _plan_has_open_work(plan):
-        return False
-    return plan_source == "agent" or task_mode == "implement"
+    return task_intent == "auto" and _plan_requests_implementation(task_mode, plan_source, plan)
 
 def _assistant_has_final_content(message: dict[str, Any]) -> bool:
     """Only user-visible assistant content counts as a completed response."""
@@ -410,12 +414,10 @@ def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str,
         return True
     if task_intent != "auto":
         return False
-    if task_mode == "discussion" and not (project_changed or command_side_effects_possible or mutation_attempted):
+    if task_mode in {"discussion", "plan_only"} and not (project_changed or command_side_effects_possible or mutation_attempted):
         return False
-    if task_mode == "implement":
-        return True
     return bool(project_changed or command_side_effects_possible or mutation_attempted
-                or (plan_source == "agent" and _plan_has_open_work(plan)))
+                or _plan_requests_implementation(task_mode, plan_source, plan))
 
 def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]]) -> str:
     """Compare observable progress, not elapsed time or a fixed continuation count."""
@@ -515,7 +517,7 @@ class ToolRegistry:
         self.permission_rules=validate_permission_rules(permission_rules or [])
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
         saved_task_mode=current_task(self.task_checkpoint).get("task_mode") if self.task_checkpoint is not None else None
-        self.task_mode=saved_task_mode if saved_task_mode in {"discussion", "plan", "implement"} else "auto"
+        self.task_mode=saved_task_mode if saved_task_mode in {"discussion", "plan_only", "plan", "implement"} else "auto"
         saved_plan_source=current_task(self.task_checkpoint).get("plan_source") if self.task_checkpoint is not None else None
         if saved_plan_source in {"agent", "workbench"}:
             self.plan_source=saved_plan_source
@@ -531,7 +533,7 @@ class ToolRegistry:
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("read_task_checkpoint", "Recover saved task continuity details when the compacted prompt reports omissions. Read the current task, plan, decisions, user updates, operation references, changed files, verification, or prior task history in character-offset pages. No project files are changed.", {"section":{"type":"string","enum":["current","plan","decisions","user_updates","operations","changed_files","verification","task_history"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, []),
           self._schema("read_conversation_history", "Recover earlier saved user/assistant/tool transcript omitted from the current context, including emitted assistant reasoning. The system prompt is excluded. Use character-offset pages and an optional role filter; no project files are changed.", {"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1},"role":{"type":"string","enum":["user","assistant","tool"]}}, []),
-          self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. For Automatic intent, set task_mode to discussion, plan, or implement when the task mode is clear; this is structured workflow state, not a permission grant. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"task_mode":{"type":"string","enum":["discussion","plan","implement"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
+          self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. For Automatic intent, set task_mode to discussion, plan_only, plan, or implement when the task mode is clear. Use plan_only only when the user explicitly asked for a plan without implementation; plan is an intermediate phase for actionable work. This structured state is not a permission grant. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"task_mode":{"type":"string","enum":["discussion","plan_only","plan","implement"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
@@ -631,10 +633,10 @@ class ToolRegistry:
             authoritative_mode={"discuss":"discussion","plan":"plan","implement":"implement"}.get(self.task_intent)
             if authoritative_mode:
                 self.task_mode=authoritative_mode
-            elif task_mode in {"discussion", "plan", "implement"}:
+            elif task_mode in {"discussion", "plan_only", "plan", "implement"}:
                 self.task_mode=task_mode
             event={"type":"plan","items":self.plan}
-            if self.task_mode in {"discussion", "plan", "implement"}:
+            if self.task_mode in {"discussion", "plan_only", "plan", "implement"}:
                 event["taskMode"]=self.task_mode
             if isinstance(added_criteria,list):
                 current_criteria=current_task(self.task_checkpoint).get("acceptance_criteria",[]) if self.task_checkpoint is not None else []

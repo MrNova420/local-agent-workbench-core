@@ -20,9 +20,10 @@
 
 ## 2026-11-01 Automatic plan-to-implementation continuation (verification queued)
 
-- In Automatic intent, an agent-authored `task_mode=plan` now represents the planning phase. Pending items in that plan trigger implementation continuation and remain incomplete until host-observed work closes them; the model cannot turn an open implementation checklist into a plan-only terminal outcome by labeling the phase `plan`.
-- Explicit Workbench Plan-only and Discuss intents remain read-only and authoritative. A completed agent plan can still end as a plan outcome; a pending plan that cannot make progress is reported as implementation incomplete, not successful plan-only completion.
+- In Automatic intent, an agent-authored nonempty `task_mode=plan` represents the planning phase, not plan-only completion. The implementation obligation remains until host-observed project work occurs; marking checklist items complete without a project change cannot produce a successful plan-only terminal result.
+- Added a separate structured `plan_only` task mode for an explicit no-implementation request in Auto. Explicit Workbench Plan-only and Discuss intents remain read-only and authoritative. An implementation plan that cannot make progress is reported as implementation incomplete, not successful plan-only completion.
 - Updated the Automatic-mode settings explanation to make the distinction visible. Added a queued engine regression for plan → write → inspect → completed plan → final response. No tests, typecheck, build, packaged app, or model run were performed.
+- Auto now has a distinct structured `plan_only` state for a user-requested no-edit plan. A nonempty agent `plan` phase remains implementation work even if the model marks its items complete; explicit UI intent still overrides the model state. The paired sidecar persists the mode and plan provenance into the session activity/checkpoint. Regressions are authored and queued across engine and sidecar; none have run.
 
 ## 2026-11-01 Saved plan provenance and resume continuation (verification queued)
 

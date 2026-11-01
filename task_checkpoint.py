@@ -93,7 +93,7 @@ def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any
     if plan_source in {"agent", "workbench"}:
         checkpoint["plan_source"] = plan_source
         checkpoint["updated_at"] = time.time()
-    if task_mode in {"discussion", "plan", "implement"}:
+    if task_mode in {"discussion", "plan_only", "plan", "implement"}:
         checkpoint["task_mode"] = task_mode
         checkpoint["updated_at"] = time.time()
     if isinstance(items, list):

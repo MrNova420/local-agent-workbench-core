@@ -59,6 +59,13 @@ def test_explicit_task_intent_has_read_only_guidance_and_implementation_contract
     assert "Task intent: implementation" in implement_prompt
 
 
+def test_automatic_guidance_separates_plan_phase_from_plan_only_request():
+    prompt = agent_system_prompt("Edit with approval", "", task_intent="auto")
+    assert "task_mode=plan_only only when the user explicitly asks" in prompt
+    assert "different from task_mode=plan" in prompt
+    assert "continue into implementation" in prompt
+
+
 def test_host_starter_plan_is_visible_and_intent_specific():
     assert initial_task_plan("", "implement") == []
     assert initial_task_plan("Explain this code", "discuss") == []
@@ -80,8 +87,11 @@ def test_host_starter_plan_is_visible_and_intent_specific():
 
 def test_automatic_implementation_uses_structured_evidence_not_prompt_wording():
     open_agent_plan = [{"title": "Implement and inspect", "status": "pending"}]
+    completed_agent_plan = [{"title": "Implement and inspect", "status": "completed"}]
     assert _implementation_evidence("auto", "auto", "agent", open_agent_plan, False, False)
     assert _implementation_evidence("auto", "plan", "agent", open_agent_plan, False, False)
+    assert _implementation_evidence("auto", "plan", "agent", completed_agent_plan, False, False)
+    assert not _implementation_evidence("auto", "plan_only", "agent", open_agent_plan, False, False)
     assert not _implementation_evidence("auto", "discussion", "agent", open_agent_plan, False, False)
     assert _implementation_evidence("auto", "implement", "none", [], False, False)
     assert _implementation_evidence("auto", "plan", "none", [], True, False)
@@ -94,16 +104,21 @@ def test_automatic_implementation_uses_structured_evidence_not_prompt_wording():
 
 def test_automatic_task_mode_controls_terminal_outcome_without_changing_user_settings():
     assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [{"status": "pending"}], "auto", True, "plan") == "implementation_incomplete"
-    assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [{"status": "completed"}], "auto", False, "plan") == "plan_only"
+    assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [{"status": "completed"}], "auto", True, "plan") == "implementation_incomplete"
+    assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [{"status": "pending"}], "auto", False, "plan_only") == "plan_only"
     assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [], "auto", False, "discussion") == "discussion"
 
 
 def test_open_agent_plan_requests_implementation_unless_task_is_discussion():
     pending = [{"status": "pending"}]
+    completed = [{"status": "completed"}]
     assert not _plan_requests_implementation("discussion", "agent", pending)
     assert _plan_requests_implementation("plan", "agent", pending)
+    assert _plan_requests_implementation("plan", "agent", completed)
     assert _plan_requests_implementation("auto", "agent", pending)
     assert _plan_requests_implementation("implement", "agent", pending)
+    assert _plan_requests_implementation("implement", "workbench", [])
+    assert not _plan_requests_implementation("plan_only", "agent", pending)
     assert not _plan_requests_implementation("auto", "workbench", pending)
 
 
@@ -111,7 +126,7 @@ def test_restored_open_agent_plan_keeps_automatic_implementation_obligation():
     pending = [{"title": "Implement and inspect", "status": "pending"}]
     assert _restored_plan_requests_implementation("auto", "plan", "agent", pending)
     assert _restored_plan_requests_implementation("auto", "auto", "agent", pending)
-    assert _restored_plan_requests_implementation("auto", "implement", "workbench", pending)
+    assert _restored_plan_requests_implementation("auto", "implement", "workbench", [])
     assert not _restored_plan_requests_implementation("auto", "discussion", "agent", pending)
     assert not _restored_plan_requests_implementation("auto", "plan", "workbench", pending)
     assert not _restored_plan_requests_implementation("plan", "plan", "agent", pending)

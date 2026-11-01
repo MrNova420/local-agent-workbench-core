@@ -430,6 +430,27 @@ class OperationStreamTests(unittest.TestCase):
 
             self.assertEqual(calls, ["model"])
 
+    def test_automatic_structured_plan_only_request_remains_non_mutating(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append, task_intent="auto")
+            responses = [
+                {"message": {"role": "assistant", "content": "I will provide the requested plan.", "tool_calls": [
+                    {"id": "plan-only", "function": {"name": "update_plan", "arguments": {
+                        "task_mode": "plan_only", "items": [{"title": "Build later", "status": "deferred"}]
+                    }}}
+                ]}},
+                {"message": {"role": "assistant", "content": "Here is the plan."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Plan the project without implementing it.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "plan_only")
+            self.assertFalse(completion["implementationRequested"])
+            self.assertEqual(list(Path(root).iterdir()), [])
+
     def test_denied_action_is_not_retried_by_implementation_continuation(self):
         with tempfile.TemporaryDirectory() as root:
             engine=AgentEngine(root,access="ask",approve=lambda *_:False)

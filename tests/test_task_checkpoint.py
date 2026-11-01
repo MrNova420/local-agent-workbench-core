@@ -23,6 +23,19 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     assert checkpoint["user_updates"] == [{"turn_id": "t2", "instruction": "Keep the visual style, then verify"}]
     assert checkpoint["changed_files"] == ["index.html"]
     assert checkpoint["operations"][0]["result_ref"] == "op1"
+
+
+def test_automatic_plan_only_mode_is_persisted_then_reclassified_on_followup():
+    checkpoint = begin_task(None, prompt="Prepare a plan only", turn_id="plan-only", workspace="C:/p", settings={})
+    record_plan(checkpoint, [{"title": "Implement later", "status": "deferred"}], task_mode="plan_only", plan_source="agent")
+    assert checkpoint["current"]["task_mode"] == "plan_only"
+    assert '"task_mode":"plan_only"' in render_checkpoint(checkpoint)
+
+    restored = begin_task(checkpoint, prompt="Keep going", turn_id="follow-up", workspace="C:/p", settings={})
+
+    assert restored["current"]["task_mode"] == "auto"
+    assert restored["current"]["plan_source"] == "agent"
+    assert '"task_mode":"auto"' in render_checkpoint(restored)
     assert "Build a site" in render_checkpoint(second)
     assert "65536" in render_checkpoint(second)
 
@@ -215,7 +228,7 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
     assert registry.plan == []
     assert "acceptance_criteria" not in schema["required"]
     assert "task_mode" not in schema["required"]
-    assert schema["properties"]["task_mode"]["enum"] == ["discussion", "plan", "implement"]
+    assert schema["properties"]["task_mode"]["enum"] == ["discussion", "plan_only", "plan", "implement"]
     assert schema["properties"]["acceptance_criteria"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["decisions"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["add_items"]["type"] == "array"
