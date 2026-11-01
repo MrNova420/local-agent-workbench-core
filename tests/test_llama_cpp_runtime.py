@@ -29,7 +29,7 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 32768, "max_tokens": 100, "request_index": 4,
              "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
     events = []
-    with patch("urllib.request.urlopen", return_value=FakeSSE(chunks)) as open_url:
+    with patch("llama_cpp_runtime.open_http_stream", return_value=FakeSSE(chunks)) as open_url:
         result = runtime.stream(state, [], threading.Event(), events.append)
     payload = json.loads(open_url.call_args.args[0].data)
     assert payload["max_tokens"] == 100

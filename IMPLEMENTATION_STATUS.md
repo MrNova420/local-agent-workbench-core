@@ -155,3 +155,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 
 - Each runtime now attaches a monotonically increasing request index and emits provider/API route, selected model versus API model ID, stream/tool count, exact context/output/reasoning/keep-alive fields, runtime request options, and input-estimate method immediately before dispatch. llama.cpp also reports its already-loaded runtime context and reasoning mode when available. No request setting is modified.
 - The Ollama sidecar wrapper attributes provider-returned token and timing counters to that same request index. Mocked Ollama and llama.cpp coverage was added; it is queued and has not been run.
+
+## 2026-11-01 request-only cancellation while awaiting headers
+
+- Both Ollama and llama.cpp inference now use a direct HTTP(S) stream transport that registers the active connection before request dispatch. Cancel shuts down only that socket, including while blocked waiting for response headers; it does not stop or unload the provider model.
+- DNS/TCP/TLS establishment has a 10-second connection-establishment bound. After connection establishment, request upload, response headers, and model generation have no deadline, preserving long local-model waits. This is not an overall inference timeout.
+- Request activity records prepared, dispatched/waiting-for-headers, headers received/status and wait time, response stream completion, failure phase, or cancellation. A local delayed-header regression was added; it is queued and has not been run.

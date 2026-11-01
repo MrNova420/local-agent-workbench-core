@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from cancellable_http import interrupt_connection, open_http_stream
 from desktop_engine import RequestCancelled
 
 
@@ -168,16 +169,14 @@ class LlamaCppRuntime:
     def __init__(self, server: LlamaCppServer):
         self.server = server
         self.response = None
+        self.connection = None
         self.lock = threading.Lock()
 
     def cancel(self) -> None:
         with self.lock:
+            connection = self.connection
             response = self.response
-        if response:
-            try:
-                response.close()
-            except OSError:
-                pass
+        interrupt_connection(connection, response)
 
     def stream(self, state: dict[str, Any], messages: list[dict[str, Any]], cancel: threading.Event,
                emit: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
@@ -205,10 +204,26 @@ class LlamaCppRuntime:
         result: dict[str, Any] = {"message": {"role": "assistant", "content": ""}}
         calls: dict[int, dict[str, Any]] = {}
         started, first_output = time.monotonic(), True
+        done_marker_received = False
+        dispatch_time: dict[str, float | None] = {"value": None}
+        request_index = state.get("request_index")
         try:
-            response = urllib.request.urlopen(req, timeout=None)
+            def register(connection, response):
+                with self.lock:
+                    self.connection = connection
+                    self.response = response
+            def dispatched():
+                dispatch_time["value"] = time.monotonic()
+                emit({"type": "request_dispatched", "provider": "llama.cpp", "request_index": request_index})
+            def headers_received(response):
+                elapsed = time.monotonic() - dispatch_time["value"] if dispatch_time["value"] is not None else None
+                emit({"type": "request_headers", "provider": "llama.cpp", "request_index": request_index,
+                      "http_status": response.status, "http_reason": response.reason,
+                      "header_wait_seconds": elapsed})
+            response = open_http_stream(req, cancel, register, on_dispatched=dispatched, on_headers=headers_received)
             with self.lock:
-                self.response = response
+                if self.response is None:
+                    self.response = response
             while True:
                 if cancel.is_set():
                     raise RequestCancelled("Cancelled")
@@ -219,6 +234,7 @@ class LlamaCppRuntime:
                     continue
                 raw = line[5:].strip()
                 if raw == b"[DONE]":
+                    done_marker_received = True
                     break
                 if not raw:
                     continue
@@ -271,11 +287,25 @@ class LlamaCppRuntime:
                             slot["function"]["arguments"] += function["arguments"]
             if calls:
                 result["message"]["tool_calls"] = [calls[index] for index in sorted(calls)]
+            emit({"type": "request_complete", "provider": "llama.cpp", "request_index": request_index,
+                  "provider_done": done_marker_received})
             return result
+        except Exception as exc:
+            with self.lock:
+                active_response = self.response
+                headers_received_flag = active_response is not None
+            failure_phase = "provider_http_error" if headers_received_flag and getattr(active_response, "status", 0) >= 400 else "streaming_response" if headers_received_flag else "waiting_response_headers" if dispatch_time["value"] is not None else "connecting_or_sending"
+            emit({"type": "request_error", "provider": "llama.cpp", "request_index": request_index,
+                  "phase": failure_phase,
+                  "cancelled": cancel.is_set(), "error": str(exc)})
+            if cancel.is_set():
+                partial = {key: result["message"][key] for key in ("content", "thinking") if result["message"].get(key)}
+                raise RequestCancelled("Cancelled", {"role": "assistant", **partial} if partial else None) from exc
+            raise
         finally:
             with self.lock:
+                connection = self.connection
+                active_response = self.response
+                self.connection = None
                 self.response = None
-            try:
-                response.close()
-            except (UnboundLocalError, OSError, AttributeError):
-                pass
+            interrupt_connection(connection, active_response)

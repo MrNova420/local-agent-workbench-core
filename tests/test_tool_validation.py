@@ -79,7 +79,7 @@ class ToolValidationTests(unittest.TestCase):
             engine=AgentEngine(Path(folder),context=CONTEXT_MAX,access="edit")
             first=Response({"role":"assistant","tool_calls":[{"id":"provider-call-id","function":{"name":"write_file","arguments":{"path":"result.txt","content":"created"}}}]})
             second=Response({"role":"assistant","content":"File created."})
-            with patch("urllib.request.urlopen",side_effect=[first,second]) as open_url:
+            with patch("desktop_engine.open_http_stream",side_effect=[first,second]) as open_url:
                 engine.run("Check the second-request tool result transcript.")
             sent=json.loads(open_url.call_args_list[1].args[0].data)
             assistant=next(message for message in sent["messages"] if message.get("role")=="assistant" and message.get("tool_calls"))

@@ -1,6 +1,6 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
-import codecs, copy, json, os, queue, re, socket, tempfile, threading, time, urllib.error, urllib.request, uuid
+import codecs, copy, json, os, queue, re, tempfile, threading, time, urllib.request, uuid
 from decimal import Decimal, InvalidOperation
 import math
 from pathlib import Path
@@ -9,6 +9,7 @@ from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled
 from prompt_manifest import build_prompt_manifest
+from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
 from typing import Any, Callable
 
@@ -837,19 +838,10 @@ class ContextManager:
 
 class OllamaRuntime:
     def __init__(self,base_url:str="http://127.0.0.1:11434"):
-        self.base_url=base_url.rstrip("/");self.response=None;self.lock=threading.Lock()
+        self.base_url=base_url.rstrip("/");self.response=None;self.connection=None;self.lock=threading.Lock()
     def cancel(self):
-        with self.lock:r=self.response
-        if r:
-            sock=getattr(getattr(getattr(getattr(r,"fp",None),"raw",None),"_sock",None),"shutdown",None)
-            if sock:
-                try:
-                    sock(socket.SHUT_RDWR)
-                    return
-                except OSError:
-                    pass
-            try:r.close()
-            except OSError:pass
+        with self.lock:connection=self.connection;response=self.response
+        interrupt_connection(connection,response)
     def get(self,path:str,payload:dict|None=None,timeout:int=5)->dict:
         req=urllib.request.Request(self.base_url+path,data=json.dumps(payload).encode() if payload is not None else None,headers={"Content-Type":"application/json"} if payload is not None else {})
         with urllib.request.urlopen(req,timeout=timeout) as response:return json.loads(response.read().decode())
@@ -871,9 +863,20 @@ class OllamaRuntime:
         emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};call_ids={};request_started=time.monotonic();first_output=True;user_facing_output=False
+        dispatch_time={"value":None};request_index=state.get("request_index")
         try:
-            response=urllib.request.urlopen(req,timeout=None)
-            with self.lock:self.response=response
+            def register(connection,response):
+                with self.lock:self.connection=connection;self.response=response
+            def dispatched():
+                dispatch_time["value"]=time.monotonic()
+                emit({"type":"request_dispatched","provider":"ollama","request_index":request_index})
+            def headers_received(response):
+                elapsed=time.monotonic()-dispatch_time["value"] if dispatch_time["value"] is not None else None
+                emit({"type":"request_headers","provider":"ollama","request_index":request_index,
+                      "http_status":response.status,"http_reason":response.reason,"header_wait_seconds":elapsed})
+            response=open_http_stream(req,cancel,register,on_dispatched=dispatched,on_headers=headers_received)
+            with self.lock:
+                if self.response is None:self.response=response
             while True:
                 if cancel.is_set():
                     partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
@@ -916,16 +919,22 @@ class OllamaRuntime:
                         try:assembled["function"]["arguments"]=json.loads(raw or "{}")
                         except json.JSONDecodeError:pass
                 result["message"]["tool_calls"]=[calls[i] for i in sorted(calls)]
+            emit({"type":"request_complete","provider":"ollama","request_index":request_index,"provider_done":result.get("done")})
             return result
         except Exception as exc:
+            with self.lock:active_response=self.response
+            headers_received_flag=active_response is not None
+            failure_phase="provider_http_error" if headers_received_flag and getattr(active_response,"status",0) >= 400 else "streaming_response" if headers_received_flag else "waiting_response_headers" if dispatch_time["value"] is not None else "connecting_or_sending"
+            emit({"type":"request_error","provider":"ollama","request_index":request_index,
+                  "phase":failure_phase,
+                  "cancelled":cancel.is_set(),"error":str(exc)})
             if cancel.is_set():
                 partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
                 raise RequestCancelled("Cancelled",{"role":"assistant",**partial} if partial else None) from exc
             raise
         finally:
-            with self.lock:self.response=None
-            try:response.close()
-            except (UnboundLocalError,OSError,AttributeError):pass
+            with self.lock:connection=self.connection;active_response=self.response;self.connection=None;self.response=None
+            interrupt_connection(connection,active_response)
 
 class AgentEngine:
     def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto"):
