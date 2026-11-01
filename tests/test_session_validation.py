@@ -46,6 +46,21 @@ class SessionValidationTests(unittest.TestCase):
             self.assertEqual(loaded["approval_mode"], "per-session")
             self.assertTrue(loaded["session_approval_granted"])
 
+    def test_saved_chat_session_approval_grant_must_be_boolean_and_legacy_defaults_false(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions")
+            state = store.create(directory, MODEL, CONTEXT_MAX)
+            store.save(state)
+            path = store.root / f"{state['session_id']}.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.pop("session_approval_granted", None)
+            path.write_text(json.dumps(data), encoding="utf-8")
+            self.assertFalse(store.load(state["session_id"])["session_approval_granted"])
+            data["session_approval_granted"] = "false"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "approval grant"):
+                store.load(state["session_id"])
+
     def test_load_rejects_malformed_message_history(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SessionStore(Path(directory) / "sessions")

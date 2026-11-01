@@ -36,6 +36,8 @@ class SessionStore:
         if 'temperature' in state and (isinstance(state['temperature'],bool) or not isinstance(state['temperature'],(int,float)) or not 0<=state['temperature']<=2 or not math.isfinite(state['temperature'])):raise ValueError('Session temperature setting is invalid')
         if not isinstance(state.get('access','ask'),str) or state.get('access','ask') not in {'plan','copy','ask','edit'}:raise ValueError('Session access mode is invalid')
         if not isinstance(state.get('approval_mode','per-action'),str) or state.get('approval_mode','per-action') not in {'per-action','per-task','per-session','auto'}:raise ValueError('Session approval mode is invalid')
+        if 'session_approval_granted' in state and not isinstance(state['session_approval_granted'],bool):raise ValueError('Saved session approval grant is invalid')
+        state.setdefault('session_approval_granted',False)
         if 'reasoning' in state and state['reasoning'] is not None and (not isinstance(state['reasoning'],(str,bool))):raise ValueError('Session reasoning setting is invalid')
         if 'working_workspace' in state and (not isinstance(state['working_workspace'],str) or not state['working_workspace']):raise ValueError('Session working workspace is invalid')
         manifest=state.get('copy_manifest')
