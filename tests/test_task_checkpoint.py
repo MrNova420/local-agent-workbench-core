@@ -23,6 +23,8 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     assert checkpoint["user_updates"] == [{"turn_id": "t2", "instruction": "Keep the visual style, then verify"}]
     assert checkpoint["changed_files"] == ["index.html"]
     assert checkpoint["operations"][0]["result_ref"] == "op1"
+    assert "Build a site" in render_checkpoint(second)
+    assert "65536" in render_checkpoint(second)
 
 
 def test_automatic_plan_only_mode_is_persisted_then_reclassified_on_followup():
@@ -36,8 +38,6 @@ def test_automatic_plan_only_mode_is_persisted_then_reclassified_on_followup():
     assert restored["current"]["task_mode"] == "auto"
     assert restored["current"]["plan_source"] == "agent"
     assert '"task_mode":"auto"' in render_checkpoint(restored)
-    assert "Build a site" in render_checkpoint(second)
-    assert "65536" in render_checkpoint(second)
 
 
 def test_operation_checkpoint_records_content_fingerprints_without_copying_large_content():
