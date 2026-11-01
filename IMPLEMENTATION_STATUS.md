@@ -170,3 +170,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The engine stops the remaining calls from that same model tool batch after an uncertain MCP result. Those calls are persisted as `blocked` with an explicit not-executed result; no later call or automatic retry is made.
 - The uncertain operation and its exact arguments/result are retained in the task checkpoint and sidecar run state, and journal replay reconstructs the warning. Added queued engine, status, and persistence regressions. No tests or runtime checks were run.
 - The MCP adapter regression additionally injects a post-dispatch timeout containing credential-like text and requires an uncertain result that omits the raw exception message. It is queued and unrun.
+
+## 2026-11-01 streamed structured-tool preparation
+
+- Ollama and llama.cpp now emit per-call progress while streamed tool names and arguments are assembling. The event carries only provider, request/call indexes, current tool name, and argument character count; it never includes partial argument contents and cannot trigger a tool.
+- The app renders a live “Preparing structured tool request · not dispatched” cue in chat, then replaces it with normal structured activity when the provider completes the call. Progress is transient and excluded from session journals; only complete structured calls and executed/blocked operation results are persisted.
+- Queued mocked runtime and renderer-state regressions cover both adapters, preview updates/multiple calls, and the absence of partial argument content. They were not run.

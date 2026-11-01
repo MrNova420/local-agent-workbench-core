@@ -40,6 +40,7 @@ class StreamTests(unittest.TestCase):
   with patch('desktop_engine.open_http_stream',return_value=response) as open_url:
    got=runtime.stream(state,[],threading.Event(),events.append)
   self.assertEqual(got['message']['content'],'hello');self.assertEqual(got['message']['tool_calls'][0]['function']['name'],'list_files');self.assertEqual(got['prompt_eval_count'],18);self.assertEqual(got['prompt_eval_cached_count'],7);self.assertEqual(next(e['text'] for e in events if e['type']=='text'),'hello');self.assertEqual(next(e['phase'] for e in events if e['type']=='phase'),'generating')
+  progress=next(e for e in events if e['type']=='tool_call_progress');self.assertEqual(progress['tool_name'],'list_files');self.assertGreater(progress['argument_characters'],0);self.assertNotIn('arguments',progress);self.assertNotIn('arguments_preview',progress)
   payload=json.loads(open_url.call_args.args[0].data);self.assertEqual(payload['options']['num_ctx'],16384);self.assertNotIn('think',payload);self.assertNotIn('reasoning_effort',payload);self.assertNotIn('timeout',open_url.call_args.kwargs)
   settings=next(event for event in events if event['type']=='inference_settings')
   self.assertGreater(settings['estimated_input_tokens'],0)

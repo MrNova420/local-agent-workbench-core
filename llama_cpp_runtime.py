@@ -288,9 +288,14 @@ class LlamaCppRuntime:
                             slot["id"] = call["id"]
                         function = call.get("function") or {}
                         if function.get("name"):
-                            slot["function"]["name"] = function["name"]
+                            slot["function"]["name"] += function["name"]
                         if isinstance(function.get("arguments"), str):
                             slot["function"]["arguments"] += function["arguments"]
+                        emit({"type": "tool_call_progress", "provider": "llama.cpp",
+                              "request_index": request_index, "call_index": index,
+                              "tool_name": slot["function"].get("name", ""),
+                              "argument_characters": len(slot["function"].get("arguments", "")),
+                              "at": time.time()})
             if calls:
                 result["message"]["tool_calls"] = [calls[index] for index in sorted(calls)]
             emit({"type": "request_complete", "provider": "llama.cpp", "request_index": request_index,

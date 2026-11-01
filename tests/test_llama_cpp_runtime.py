@@ -43,6 +43,11 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     assert result["prompt_eval_cached_count"] == 72
     assert result["prompt_eval_duration"] == 850_500_000
     assert result["eval_duration"] == 4_000_000_000
+    progress = next(event for event in events if event["type"] == "tool_call_progress")
+    assert progress["tool_name"] == "read_file"
+    assert progress["argument_characters"] > 0
+    assert "arguments" not in progress
+    assert "arguments_preview" not in progress
     settings = next(event for event in events if event["type"] == "inference_settings")
     assert settings["requested_context"] == 32768
     assert settings["request_index"] == 4
