@@ -14,7 +14,8 @@ class ToolValidationTests(unittest.TestCase):
         report=unsupported_schema_features(schema)
         self.assertEqual(report, sorted(report))
         self.assertTrue(any(".if: unsupported keyword" in item for item in report))
-        self.assertTrue(any(".format: unsupported keyword" in item for item in report))
+        self.assertFalse(any("format" in item for item in report))
+        self.assertIsNone(_validate_tool_arguments({"when":"not-a-date"},{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}))
         self.assertTrue(unsupported_schema_features({"type":"file"}))
         self.assertTrue(unsupported_schema_features({"$ref":"https://example.test/schema"}))
         deeply_nested={}

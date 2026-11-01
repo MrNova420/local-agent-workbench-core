@@ -8,7 +8,7 @@ SUPPORTED_SCHEMA_KEYWORDS = frozenset({
     "$ref", "$schema", "$id", "$comment", "$defs", "definitions", "title", "description",
     "default", "examples", "deprecated", "readOnly", "writeOnly", "type", "enum", "const",
     "allOf", "anyOf", "oneOf", "not", "required", "properties", "patternProperties",
-    "additionalProperties", "additionalItems", "items", "minLength", "maxLength", "pattern",
+    "additionalProperties", "additionalItems", "items", "format", "minLength", "maxLength", "pattern",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
     "maxItems", "uniqueItems", "minProperties", "maxProperties",
 })
@@ -20,6 +20,8 @@ def unsupported_schema_features(schema: Any, *, max_depth: int = 64, max_nodes: 
 
     Tool schemas come from MCP servers and are untrusted input. This walk never
     resolves references or executes patterns, and stops at fixed depth/node limits.
+    JSON Schema ``format`` remains an annotation, as it is under the default
+    specification behavior; this does not assert that a formatted value is valid.
     """
     issues: set[str] = set()
     seen: set[int] = set()
