@@ -49,6 +49,9 @@ def begin_task(
         updates.append({"turn_id": turn_id, "instruction": prompt})
         current["workspace"] = workspace
         current["settings"] = copy.deepcopy(settings)
+        # A new user turn can change a prior Automatic plan-only decision. Keep the
+        # plan and progress, but let the agent classify this follow-up afresh.
+        current["task_mode"] = "auto"
         if plan:
             current["plan"] = copy.deepcopy(plan)
     current.update(status="active", active_turn_id=turn_id, updated_at=time.time())
@@ -84,8 +87,11 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
 
 
 def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any = None,
-                decisions: Any = None) -> None:
+                decisions: Any = None, task_mode: str | None = None) -> None:
     checkpoint = _current(checkpoint)
+    if task_mode in {"discussion", "plan", "implement"}:
+        checkpoint["task_mode"] = task_mode
+        checkpoint["updated_at"] = time.time()
     if isinstance(items, list):
         checkpoint["plan"] = copy.deepcopy(items)
         pending = next((item for item in items if isinstance(item, dict)

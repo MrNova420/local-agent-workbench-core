@@ -8,6 +8,7 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     first = begin_task(None, prompt="Build a site", turn_id="t1", workspace="C:/p",
                        settings={"context": 65536, "max_tokens": 8192})
     record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}])
+    record_plan(first, [{"title": "Inspect", "status": "done"}, {"title": "Build", "status": "pending"}], task_mode="plan")
     record_operation(first, {"operationId": "op1", "name": "write_file", "status": "completed",
                              "affectedFiles": ["index.html"], "result": "Wrote index.html"})
     second = begin_task(first, prompt="Keep the visual style, then verify", turn_id="t2",
@@ -15,6 +16,7 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
 
     checkpoint = second["current"]
     assert checkpoint["task_id"] == "t1"
+    assert checkpoint["task_mode"] == "auto"
     assert checkpoint["user_updates"] == [{"turn_id": "t2", "instruction": "Keep the visual style, then verify"}]
     assert checkpoint["changed_files"] == ["index.html"]
     assert checkpoint["operations"][0]["result_ref"] == "op1"
@@ -209,16 +211,31 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
 
     assert registry.plan == []
     assert "acceptance_criteria" not in schema["required"]
+    assert "task_mode" not in schema["required"]
+    assert schema["properties"]["task_mode"]["enum"] == ["discussion", "plan", "implement"]
     assert schema["properties"]["acceptance_criteria"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["decisions"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["add_items"]["type"] == "array"
     registry.run("update_plan", {"items": [{"title": "Build", "status": "pending"}],
                                 "acceptance_criteria": ["The requested page renders."],
-                                "decisions": ["Use the existing router to preserve deep links."]})
+                                "decisions": ["Use the existing router to preserve deep links."],
+                                "task_mode": "implement"})
     assert registry.plan == [{"title": "Build", "status": "pending"}]
     assert events[-1]["acceptanceCriteria"] == ["The requested page renders."]
     assert events[-1]["decisions"] == ["Use the existing router to preserve deep links."]
+    assert events[-1]["taskMode"] == "implement"
+    assert checkpoint["current"]["task_mode"] == "implement"
     assert checkpoint["current"]["decisions"][0]["text"] == "Use the existing router to preserve deep links."
+
+    explicit_plan_events = []
+    explicit_plan_checkpoint = {"current": {"task_mode": "plan", "plan": []}}
+    explicit_plan_registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_: True,
+                                          explicit_plan_events.append, task_checkpoint=explicit_plan_checkpoint)
+    explicit_plan_registry.task_intent = "plan"
+    explicit_plan_registry.run("update_plan", {"items": [{"title": "Review only", "status": "pending"}],
+                                               "task_mode": "implement"})
+    assert explicit_plan_events[-1]["taskMode"] == "plan"
+    assert explicit_plan_checkpoint["current"]["task_mode"] == "plan"
 
 
 def test_agent_can_expand_plan_without_replacing_existing_independent_workstreams(tmp_path):

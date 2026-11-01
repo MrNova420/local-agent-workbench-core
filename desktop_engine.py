@@ -32,7 +32,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
-        "auto": "Task intent: automatic. Infer whether the user wants discussion, a plan, or implementation from the current request; respect the actual access policy below.",
+        "auto": "Task intent: automatic. Use the request and project evidence to choose discussion, plan-only, or implementation. For substantial tasks, call update_plan with task_mode set to discussion, plan, or implement; this structured choice controls whether open plan items require implementation continuation. Respect the actual access policy below.",
         "discuss": "Task intent: discussion. Explain or investigate the request without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "plan": "Task intent: plan only. Refine the visible starter checklist, analyze dependencies and risks, and present actionable steps without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "implement": "Task intent: implementation. Refine the visible starter checklist, then carry the requested project work through structured tools and relevant verification; follow the actual access and approval policy below.",
@@ -337,7 +337,7 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "failed"
     return "completed"
 
-def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, verification: dict[str, Any], plan: list[dict[str, Any]], task_intent: str = "auto", implementation_requested: bool = False) -> str:
+def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, verification: dict[str, Any], plan: list[dict[str, Any]], task_intent: str = "auto", implementation_requested: bool = False, task_mode: str = "auto") -> str:
     """Describe only outcomes supported by host-observed tool activity."""
     if action_denied:
         return "blocked"
@@ -365,6 +365,10 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
         return "command_completed"
     if status == "inspected":
         return "inspected"
+    if task_intent == "auto" and not project_changed and task_mode == "discussion":
+        return "discussion"
+    if task_intent == "auto" and not project_changed and task_mode == "plan":
+        return "plan_only"
     if project_changed:
         return "changed"
     if plan:
@@ -380,7 +384,11 @@ def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
             return True
     return False
 
-def _implementation_evidence(task_intent: str, plan_source: str, plan: list[dict[str, Any]],
+def _plan_requests_implementation(task_mode: str, plan_source: str, plan: list[dict[str, Any]]) -> bool:
+    """An open agent plan drives Automatic continuation unless it is explicitly plan-only."""
+    return task_mode not in {"discussion", "plan"} and plan_source == "agent" and _plan_has_open_work(plan)
+
+def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str, plan: list[dict[str, Any]],
                              project_changed: bool, command_side_effects_possible: bool,
                              mutation_attempted: bool = False) -> bool:
     """Infer implementation obligation from explicit UI intent and observed structured state only."""
@@ -388,6 +396,10 @@ def _implementation_evidence(task_intent: str, plan_source: str, plan: list[dict
         return True
     if task_intent != "auto":
         return False
+    if task_mode in {"discussion", "plan"} and not (project_changed or command_side_effects_possible or mutation_attempted):
+        return False
+    if task_mode == "implement":
+        return True
     return bool(project_changed or command_side_effects_possible or mutation_attempted
                 or (plan_source == "agent" and _plan_has_open_work(plan)))
 
@@ -485,6 +497,9 @@ class ToolRegistry:
         self.ask_user_callback=ask_user
         self.permission_rules=validate_permission_rules(permission_rules or [])
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
+        saved_task_mode=current_task(self.task_checkpoint).get("task_mode") if self.task_checkpoint is not None else None
+        self.task_mode=saved_task_mode if saved_task_mode in {"discussion", "plan", "implement"} else "auto"
+        self.task_intent="auto"
         self.conversation_messages:list[dict[str,Any]]=[]
         self.read_output_byte_budget=max(512,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
         read_budget_description="Return the complete requested result when it fits the remaining request context. If the current request or a batch cannot fit it, return a clearly marked continuation cursor; do not silently omit material."
@@ -496,7 +511,7 @@ class ToolRegistry:
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("read_task_checkpoint", "Recover saved task continuity details when the compacted prompt reports omissions. Read the current task, plan, decisions, user updates, operation references, changed files, verification, or prior task history in character-offset pages. No project files are changed.", {"section":{"type":"string","enum":["current","plan","decisions","user_updates","operations","changed_files","verification","task_history"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, []),
           self._schema("read_conversation_history", "Recover earlier saved user/assistant/tool transcript omitted from the current context, including emitted assistant reasoning. The system prompt is excluded. Use character-offset pages and an optional role filter; no project files are changed.", {"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1},"role":{"type":"string","enum":["user","assistant","tool"]}}, []),
-          self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
+          self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. For Automatic intent, set task_mode to discussion, plan, or implement when the task mode is clear; this is structured workflow state, not a permission grant. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"task_mode":{"type":"string","enum":["discussion","plan","implement"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
@@ -592,7 +607,13 @@ class ToolRegistry:
             if not isinstance(replacement,list) and not isinstance(additions,list):return "Invalid plan update: provide items to revise the full plan or add_items to expand the current plan."
             self.plan=copy.deepcopy(replacement) if isinstance(replacement,list) else copy.deepcopy(self.plan)
             if isinstance(additions,list):self.plan.extend(copy.deepcopy(additions))
-            self.plan_source="agent";criteria=args.get("acceptance_criteria");added_criteria=args.get("add_acceptance_criteria");decisions=args.get("decisions");event={"type":"plan","items":self.plan}
+            self.plan_source="agent";criteria=args.get("acceptance_criteria");added_criteria=args.get("add_acceptance_criteria");decisions=args.get("decisions");task_mode=args.get("task_mode")
+            authoritative_mode={"discuss":"discussion","plan":"plan","implement":"implement"}.get(self.task_intent)
+            if authoritative_mode:
+                self.task_mode=authoritative_mode
+            elif task_mode in {"discussion", "plan", "implement"}:
+                self.task_mode=task_mode
+            event={"type":"plan","items":self.plan,"taskMode":self.task_mode}
             if isinstance(added_criteria,list):
                 current_criteria=current_task(self.task_checkpoint).get("acceptance_criteria",[]) if self.task_checkpoint is not None else []
                 merged=list(current_criteria) if isinstance(current_criteria,list) else []
@@ -602,7 +623,7 @@ class ToolRegistry:
             if isinstance(criteria,list):event["acceptanceCriteria"]=criteria
             if isinstance(decisions,list):event["decisions"]=decisions
             if self.task_checkpoint is not None:
-                record_plan(self.task_checkpoint,self.plan,criteria if isinstance(criteria,list) else None,decisions)
+                record_plan(self.task_checkpoint,self.plan,criteria if isinstance(criteria,list) else None,decisions,self.task_mode)
             self.event(event);return "Plan updated."
         if name == "skill":
             if not self.skills_enabled:return "Skills are disabled for this run. Enable them in Run configuration before requesting a skill."
@@ -1337,6 +1358,11 @@ class AgentEngine:
         self.permission_rules=validate_permission_rules(permission_rules or [])
         read_output_budget=self.context.budget(max_tokens)
         registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result,permission_rules=self.permission_rules,task_checkpoint=checkpoint,read_output_token_budget=read_output_budget,ask_user=ask_user)
+        registry.task_intent=self.task_intent
+        explicit_task_mode={"discuss":"discussion","plan":"plan","implement":"implement"}.get(self.task_intent)
+        if explicit_task_mode:
+            registry.task_mode=explicit_task_mode
+            current_task(checkpoint)["task_mode"]=explicit_task_mode
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
         if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
             registry.plan_source="agent"
@@ -1594,7 +1620,7 @@ class AgentEngine:
                 if not calls:
                     post_change_inspection=last_inspection_action_index>last_effect_action_index
                     implementation_requested = _implementation_evidence(
-                        self.task_intent, self.state["registry"].plan_source,
+                        self.task_intent, self.state["registry"].task_mode, self.state["registry"].plan_source,
                         checkpoint_state.get("plan", []) if isinstance(checkpoint_state.get("plan", []), list) else [],
                         completed_project_change, command_side_effects_possible, mutation_attempted)
                     review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
@@ -1633,7 +1659,7 @@ class AgentEngine:
                                                  verification=str(verification.get("status", "")),
                                                  project_changed=completed_project_change,
                                                  post_change_inspection=post_change_inspection)
-                    workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested)
+                    workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested,self.state["registry"].task_mode)
                     finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
                 # Run independent read-only calls together. Mixed batches, writes,
@@ -1715,9 +1741,10 @@ class AgentEngine:
                             # it before the write runs; do not guess from prompt wording.
                             registry.plan=initial_task_plan(prompt,"implement")
                             registry.plan_source="workbench"
-                            record_plan(checkpoint,registry.plan,[])
+                            registry.task_mode="implement"
+                            record_plan(checkpoint,registry.plan,[],task_mode="implement")
                             self.event({"type":"plan","items":copy.deepcopy(registry.plan),
-                                        "acceptanceCriteria":[],"source":"workbench"})
+                                        "acceptanceCriteria":[],"source":"workbench","taskMode":"implement"})
                         tool_call_id=call.get("id",f"call-{index}")
                         if prepared:
                             out=prepared["output"]
@@ -1785,9 +1812,11 @@ class AgentEngine:
                                 "arguments": copy.deepcopy(args),
                             }
                     if name=="update_plan" and not args_error:
-                        record_plan(checkpoint,self.state["registry"].plan,args.get("acceptance_criteria"),args.get("decisions"))
-                        if (self.task_intent == "auto" and self.state["registry"].plan_source == "agent"
-                                and _plan_has_open_work(self.state["registry"].plan)):
+                        record_plan(checkpoint,self.state["registry"].plan,args.get("acceptance_criteria"),
+                                    args.get("decisions"),self.state["registry"].task_mode)
+                        if (self.task_intent == "auto" and _plan_requests_implementation(
+                                self.state["registry"].task_mode, self.state["registry"].plan_source,
+                                self.state["registry"].plan)):
                             implementation_requested=True
                     prepared=prepared_batch.get(index)
                     output_budget=prepared["budget"] if prepared else self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
