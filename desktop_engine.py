@@ -294,6 +294,9 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
     if access == "plan":
         return "plan_only"
     if implementation_requested and not project_changed:
+        contract = verification.get("contract", {})
+        if status in {"command_completed", "command_failed"} or (isinstance(contract, dict) and contract.get("command_side_effects_possible")):
+            return "implementation_unverified"
         return "implementation_incomplete"
     if status == "command_completed":
         return "command_completed"
@@ -305,7 +308,8 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
         return "plan_only"
     return "discussion"
 
-def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool) -> dict[str, Any]:
+def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool,
+                         command_side_effects_possible: bool = False, post_effect_inspection: bool = False) -> dict[str, Any]:
     """Summarize host-observed evidence without treating a completed command as a passing test."""
     inspections = [step for step in steps if step.get("kind") == "inspection"]
     commands = [step for step in steps if step.get("kind") == "command"]
@@ -327,7 +331,9 @@ def _verification_report(steps: list[dict[str, Any]], implementation_requested: 
         "contract": {
             "implementation_requested": implementation_requested,
             "project_change": "observed" if project_changed else "not_observed" if implementation_requested else "not_required",
-            "post_change_inspection": "completed" if inspections else "missing" if project_changed else "not_applicable",
+            "post_change_inspection": "completed" if project_changed and post_effect_inspection else "missing" if project_changed else "not_applicable",
+            "command_side_effects_possible": command_side_effects_possible,
+            "post_command_inspection": "completed" if command_side_effects_possible and post_effect_inspection else "missing" if command_side_effects_possible else "not_applicable",
             "approved_command_results": [step.get("result") for step in commands],
             "command_success_is_test_pass": False,
         },
@@ -996,7 +1002,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;continuation_attempted=False;verification_continuation_attempted=False;approval_continuation_attempted=False;completed_project_change=False;action_denied=False;verification_steps=[];implementation_requested=(self.task_intent=="implement" or (self.task_intent=="auto" and _requests_implementation(prompt)))
+        start=time.monotonic();request_index=0;continuation_attempted=False;verification_continuation_attempted=False;approval_continuation_attempted=False;completed_project_change=False;command_side_effects_possible=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[];implementation_requested=(self.task_intent=="implement" or (self.task_intent=="auto" and _requests_implementation(prompt)))
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -1031,18 +1037,19 @@ class AgentEngine:
                 if not calls:
                     content=str(msg.get("content", ""))
                     asks_for_action_approval=_asks_for_action_approval(content)
-                    post_change_inspection=any(step.get("kind")=="inspection" for step in verification_steps)
-                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or not post_change_inspection)
-                    can_continue=(not completed_project_change and not continuation_attempted) or (completed_project_change and not post_change_inspection and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted) or (asks_for_action_approval and not approval_continuation_attempted)
+                    post_change_inspection=last_inspection_action_index>last_effect_action_index
+                    review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
+                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or review_required)
+                    can_continue=(not completed_project_change and not command_side_effects_possible and not continuation_attempted and not verification_continuation_attempted) or (review_required and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted) or (asks_for_action_approval and not approval_continuation_attempted)
                     if unfinished and can_continue:
                         if asks_for_action_approval:
                             approval_continuation_attempted=True
                             continuation="Your previous response asked permission to run a command in plain text. If that action is still required by the user's task, call the exact structured run_command or run_shell tool now so the workbench can show its normal approval dialog. The tool request itself is not approval; wait for the host's approval result before execution. If the action is no longer needed, explain why instead of asking again."
                             reason="model asked for command approval in prose instead of requesting the structured tool"
-                        elif completed_project_change:
+                        elif review_required:
                             verification_continuation_attempted=True
-                            continuation="Project changes exist but no successful post-change inspection/check has run. Continue by inspecting the changed files or diff and running the relevant project check if one exists and is approved. Do not claim it passed unless the tool result confirms it. If this cannot be done, explain why."
-                            reason="implementation changes returned without a successful post-change inspection/check"
+                            continuation="A project-writing tool or approved command may have changed project state, but no later workspace inspection is recorded. Inspect the workspace after that action now using read_file, git_status, or git_diff as applicable. Identify changed files where the tools can observe them. Do not claim a command passed tests unless its output confirms that specific check. If effects cannot be determined, state that limitation."
+                            reason="implementation action or command returned without a later workspace inspection"
                         else:
                             continuation_attempted=True
                             continuation="This request requires an actual project change. Continue now using the available structured tools; the previous assistant response was only a plan/progress note, not completion. Use the normal access and approval rules. If a real blocker prevents work, state that blocker instead of asking for approval in prose."
@@ -1050,7 +1057,8 @@ class AgentEngine:
                         msgs[0]["content"] += "\n\n"+continuation
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
-                    verification=_verification_report(verification_steps,implementation_requested,completed_project_change)
+                    verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
+                        command_side_effects_possible,post_change_inspection)
                     workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested)
                     finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
@@ -1103,12 +1111,19 @@ class AgentEngine:
                         elif name=="apply_patch":
                             affected=[line[4:].strip() for line in str(args.get("patch","" )).splitlines() if line.startswith("+++ ") and line[4:].strip()!="/dev/null"]
                         status = _tool_activity_status(name, str(out))
+                        tool_action_index+=1
                         if status=="denied":action_denied=True
-                        if name in {"write_file","edit_file","apply_patch"} and status=="completed":completed_project_change=True
-                        if completed_project_change and name in {"read_file","git_diff"} and status=="completed":
-                            verification_steps.append({"kind":"inspection","tool":name,"result":"completed"})
-                        elif completed_project_change and name in {"run_command","run_shell"}:
-                            verification_steps.append({"kind":"command","tool":name,"result":status})
+                        if name in {"write_file","edit_file","apply_patch"} and status=="completed":
+                            completed_project_change=True
+                            last_effect_action_index=tool_action_index
+                        if name in {"run_command","run_shell"} and implementation_requested and status not in {"denied","blocked"}:
+                            command_side_effects_possible=True
+                            last_effect_action_index=tool_action_index
+                        if (completed_project_change or command_side_effects_possible) and name in {"read_file","git_diff","git_status"} and status=="completed":
+                            verification_steps.append({"kind":"inspection","tool":name,"arguments":copy.deepcopy(args),"result":"completed"})
+                            last_inspection_action_index=tool_action_index
+                        elif (completed_project_change or implementation_requested) and name in {"run_command","run_shell"} and status not in {"denied","blocked","cancelled"}:
+                            verification_steps.append({"kind":"command","tool":name,"arguments":copy.deepcopy(args),"result":status})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()}
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)

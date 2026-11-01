@@ -131,3 +131,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The engine now emits a compact provenance manifest immediately before each provider request, describing that exact request's messages, conservative input estimate/budget, compaction notice and task-checkpoint inclusion, project instruction paths/sizes, retrieved project-relative file paths, enabled/available/catalog-included skills, retained skill-load results, and exact tool/MCP names.
 - The manifest contains source metadata and sizes, not duplicated prompt text or MCP credentials. It is stored as a durable activity event so the same inspection can be reopened with the session.
 - Pure engine cases cover prompt-source accounting, exact skill catalog inclusion, retained skill results, and omission of prompt content. These are queued and unrun.
+
+## 2026-11-01 approved-command side-effect evidence in progress
+
+- Implementation commands can change project files without using the structured file tools. The engine now treats such effects as possible, records the exact approved command arguments and later inspection target, and requests one bounded post-command workspace inspection before it completes when no later inspection exists.
+- A command-only implementation remains `implementation_unverified` even if a later inspection ran, because the host has no structured write evidence identifying exactly what changed. A failed command remains `command_failed`; the UI warns that partial side effects may remain. Successful command exit is still not represented as a test pass.
+- Engine and renderer regressions cover this path and are queued for the final verification gate. No test, model, package, or UI run was performed for this source change.

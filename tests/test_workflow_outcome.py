@@ -15,7 +15,9 @@ def test_workflow_outcome_distinguishes_plan_change_inspection_and_command():
     assert _workflow_outcome("edit", False, False, {"status": "not_verified"}, [], "implement", True) == "implementation_incomplete"
     assert _workflow_outcome("plan", False, False, {"status": "not_verified"}, [], "implement", True) == "blocked"
     assert _workflow_outcome("plan", False, False, {"status": "not_verified"}, [], "auto", True) == "plan_only"
-    assert _workflow_outcome("edit", False, False, {"status": "command_completed"}, [], "implement", True) == "implementation_incomplete"
+    assert _workflow_outcome("edit", False, False, {"status": "command_completed"}, [], "implement", True) == "implementation_unverified"
+    assert _workflow_outcome("edit", False, False, {"status": "command_completed", "contract": {"command_side_effects_possible": True}}, [], "implement", True) == "implementation_unverified"
+    assert _workflow_outcome("edit", False, False, {"status": "command_failed", "contract": {"command_side_effects_possible": True}}, [], "implement", True) == "command_failed"
     assert _workflow_outcome("edit", False, False, {"status": "command_failed"}, [], "implement", True) == "command_failed"
 
 
@@ -23,6 +25,10 @@ def test_verification_report_distinguishes_missing_change_review_and_command_evi
     missing = _verification_report([], True, False)
     inspected = _verification_report([{"kind": "inspection", "tool": "git_diff", "result": "completed"}], True, True)
     checked = _verification_report([{"kind": "command", "tool": "run_command", "result": "completed"}], True, True)
+    possible_command_effects = _verification_report(
+        [{"kind": "command", "tool": "run_command", "arguments": {"argv": ["tool", "build"]}, "result": "completed"}],
+        True, False, command_side_effects_possible=True, post_effect_inspection=True,
+    )
 
     assert missing["status"] == "not_implemented"
     assert missing["contract"]["project_change"] == "not_observed"
@@ -30,6 +36,10 @@ def test_verification_report_distinguishes_missing_change_review_and_command_evi
     assert checked["status"] == "command_completed"
     assert checked["contract"]["post_change_inspection"] == "missing"
     assert checked["contract"]["command_success_is_test_pass"] is False
+    assert possible_command_effects["contract"]["project_change"] == "not_observed"
+    assert possible_command_effects["contract"]["command_side_effects_possible"] is True
+    assert possible_command_effects["contract"]["post_command_inspection"] == "completed"
+    assert possible_command_effects["steps"][0]["arguments"]["argv"] == ["tool", "build"]
 
 
 def test_explicit_task_intent_has_read_only_guidance_and_implementation_contract():

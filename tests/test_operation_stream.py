@@ -170,6 +170,90 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["verification"]["contract"]["approved_command_results"], ["completed"])
             self.assertFalse(completion["verification"]["contract"]["command_success_is_test_pass"])
 
+    def test_command_only_implementation_records_possible_effects_and_inspects_after_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            actions = []
+            engine.state["registry"].run = lambda name, args: (
+                actions.append((name, args)) or {
+                    "run_command": "Generated project files [exit 0]",
+                    "read_file": "Observed generated file contents",
+                }[name]
+            )
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "command", "function": {"name": "run_command", "arguments": {"argv": ["scaffold", "site"]}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The project is ready."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect", "function": {"name": "read_file", "arguments": {"path": "index.html"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "I inspected the generated file."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Implement a small website using the project scaffolder.")
+
+            self.assertEqual([name for name, _args in actions], ["run_command", "read_file"])
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "implementation_unverified")
+            contract = completion["verification"]["contract"]
+            self.assertEqual(contract["project_change"], "not_observed")
+            self.assertTrue(contract["command_side_effects_possible"])
+            self.assertEqual(contract["post_command_inspection"], "completed")
+            self.assertEqual(contract["approved_command_results"], ["completed"])
+            self.assertEqual(completion["verification"]["steps"][0]["arguments"]["argv"], ["scaffold", "site"])
+            self.assertEqual(completion["verification"]["steps"][1]["arguments"]["path"], "index.html")
+
+    def test_failed_implementation_command_is_inspected_for_partial_effects(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            engine.state["registry"].run = lambda name, _args: {
+                "run_command": "Generated package.json, then build failed [exit 1]",
+                "git_status": " M package.json",
+            }[name]
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "command", "function": {"name": "run_command", "arguments": {"argv": ["builder"]}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The build failed."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect", "function": {"name": "git_status", "arguments": {}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "I inspected the workspace after the failure."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Implement the requested package change and build it.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            contract = completion["verification"]["contract"]
+            self.assertEqual(completion["workflowOutcome"], "command_failed")
+            self.assertTrue(contract["command_side_effects_possible"])
+            self.assertEqual(contract["post_command_inspection"], "completed")
+            self.assertEqual(contract["approved_command_results"], ["failed"])
+
+    def test_denied_implementation_command_does_not_claim_possible_side_effects(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="ask", approve=lambda *_args: False, event=events.append)
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "command", "function": {"name": "run_command", "arguments": {"argv": ["builder"]}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The command was denied."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Implement the requested package change.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "blocked")
+            self.assertFalse(completion["verification"]["contract"]["command_side_effects_possible"])
+            self.assertEqual(completion["verification"]["contract"]["approved_command_results"], [])
+
     def test_implementation_that_uses_its_continuation_without_a_change_is_not_discussion(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
