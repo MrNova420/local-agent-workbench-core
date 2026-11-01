@@ -26,7 +26,7 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     server.status.return_value = {"running": True, "context": 32768}
     server.base_url = "http://127.0.0.1:11436"
     runtime = LlamaCppRuntime(server)
-    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 32768, "max_tokens": 100,
+    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 32768, "max_tokens": 100, "request_index": 4,
              "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
     events = []
     with patch("urllib.request.urlopen", return_value=FakeSSE(chunks)) as open_url:
@@ -45,6 +45,13 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     assert result["eval_duration"] == 4_000_000_000
     settings = next(event for event in events if event["type"] == "inference_settings")
     assert settings["requested_context"] == 32768
+    assert settings["request_index"] == 4
+    assert settings["request_api"] == "/v1/chat/completions"
+    assert settings["provider"] == "llama.cpp"
+    assert settings["api_model"] == "local-workbench"
+    assert settings["stream"] is True
+    assert settings["reasoning_field_sent"] is False
+    assert settings["runtime_context"] == 32768
     assert settings["max_output_tokens"] == 100
     assert settings["request_options"] == {"temperature": 0.1, "max_tokens": 100}
     assert [event["type"] for event in events].count("thinking") == 1

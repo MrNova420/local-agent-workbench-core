@@ -868,7 +868,7 @@ class OllamaRuntime:
                  "options":{"temperature":state["temperature"],"num_ctx":state["context"],"num_predict":state["max_tokens"],**state.get("runtime_options",{})}}
         if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
         estimated_input=ContextManager.estimate(json.dumps({"messages":messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
-        emit({"type":"inference_settings","model":state["model"],"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"request_options":payload["options"],"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
+        emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};call_ids={};request_started=time.monotonic();first_output=True;user_facing_output=False
         try:
@@ -1024,6 +1024,7 @@ class AgentEngine:
                 request_scope=checkpoint_state.get("active_turn_id") or checkpoint_state.get("task_id", "task")
                 self.event({"type":"prompt_manifest","activityId":f"{request_scope}-request-{request_index}",**manifest})
                 self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
+                self.state["request_index"] = request_index
                 result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"];msgs.append({"role":"assistant",**msg})
                 record_assistant_status(checkpoint,msg)
                 calls=msg.get("tool_calls") or []

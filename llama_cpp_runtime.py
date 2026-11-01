@@ -192,9 +192,13 @@ class LlamaCppRuntime:
         payload = {"model": "local-workbench", "messages": messages, "stream": True,
                    "temperature": state["temperature"], "max_tokens": state["max_tokens"],
                    "tools": tools, "stream_options": {"include_usage": True}}
-        emit({"type": "inference_settings", "provider": "llama.cpp", "model": state["model"],
+        emit({"type": "inference_settings", "provider": "llama.cpp", "request_api": "/v1/chat/completions",
+              "request_index": state.get("request_index"), "model": state["model"], "api_model": payload["model"],
+              "stream": payload["stream"], "tool_count": len(payload["tools"]),
               "requested_context": state["context"], "max_output_tokens": state["max_tokens"],
-              "reasoning_override": None, "request_options": {"temperature": payload["temperature"], "max_tokens": payload["max_tokens"]},
+              "reasoning_override": None, "reasoning_field_sent": False,
+              "runtime_reasoning": status.get("reasoning"),
+              "request_options": {"temperature": payload["temperature"], "max_tokens": payload["max_tokens"]},
               "runtime_context": status["context"]})
         req = urllib.request.Request(self.server.base_url + "/v1/chat/completions", data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json", "Accept": "text/event-stream"}, method="POST")
