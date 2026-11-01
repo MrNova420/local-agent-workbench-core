@@ -31,10 +31,7 @@ def test_host_starter_plan_is_visible_and_intent_specific():
     plan = initial_task_plan("Add a settings page", "implement")
     automatic_plan = initial_task_plan("Build a small website", "auto")
 
-    assert plan[0] == {
-        "title": "Requested outcome", "text": "Add a settings page",
-        "status": "pending", "source": "workbench",
-    }
+    assert plan[0] == {"title": "Use the task brief and project instructions as the objective", "status": "pending", "source": "workbench"}
     assert [row["title"] for row in plan[1:]] == [
         "Inspect relevant project context",
         "Refine the checklist with affected files and acceptance criteria",
@@ -42,7 +39,7 @@ def test_host_starter_plan_is_visible_and_intent_specific():
         "Inspect the changes and run relevant approved checks",
     ]
     assert all(row["source"] == "workbench" for row in plan)
-    assert automatic_plan and automatic_plan[0]["text"] == "Build a small website"
+    assert automatic_plan and automatic_plan[0]["source"] == "workbench"
     assert initial_task_plan("How do I fix this?", "auto") == []
 
 

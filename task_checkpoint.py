@@ -74,8 +74,7 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
     """Create a visible, factual starter checklist before a model call begins."""
     if intent not in {"plan", "implement", "auto"}:
         return []
-    goal = " ".join(str(prompt).split())
-    if not goal:
+    if not str(prompt).strip():
         return []
     if intent == "plan":
         phases = [
@@ -93,7 +92,7 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
     else:
         return []
     return [
-        {"title": "Requested outcome", "text": goal, "status": "pending", "source": "workbench"},
+        {"title": "Use the task brief and project instructions as the objective", "status": "pending", "source": "workbench"},
         *({"title": title, "status": status, "source": "workbench"} for title, status in phases),
     ]
 

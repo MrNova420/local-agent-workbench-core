@@ -11,6 +11,7 @@
 ## 2026-11-01 task intent and read-only planning
 
 - Added persisted `auto`, `discuss`, `plan`, and `implement` task intents to the shared engine contract. Explicit implementation tasks and automatically detected build requests receive a Workbench-authored checklist before inference; the requested goal is preserved as its own item, and model `update_plan` calls can refine the live checklist.
+- The starter checklist refers to the captured task brief instead of copying its full text a second time into the prompt checkpoint, preserving input budget for project context and work.
 - Plan and Discussion intents run with the engine's read-only access policy. Read-only access now omits write, patch, and command schemas from the model catalog and hides MCP tools for that run; runtime enforcement remains in place if the model submits an out-of-catalog tool call.
 - The shared engine also suppresses passed MCP schemas whenever the effective workspace access is `plan`, so the read-only boundary applies to the legacy engine entry point as well as the Electron sidecar.
 - The existing implementation-request classifier now lives in the checkpoint/workflow module so host plan seeding and engine continuation decisions use the same wording rules. Task intent is added to the assembled prompt without modifying model reasoning or token settings.
