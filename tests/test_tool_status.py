@@ -15,3 +15,9 @@ def test_failed_project_inspections_are_not_counted_as_verification():
 
 def test_successful_empty_search_remains_a_completed_operation():
     assert _tool_activity_status("search_files", "No matches.") == "completed"
+
+
+def test_mcp_errors_after_dispatch_are_uncertain_not_clean_failures():
+    assert _tool_activity_status("mcp__calendar__create_event", "Uncertain: response lost after dispatch") == "uncertain"
+    assert _tool_activity_status("mcp__calendar__create_event", "Tool error: server returned an error") == "uncertain"
+    assert _tool_activity_status("run_command", "Tool error: command not found") == "failed"

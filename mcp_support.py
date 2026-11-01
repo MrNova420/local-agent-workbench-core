@@ -16,6 +16,10 @@ class MCPRequestCancelled(Exception):
     """The caller cancelled one pending MCP operation."""
 
 
+class MCPRequestUncertain(Exception):
+    """An MCP operation was dispatched but its final server-side effects are unknown."""
+
+
 class MCPManager:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -179,7 +183,16 @@ class MCPManager:
 
     async def call(self, name: str, args: dict[str, Any]):
         server, tool = self.tools[name]
-        result = await self.clients[server][0].call_tool(tool, args)
+        try:
+            result = await self.clients[server][0].call_tool(tool, args)
+        except asyncio.CancelledError as exc:
+            raise MCPRequestUncertain(
+                "MCP call was interrupted after dispatch; the server may have applied it. Inspect before retrying."
+            ) from exc
+        except Exception as exc:
+            raise MCPRequestUncertain(
+                f"MCP call failed after dispatch ({type(exc).__name__}); server-side effects may have occurred. Inspect before retrying."
+            ) from exc
         output = "\n".join(c.text for c in result.content if getattr(c, "text", None)) or json.dumps([
             getattr(c, "model_dump", lambda: {})() for c in result.content
         ])

@@ -163,3 +163,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - DNS/TCP/TLS establishment has a 10-second connection-establishment bound. After connection establishment, request upload, response headers, and model generation have no deadline, preserving long local-model waits. This is not an overall inference timeout.
 - Request activity records prepared, dispatched/waiting-for-headers, headers received/status and wait time, response stream completion, failure phase, or cancellation. A local delayed-header regression was added; it is queued and has not been run.
 - llama.cpp stream events now keep reasoning and user-facing generation as separate phases, matching Ollama: reasoning-only deltas do not show the task as generating, and the phase changes when visible answer text or a tool call arrives. A queued regression covers the transition.
+
+## 2026-11-01 uncertain MCP completion safety
+
+- Once an MCP tool call is dispatched, cancellation or a lost/failed response is now recorded as `uncertain`; the remote server may have applied side effects even though the app did not receive a result. User-visible errors omit raw exception text that might contain endpoint credentials.
+- The engine stops the remaining calls from that same model tool batch after an uncertain MCP result. Those calls are persisted as `blocked` with an explicit not-executed result; no later call or automatic retry is made.
+- The uncertain operation and its exact arguments/result are retained in the task checkpoint and sidecar run state, and journal replay reconstructs the warning. Added queued engine, status, and persistence regressions. No tests or runtime checks were run.

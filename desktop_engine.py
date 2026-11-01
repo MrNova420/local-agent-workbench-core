@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import unquote
 from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
-from mcp_support import MCPRequestCancelled
+from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
@@ -244,6 +244,8 @@ def _tool_activity_status(name: str, result: str) -> str:
     """Map known tool outcomes to truthful states without inspecting file contents."""
     text = str(result)
     folded = text.casefold().strip()
+    if name.startswith("mcp__") and (folded.startswith(("uncertain:", "tool error:")) or "cancelled during mcp action" in folded or "canceled during mcp action" in folded):
+        return "uncertain"
     if name in {"run_command", "run_shell"} and "[command cancelled by user]" in folded:
         return "uncertain"
     if folded.startswith("denied by user"):
@@ -1089,6 +1091,7 @@ class AgentEngine:
                     elif schema is None:args_error=args_error or f"Unknown tool: {name}. Use only a tool listed in the current request."
                     elif not args_error:args_error=_validate_tool_arguments(args,schema)
                     if self.cancel_event.is_set():
+                        status="cancelled"
                         out="Cancelled before this tool action ran."
                         operation_id=uuid.uuid4().hex;operation_started=time.time()
                         self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
@@ -1096,6 +1099,7 @@ class AgentEngine:
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
                     elif args_error:
+                        status="failed"
                         out=f"Invalid tool call: {args_error} Correct the arguments to match the tool schema and try again."
                         operation_id=uuid.uuid4().hex;operation_started=time.time()
                         self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
@@ -1116,8 +1120,13 @@ class AgentEngine:
                                 else:out=self.mcp_call(name,args)
                             else:out=self.state["registry"].run(name,args)
                         except RequestCancelled:out="Cancelled while waiting for approval."
-                        except MCPRequestCancelled:out="Cancelled during MCP action."
-                        except Exception as exc:out=f"Tool error: {type(exc).__name__}: {exc}"
+                        except MCPRequestCancelled:
+                            out="Uncertain: MCP action was cancelled after dispatch; the server may have applied it. Inspect before retrying."
+                        except MCPRequestUncertain as exc:out=f"Uncertain: {exc}"
+                        except Exception as exc:
+                            if name.startswith("mcp__"):
+                                out=f"Uncertain: MCP call failed after dispatch ({type(exc).__name__}); server-side effects may have occurred. Inspect before retrying."
+                            else:out=f"Tool error: {type(exc).__name__}: {exc}"
                         finally:registry.event=previous_event
                         affected=[]
                         if name in {"read_file","write_file","edit_file"} and isinstance(args.get("path"),str):affected=[args["path"]]
@@ -1140,9 +1149,40 @@ class AgentEngine:
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()}
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
+                        if status == "uncertain":
+                            checkpoint_state = current_task(checkpoint)
+                            checkpoint_state["uncertain_operation"] = {
+                                **{
+                                    key: copy.deepcopy(operation_event.get(key))
+                                    for key in ("operationId", "toolCallId", "name", "result", "status", "affectedFiles", "completedAt")
+                                    if key in operation_event
+                                },
+                                "arguments": copy.deepcopy(args),
+                            }
                     if name=="update_plan" and not args_error:
                         record_plan(checkpoint,args.get("items",[]),args.get("acceptance_criteria"))
                     msgs.append({"role":"tool","tool_name":name or "unknown_tool","content":str(out)})
+                    if name.startswith("mcp__") and status == "uncertain" and not self.cancel_event.is_set():
+                        reason="MCP operation outcome is uncertain; inspect its remote effects before any retry. Remaining batched actions were not executed."
+                        for pending_index,pending in enumerate(calls[index+1:],start=index+1):
+                            pending_fn=pending.get("function") or {}
+                            pending_name=pending_fn.get("name","unknown_tool")
+                            pending_result="Not executed: an earlier MCP operation has an uncertain result and requires inspection before continuing."
+                            pending_id=pending.get("id",f"call-{pending_index}")
+                            pending_operation_id=uuid.uuid4().hex
+                            pending_started=time.time()
+                            self.event({"type":"tool_start","operationId":pending_operation_id,"toolCallId":pending_id,
+                                        "name":pending_name,"arguments":copy.deepcopy(pending_fn.get("arguments",{})),
+                                        "status":"blocked","startedAt":pending_started})
+                            skipped_event={"type":"tool_done","operationId":pending_operation_id,"toolCallId":pending_id,
+                                           "name":pending_name,"result":pending_result,"status":"blocked","affectedFiles":[],
+                                           "startedAt":pending_started,"completedAt":time.time()}
+                            record_operation(checkpoint,skipped_event)
+                            self.event(skipped_event)
+                            msgs.append({"role":"tool","tool_name":pending_name,"content":pending_result})
+                        finish_task(checkpoint,"failed",blocker=reason,outcome="blocked")
+                        self.event({"type":"error","error":reason,"workflowOutcome":"blocked"})
+                        return msgs
                     if self.stop_after_operation.is_set():
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             pending_fn=pending.get("function") or {};msgs.append({"role":"tool","tool_name":pending_fn.get("name","unknown_tool"),"content":"Not executed: the user chose to stop after the active operation."})
