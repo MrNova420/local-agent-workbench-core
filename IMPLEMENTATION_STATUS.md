@@ -1,5 +1,12 @@
 # Implementation and verification status
 
+## 2026-11-01 full harness audit: verified engine stabilization milestone
+
+- Committed as `f3809e82ed6266e25ac50722535d1d9bb3030ffe` on `workbench/approval-tool-continuation`; paired app pin is updated to this revision.
+- Full engine suite: **251 passed**. The run covers tool schema validation, context/request construction, task checkpoint continuity, tool batching, operation streaming, MCP, cancellation, permission policy, and continuation outcomes.
+- Fixed the shared JSON Schema traversal defect that treated arbitrary property names as unsupported schema keywords; restored small-model guidance that explicitly carries actionable plans into implementation; removed the oversized fixed required-tool bundle while retaining `load_tools` and deferred-schema discovery; made command-effect inspection count as structured progress; ensured direct `AgentEngine.run` creates its own durable checkpoint; fixed multi-file path permission matching; and made request-only Ollama cancellation return without waiting on the blocked response reader or stopping the runtime/model.
+- No selected model, reasoning default, context/output values, warm-model setting, or runtime placement was changed. This is source-suite verification only; paired sidecar/renderer/package/visible acceptance is tracked in the app repository.
+
 ## 2026-11-01 prompt-wording-free Automatic implementation evidence (verification queued)
 
 - Removed keyword/regex classification of user prompts as implementation requests. Automatic mode recognizes implementation from an agent-owned open structured plan or observed mutation operations; explicit Implement remains authoritative, while Discussion and Plan remain non-implementing.
