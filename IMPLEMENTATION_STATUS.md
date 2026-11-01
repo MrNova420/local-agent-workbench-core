@@ -60,3 +60,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The paired product's current local gates passed: 132 engine tests, 43 renderer tests, 38 sidecar tests, and TypeScript typecheck. Its Windows x64 `0.1.0-beta.1` installer/ZIP build and bundled-worker JSONL startup/ping/shutdown check also passed. This does not establish live model coding quality or full visible workflow acceptance.
 - GitHub Actions was triggered by publication but could not start a runner. GitHub's check annotation says the account is locked due to a billing issue; this is an account-level CI blocker, not a test failure. Local engine pytest passed on Python 3.12.10.
 - The historical `model-inspection.json` remains in prior commits to preserve history; it has been removed from the current tree and ignored. A targeted scan of reachable Git blobs found no high-confidence credential patterns. See the paired product acceptance log for scan scope and the disclosed machine-local model path.
+
+## 2026-10-31 post-beta core work
+
+- The paired Electron beta.2 release pins shared engine commit `ff67bcad93e72fad7add4eb8fc9e8aac1358e633`; its public beta release and local verification evidence are recorded in the desktop repository.
+- In implementation tasks, a final prose-only `May I run ...` / `Can I execute ...` response can now trigger one bounded continuation asking the model to issue the exact structured `run_command` or `run_shell` call. This does not authorize execution: the existing host approval dialog remains mandatory, and no action runs from the prose itself.
+- Automated tests, typecheck, sidecar integration, and visible application acceptance for this continuation are deliberately queued for the next final verification gate. This engine commit is not yet included in an app package.

@@ -229,6 +229,11 @@ def _announces_pending_action(content:str)->bool:
     folded=content.casefold()
     return re.search(r"\b(?:i will|i'll|i am going to|i’m going to|i'm going to|let me|next,? i(?:'ll| will))\s+(?:now\s+)?(?:create|build|implement|write|edit|modify|add|fix|run|test|verify|check|update)\b",folded) is not None
 
+def _asks_for_action_approval(content:str)->bool:
+    """Recognize a prose-only request to run a command so the host can show its real approval UI."""
+    folded=content.casefold()
+    return re.search(r"\b(?:may|can|could|should)\s+i\s+(?:please\s+)?(?:run|execute)\b|\bwould\s+you\s+like\s+me\s+to\s+(?:run|execute)\b|\blet\s+me\s+know\s+if\s+i\s+should\s+(?:run|execute)\b",folded) is not None
+
 def _tool_activity_status(name: str, result: str) -> str:
     """Map known tool outcomes to truthful states without inspecting file contents."""
     text = str(result)
@@ -900,7 +905,7 @@ class AgentEngine:
         remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
         retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining)
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
-        start=time.monotonic();continuation_attempted=False;verification_continuation_attempted=False;completed_project_change=False;action_denied=False;verification_steps=[];implementation_requested=_requests_implementation(prompt)
+        start=time.monotonic();continuation_attempted=False;verification_continuation_attempted=False;approval_continuation_attempted=False;completed_project_change=False;action_denied=False;verification_steps=[];implementation_requested=_requests_implementation(prompt)
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
@@ -921,10 +926,15 @@ class AgentEngine:
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
                     content=str(msg.get("content", ""))
+                    asks_for_action_approval=_asks_for_action_approval(content)
                     unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or not verification_steps)
-                    can_continue=(not completed_project_change and not continuation_attempted) or (completed_project_change and not verification_steps and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted)
+                    can_continue=(not completed_project_change and not continuation_attempted) or (completed_project_change and not verification_steps and not verification_continuation_attempted) or (_announces_pending_action(content) and not continuation_attempted) or (asks_for_action_approval and not approval_continuation_attempted)
                     if unfinished and can_continue:
-                        if completed_project_change:
+                        if asks_for_action_approval:
+                            approval_continuation_attempted=True
+                            continuation="Your previous response asked permission to run a command in plain text. If that action is still required by the user's task, call the exact structured run_command or run_shell tool now so the workbench can show its normal approval dialog. The tool request itself is not approval; wait for the host's approval result before execution. If the action is no longer needed, explain why instead of asking again."
+                            reason="model asked for command approval in prose instead of requesting the structured tool"
+                        elif completed_project_change:
                             verification_continuation_attempted=True
                             continuation="Project changes exist but no successful post-change inspection/check has run. Continue by inspecting the changed files or diff and running the relevant project check if one exists and is approved. Do not claim it passed unless the tool result confirms it. If this cannot be done, explain why."
                             reason="implementation changes returned without a successful post-change inspection/check"
