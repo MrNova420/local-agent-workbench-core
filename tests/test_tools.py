@@ -100,6 +100,14 @@ class ToolTests(unittest.TestCase):
     remainder=tools.run('read_file',{'path':'large.txt','start_line':line,'start_column':column})
     self.assertIn('second line',remainder)
     self.assertIn('雪'*10,remainder)
+
+ def test_agent_read_budget_uses_selected_context_and_output_without_rewriting_them(self):
+   from desktop_engine import AgentEngine
+   with tempfile.TemporaryDirectory() as t:
+    engine=AgentEngine(Path(t),context=65536,max_tokens=8192)
+    self.assertEqual(engine.state['context'],65536)
+    self.assertEqual(engine.state['max_tokens'],8192)
+    self.assertEqual(engine.state['registry'].read_output_byte_budget,14080)
  def test_write_file_accepts_files_over_old_cap(self):
   with tempfile.TemporaryDirectory() as t:
    content='x'*600000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
