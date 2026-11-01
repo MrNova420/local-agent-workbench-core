@@ -70,10 +70,6 @@ def _command_timeout(args:dict[str,Any])->int|None:
         raise ValueError("timeout_seconds must be a positive integer when specified; omit it to wait for completion or cancellation.")
     return value
 
-def _asks_for_clarification(content:str)->bool:
-    folded=content.casefold()
-    return any(phrase in folded for phrase in ("could you clarify","which framework do you prefer","which framework should","what would you like me to","please provide more detail","need more information before","before i begin, please","before i start, please"))
-
 def _json_value_key(value: Any) -> Any:
     """Canonical JSON equality key (unlike Python, true is not the number 1)."""
     if isinstance(value,bool):return ("boolean",value)
@@ -300,15 +296,6 @@ def _normalize_tool_history(messages: list[dict]) -> None:
             if not message.get("tool_name") and call_id:
                 message["tool_name"]=names_by_id.get(str(call_id),"unknown_tool")
 
-def _announces_pending_action(content:str)->bool:
-    folded=content.casefold()
-    return re.search(r"\b(?:i will|i'll|i am going to|i’m going to|i'm going to|let me|next,? i(?:'ll| will))\s+(?:now\s+)?(?:create|build|implement|write|edit|modify|add|fix|run|test|verify|check|update)\b",folded) is not None
-
-def _asks_for_action_approval(content:str)->bool:
-    """Recognize a prose-only request to run a command so the host can show its real approval UI."""
-    folded=content.casefold()
-    return re.search(r"\b(?:may|can|could|should)\s+i\s+(?:please\s+)?(?:run|execute)\b|\bwould\s+you\s+like\s+me\s+to\s+(?:run|execute)\b|\blet\s+me\s+know\s+if\s+i\s+should\s+(?:run|execute)\b",folded) is not None
-
 def _tool_activity_status(name: str, result: str) -> str:
     """Map known tool outcomes to truthful states without inspecting file contents."""
     text = str(result)
@@ -415,6 +402,12 @@ def _continuation_progress_signature(task: dict[str, Any], plan: list[dict[str, 
         "changed_files": task.get("changed_files", []),
     }
     return json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+def _needs_implementation_continuation(implementation_requested:bool,access:str,action_denied:bool,
+                                       observable_effect:bool,review_required:bool,plan_remaining:bool)->bool:
+    """Decide from structured work evidence only; assistant prose cannot mark a task done or pending."""
+    return bool(implementation_requested and access!="plan" and not action_denied
+                and (not observable_effect or review_required or plan_remaining))
 
 def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool,
                          command_side_effects_possible: bool = False, post_effect_inspection: bool = False) -> dict[str, Any]:
@@ -1590,28 +1583,24 @@ class AgentEngine:
                     finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
-                    content=str(msg.get("content", ""))
-                    asks_for_action_approval=_asks_for_action_approval(content)
                     post_change_inspection=last_inspection_action_index>last_effect_action_index
                     review_required=implementation_requested and last_effect_action_index>last_inspection_action_index
                     plan=checkpoint_state.get("plan",[])
                     plan_remaining=self.state["registry"].plan_source=="agent" and _plan_has_open_work(plan if isinstance(plan,list) else [])
-                    unfinished=implementation_requested and self.workspace.access!="plan" and not action_denied and not _asks_for_clarification(content) and (not completed_project_change or _announces_pending_action(content) or asks_for_action_approval or review_required or plan_remaining)
+                    observable_effect=completed_project_change or command_side_effects_possible
+                    unfinished=_needs_implementation_continuation(implementation_requested,self.workspace.access,action_denied,observable_effect,review_required,plan_remaining)
                     progress_signature=_continuation_progress_signature(checkpoint_state,plan if isinstance(plan,list) else [],verification_steps)
                     if unfinished and progress_signature!=last_continuation_signature:
                         last_continuation_signature=progress_signature
-                        if asks_for_action_approval:
-                            continuation="Your previous response asked permission to run a command in plain text. If that action is still required by the user's task, call the exact structured run_command or run_shell tool now so the workbench can show its normal approval dialog. The tool request itself is not approval; wait for the host's approval result before execution. If the action is no longer needed, explain why instead of asking again."
-                            reason="model asked for command approval in prose instead of requesting the structured tool"
-                        elif review_required:
+                        if review_required:
                             continuation="A project-writing tool or approved command may have changed project state, but no later workspace inspection is recorded. Inspect the workspace after that action now using read_file, git_status, or git_diff as applicable. Identify changed files where the tools can observe them. Do not claim a command passed tests unless its output confirms that specific check. If effects cannot be determined, state that limitation."
                             reason="implementation action or command returned without a later workspace inspection"
                         elif plan_remaining:
                             continuation="Continue from the saved implementation plan. Its agent-owned checklist still contains open work: complete the next actionable item or report its concrete blocker, update the checklist as work progresses, and keep implementing until the requested work and its verifiable acceptance criteria are addressed. Do not merely restate or polish the plan."
                             reason="agent-owned implementation plan still contains open work"
                         else:
-                            continuation="This request requires an actual project change. Continue now using the available structured tools; the previous assistant response was only a plan/progress note, not completion. Use the normal access and approval rules. If a real blocker prevents work, state that blocker instead of asking for approval in prose."
-                            reason="implementation task returned without completing its next project action"
+                            continuation="Continue the requested implementation through a concrete structured project operation. Use the visible plan and available tools; update the plan as work advances. Ask a structured user question only if a missing choice materially affects the work. If a real blocker remains, record it and state the next safe action."
+                            reason="no structured project effect has been recorded for this implementation task"
                         msgs[0]["content"] += "\n\n"+continuation
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue

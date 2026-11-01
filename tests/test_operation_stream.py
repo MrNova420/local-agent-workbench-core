@@ -4,10 +4,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace, _tool_activity_status
+from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace, _needs_implementation_continuation, _tool_activity_status
 
 
 class OperationStreamTests(unittest.TestCase):
+    def test_continuation_uses_verified_work_state_not_model_wording(self):
+        self.assertTrue(_needs_implementation_continuation(True, "edit", False, False, False, False))
+        self.assertTrue(_needs_implementation_continuation(True, "edit", False, True, False, True))
+        self.assertTrue(_needs_implementation_continuation(True, "edit", False, True, True, False))
+        self.assertFalse(_needs_implementation_continuation(True, "plan", False, False, False, False))
+        self.assertFalse(_needs_implementation_continuation(True, "edit", True, False, False, True))
+        self.assertFalse(_needs_implementation_continuation(True, "edit", False, True, False, False))
+
     def test_append_file_result_has_truthful_activity_status(self):
         self.assertEqual(_tool_activity_status("append_file", "Appended src/generated.ts"), "completed")
         self.assertEqual(_tool_activity_status("append_file", "Cannot append to missing.ts: no file"), "failed")
