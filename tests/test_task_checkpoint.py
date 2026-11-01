@@ -207,6 +207,23 @@ def test_task_checkpoint_reader_recovers_complete_plan_and_paged_omitted_details
     assert any(row["function"]["name"] == "read_task_checkpoint" for row in registry.schemas)
 
 
+def test_conversation_reader_recovers_emitted_reasoning_and_excludes_system_prompt(tmp_path):
+    from desktop_engine import ToolRegistry, Workspace
+
+    registry = ToolRegistry(Workspace(tmp_path, "plan"), lambda *_args: True)
+    registry.conversation_messages = [
+        {"role": "system", "content": "private system instructions"},
+        {"role": "user", "content": "Build the route"},
+        {"role": "assistant", "thinking": "I inspected the user requirements and chose the existing route structure."},
+    ]
+
+    result = registry.run("read_conversation_history", {"role": "assistant"})
+
+    assert "I inspected the user requirements" in result
+    assert "private system instructions" not in result
+    assert any(row["function"]["name"] == "read_conversation_history" for row in registry.schemas)
+
+
 def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_left_alone(tmp_path):
     from desktop_engine import AgentEngine
 

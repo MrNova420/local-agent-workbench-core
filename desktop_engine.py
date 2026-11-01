@@ -52,7 +52,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "For long builds, tests, installs, and other approved work, omit timeout_seconds unless a task-specific timeout is required; the host's Cancel control remains available. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
-        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revisit, broaden, or resequence the plan whenever new evidence, quality improvements, or user direction warrant it. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When checkpoint omissions are reported, use read_task_checkpoint to recover omitted plan, decisions, updates, operation references, or verification; use read_operation_result for full tool output and exact ranges. The checkpoint is factual state, while complete transcript, emitted reasoning text, and operation results remain in session history.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revisit, broaden, or resequence the plan whenever new evidence, quality improvements, or user direction warrant it. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When checkpoint omissions are reported, use read_task_checkpoint to recover omitted plan, decisions, updates, operation references, or verification; use read_conversation_history for omitted user/assistant transcript and emitted reasoning; use read_operation_result for full tool output and exact ranges. The complete transcript, emitted reasoning text, checkpoint, and operation results remain in saved session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
@@ -446,6 +446,7 @@ class ToolRegistry:
         self.operation_result_lookup=operation_result_lookup
         self.permission_rules=validate_permission_rules(permission_rules or [])
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
+        self.conversation_messages:list[dict[str,Any]]=[]
         self.read_output_byte_budget=max(512,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
         read_budget_description="Return the complete requested result when it fits the remaining request context. If the current request or a batch cannot fit it, return a clearly marked continuation cursor; do not silently omit material."
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
@@ -455,6 +456,7 @@ class ToolRegistry:
           self._schema("read_file", f"Read the complete project file by default; optional 1-based line bounds and start_column let you continue through large files. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("read_task_checkpoint", "Recover saved task continuity details when the compacted prompt reports omissions. Read the current task, plan, decisions, user updates, operation references, changed files, verification, or prior task history in character-offset pages. No project files are changed.", {"section":{"type":"string","enum":["current","plan","decisions","user_updates","operations","changed_files","verification","task_history"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, []),
+          self._schema("read_conversation_history", "Recover earlier saved user/assistant/tool transcript omitted from the current context, including emitted assistant reasoning. The system prompt is excluded. Use character-offset pages and an optional role filter; no project files are changed.", {"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1},"role":{"type":"string","enum":["user","assistant","tool"]}}, []),
           self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
@@ -469,7 +471,7 @@ class ToolRegistry:
         if not self.skills_enabled:
             self.schemas=[schema for schema in self.schemas if schema.get("function",{}).get("name")!="skill"]
         if self.workspace.access == "plan":
-            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint", "git_status", "git_diff", "git_log", "update_plan", "skill"}
+            read_only_tools = {"list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint", "read_conversation_history", "git_status", "git_diff", "git_log", "update_plan", "skill"}
             self.schemas = [schema for schema in self.schemas if schema.get("function", {}).get("name") in read_only_tools]
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
@@ -511,6 +513,17 @@ class ToolRegistry:
             stop=min(len(encoded),offset+length);excerpt=encoded[offset:stop]
             next_page=f"\nContinue with section={section}, offset={stop}, length={length}." if stop<len(encoded) else ""
             return f"Task checkpoint {section} characters {offset}-{stop} of {len(encoded)}:\n{excerpt}{next_page}"
+        if name == "read_conversation_history":
+            offset=args.get("offset",0);length=args.get("length");role=args.get("role")
+            if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
+            if length is not None and (not isinstance(length,int) or isinstance(length,bool) or length<1):return "Invalid length: expected a positive integer."
+            if role is not None and role not in {"user","assistant","tool"}:return "Invalid role filter. Choose user, assistant, or tool."
+            history=[message for message in self.conversation_messages[1:] if role is None or message.get("role")==role]
+            encoded=json.dumps(history,ensure_ascii=False,indent=2)
+            if length is None:length=max(1,(active_output_budget-180)//2) if active_output_budget is not None else len(encoded)
+            stop=min(len(encoded),offset+length);excerpt=encoded[offset:stop]
+            next_page=f"\nContinue with offset={stop}, length={length}." if stop<len(encoded) else ""
+            return f"Saved conversation history characters {offset}-{stop} of {len(encoded)} ({len(history)} messages):\n{excerpt}{next_page}"
         if name in {"git_status", "git_diff", "git_log"}:
             import subprocess
             try:
@@ -1356,6 +1369,7 @@ class AgentEngine:
         remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
         retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining,cancel_event=self.cancel_event)
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
+        self.state["registry"].conversation_messages=msgs
         checkpoint=self.state["task_checkpoint"]
         checkpoint_state=current_task(checkpoint)
         checkpoint_state.setdefault("goal",prompt)
@@ -1432,7 +1446,7 @@ class AgentEngine:
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
                 # Run independent read-only calls together. Mixed batches, writes,
                 # commands, MCP, and permission-prompted actions stay ordered.
-                readonly_names={"list_files","search_files","read_file","read_operation_result","read_task_checkpoint","git_status","git_diff","git_log"}
+                readonly_names={"list_files","search_files","read_file","read_operation_result","read_task_checkpoint","read_conversation_history","git_status","git_diff","git_log"}
                 prepared_batch:dict[int,dict[str,Any]]={}
                 if len(calls)>1:
                     parsed_batch=[];batch_is_readonly=True
