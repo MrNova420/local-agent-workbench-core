@@ -204,4 +204,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 
 - `run_command` and `run_shell` no longer impose a 120-second default or a one-hour ceiling. Omit `timeout_seconds` to wait for command completion or user cancellation; a caller can still request any positive explicit timeout. Tool descriptions and agent guidance explain this behavior.
 - The retained CLI approval preview now displays the actual command and says whether the operation has no deadline or an explicitly requested timeout; it no longer shows a false 120-second default.
+
+## 2026-11-01 selected Ollama token controls are authoritative
+
+- Ollama request construction now prevents generic `runtime_options` from overriding the selected temperature, context (`num_ctx`), or output cap (`num_predict`). Non-conflicting runtime options still pass through.
+- Any conflicting persisted option values are recorded in request provenance as ignored overrides so the user can see why the exact payload differs from stale configuration. A queued request-payload regression covers context/output/temperature collisions and safe pass-through of `num_thread`; no tests or model requests were run.
 - Added queued validation coverage for no implicit timeout, large explicit values, and invalid values. No command or long-running task was launched.

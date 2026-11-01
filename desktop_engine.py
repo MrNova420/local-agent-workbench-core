@@ -979,11 +979,19 @@ class OllamaRuntime:
         request=urllib.request.Request(self.base_url+"/api/generate",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json"},method="POST")
         with urllib.request.urlopen(request,timeout=None) as response:return json.loads(response.read().decode())
     def stream(self,state:dict,messages:list[dict],cancel:threading.Event,emit:Callable[[dict],None])->dict:
+        configured_options=state.get("runtime_options")
+        configured_options=configured_options if isinstance(configured_options,dict) else {}
+        controlled_options={"temperature","num_ctx","num_predict"}
+        ignored_overrides={key:copy.deepcopy(configured_options[key]) for key in controlled_options if key in configured_options}
+        request_options={key:copy.deepcopy(value) for key,value in configured_options.items() if key not in controlled_options}
+        request_options.update(temperature=state["temperature"],num_ctx=state["context"],num_predict=state["max_tokens"])
         payload={"model":state["model"],"messages":messages,"stream":True,"tools":state["registry"].schemas+state.get("mcp_tools",[]),"keep_alive":state.get("keep_alive","30m"),
-                 "options":{"temperature":state["temperature"],"num_ctx":state["context"],"num_predict":state["max_tokens"],**state.get("runtime_options",{})}}
+                 "options":request_options}
         if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
         estimated_input=ContextManager.estimate(json.dumps({"messages":messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
-        emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":{"think":payload["think"]} if "think" in payload else {},"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
+        additional_fields={"think":payload["think"]} if "think" in payload else {}
+        if ignored_overrides:additional_fields["ignored_runtime_option_overrides"]=ignored_overrides
+        emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":additional_fields,"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};call_ids={};request_started=time.monotonic();first_output=True;user_facing_output=False
         dispatch_time={"value":None};request_index=state.get("request_index")

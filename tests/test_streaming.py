@@ -54,4 +54,20 @@ class StreamTests(unittest.TestCase):
   self.assertFalse(settings['reasoning_field_sent'])
   self.assertEqual(settings['additional_fields'],{})
   self.assertNotIn('think',payload)
+
+ def test_selected_context_output_and_temperature_override_conflicting_runtime_options(self):
+  lines=[json.dumps({'message':{'content':'ok'},'done':True}).encode()+b'\n']
+  response=FakeResponse(lines);runtime=OllamaRuntime();events=[]
+  state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),'temperature':0.2,
+         'context':65536,'max_tokens':8192,
+         'runtime_options':{'num_ctx':8192,'num_predict':500,'temperature':1.0,'num_thread':6}}
+  with patch('desktop_engine.open_http_stream',return_value=response) as open_url:
+   runtime.stream(state,[],threading.Event(),events.append)
+  payload=json.loads(open_url.call_args.args[0].data)
+  self.assertEqual(payload['options'],{'temperature':0.2,'num_ctx':65536,'num_predict':8192,'num_thread':6})
+  settings=next(event for event in events if event['type']=='inference_settings')
+  self.assertEqual(settings['requested_context'],65536)
+  self.assertEqual(settings['max_output_tokens'],8192)
+  self.assertEqual(settings['additional_fields']['ignored_runtime_option_overrides'],
+                   {'num_ctx':8192,'num_predict':500,'temperature':1.0})
 if __name__=='__main__':unittest.main()
