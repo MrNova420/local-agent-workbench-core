@@ -2,6 +2,8 @@
 
 ## 2026-11-01 unpublished continuity source work
 
+- Verification outcomes now retain an explicit `command_incomplete` state for cancelled, partial, uncertain, or otherwise incomplete command runs, even when the project also has observed file changes. The command result is included in the verification record. Queued regression coverage was added; no test was run.
+
 - Tool-batch events now include the inference request index so the desktop activity layer can settle streamed per-call preparation rows against the exact request. A regression is queued; no verification was run.
 
 - Added a factual task checkpoint module for continuing the same user task across turns and compaction, retaining plan, captured settings, completed operation references, changed files, and verification. Older flat checkpoints migrate forward; terminal tasks remain in local checkpoint history.

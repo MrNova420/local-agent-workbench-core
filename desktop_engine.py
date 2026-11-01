@@ -351,6 +351,8 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
     status = str(verification.get("status", "not_verified"))
     if status == "command_failed":
         return "command_failed"
+    if status == "command_incomplete":
+        return "command_incomplete"
     if task_intent == "discuss":
         return "discussion"
     if task_intent == "plan":
@@ -381,6 +383,8 @@ def _verification_report(steps: list[dict[str, Any]], implementation_requested: 
     commands = [step for step in steps if step.get("kind") == "command"]
     if any(step.get("result") == "failed" for step in commands):
         status = "command_failed"
+    elif any(step.get("result") in {"partial", "uncertain", "cancelled", "command_not_completed"} for step in commands):
+        status = "command_incomplete"
     elif any(step.get("result") == "completed" for step in commands):
         status = "command_completed"
     elif inspections:
@@ -1290,7 +1294,7 @@ class AgentEngine:
                         if (completed_project_change or command_side_effects_possible) and name in {"read_file","git_diff","git_status"} and status=="completed":
                             verification_steps.append({"kind":"inspection","tool":name,"arguments":copy.deepcopy(args),"result":"completed"})
                             last_inspection_action_index=tool_action_index
-                        elif (completed_project_change or implementation_requested) and name in {"run_command","run_shell"} and status not in {"denied","blocked","cancelled"}:
+                        elif (completed_project_change or implementation_requested) and name in {"run_command","run_shell"} and status not in {"denied","blocked"}:
                             verification_steps.append({"kind":"command","tool":name,"arguments":copy.deepcopy(args),"result":status})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()}
                         self.operation_results[operation_id]=str(out)

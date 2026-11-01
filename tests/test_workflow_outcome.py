@@ -8,6 +8,7 @@ def test_workflow_outcome_distinguishes_plan_change_inspection_and_command():
     assert _workflow_outcome("edit", False, True, {"status": "inspected"}, []) == "inspected"
     assert _workflow_outcome("edit", False, True, {"status": "command_completed"}, []) == "command_completed"
     assert _workflow_outcome("edit", False, True, {"status": "command_failed"}, []) == "command_failed"
+    assert _workflow_outcome("edit", False, True, {"status": "command_incomplete"}, []) == "command_incomplete"
     assert _workflow_outcome("ask", True, False, {"status": "not_verified"}, []) == "blocked"
     assert _workflow_outcome("ask", False, False, {"status": "not_verified"}, []) == "discussion"
     assert _workflow_outcome("plan", False, False, {"status": "not_verified"}, [], "discuss") == "discussion"
@@ -40,6 +41,11 @@ def test_verification_report_distinguishes_missing_change_review_and_command_evi
     assert possible_command_effects["contract"]["command_side_effects_possible"] is True
     assert possible_command_effects["contract"]["post_command_inspection"] == "completed"
     assert possible_command_effects["steps"][0]["arguments"]["argv"] == ["tool", "build"]
+
+    partial = _verification_report([{"kind": "command", "tool": "run_command", "result": "partial"}], True, True)
+    cancelled = _verification_report([{"kind": "command", "tool": "run_shell", "result": "cancelled"}], True, False)
+    assert partial["status"] == "command_incomplete"
+    assert cancelled["status"] == "command_incomplete"
 
 
 def test_explicit_task_intent_has_read_only_guidance_and_implementation_contract():
