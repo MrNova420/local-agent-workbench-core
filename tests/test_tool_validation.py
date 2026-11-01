@@ -5,9 +5,25 @@ from pathlib import Path
 from unittest.mock import patch
 
 from desktop_engine import AgentEngine, CONTEXT_MAX, _normalize_tool_history, _validate_tool_arguments
+from tool_schema_capabilities import unsupported_schema_features
 
 
 class ToolValidationTests(unittest.TestCase):
+    def test_mcp_schema_capability_report_is_recursive_bounded_and_deterministic(self):
+        schema={"type":"object","properties":{"settings":{"type":"object","if":{"required":["mode"]},"then":{"properties":{"mode":{"type":"string","format":"date-time"}}}}}}
+        report=unsupported_schema_features(schema)
+        self.assertEqual(report, sorted(report))
+        self.assertTrue(any(".if: unsupported keyword" in item for item in report))
+        self.assertTrue(any(".format: unsupported keyword" in item for item in report))
+        self.assertTrue(unsupported_schema_features({"type":"file"}))
+        self.assertTrue(unsupported_schema_features({"$ref":"https://example.test/schema"}))
+        deeply_nested={}
+        cursor=deeply_nested
+        for _ in range(66):
+            cursor["properties"]={}
+            cursor=cursor["properties"]
+        self.assertTrue(any("nesting" in item for item in unsupported_schema_features(deeply_nested)))
+
     def test_legacy_saved_tool_result_is_migrated_to_ollama_protocol(self):
         messages=[{"role":"assistant","tool_calls":[{"id":"old-call","function":{"name":"read_file","arguments":{"path":"a.py"}}}]},
                   {"role":"tool","tool_call_id":"old-call","content":"file body"}]

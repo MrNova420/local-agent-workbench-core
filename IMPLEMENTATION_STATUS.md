@@ -176,3 +176,10 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Ollama and llama.cpp now emit per-call progress while streamed tool names and arguments are assembling. The event carries only provider, request/call indexes, current tool name, and argument character count; it never includes partial argument contents and cannot trigger a tool.
 - The app renders a live “Preparing structured tool request · not dispatched” cue in chat, then replaces it with normal structured activity when the provider completes the call. Progress is transient and excluded from session journals; only complete structured calls and executed/blocked operation results are persisted.
 - Queued mocked runtime and renderer-state regressions cover both adapters, preview updates/multiple calls, and the absence of partial argument content. They were not run.
+
+## 2026-11-01 MCP schema capability visibility
+
+- MCP discovery now performs a bounded recursive scan of each advertised input schema and records unsupported keywords, types, and non-local references before the model attempts the tool.
+- When a schema uses features outside the engine validator, its MCP tool description explains which features are not validated and that calls using them fail closed. The raw schema remains intact, and runtime validation still rejects unsupported features rather than executing an unchecked call.
+- The capability walk is limited by nesting depth and node count because MCP schemas are server-provided input. New unit and mocked-discovery regressions cover nested unsupported keywords, unsupported types/references, and the warning attached to a discovered tool. They are queued and unrun.
+- This is explicit capability reporting, not expanded JSON Schema support. Add actual keyword semantics only with dedicated validation cases and preserve fail-closed behavior until then.

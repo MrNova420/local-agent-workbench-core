@@ -11,6 +11,7 @@ from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import current_task, finish_task, record_assistant_status, record_decision, record_operation, record_plan, render_checkpoint, requests_implementation
+from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -77,8 +78,7 @@ def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", _depth: 
         return f"{path} has an invalid tool schema."
     if _depth >= 64:
         return f"{path} exceeds the supported tool-schema nesting depth."
-    supported={"$ref","$schema","$id","$comment","$defs","definitions","title","description","default","examples","deprecated","readOnly","writeOnly","type","enum","const","allOf","anyOf","oneOf","not","required","properties","patternProperties","additionalProperties","additionalItems","items","minLength","maxLength","pattern","minimum","maximum","exclusiveMinimum","exclusiveMaximum","multipleOf","minItems","maxItems","uniqueItems","minProperties","maxProperties"}
-    unsupported=sorted(set(schema)-supported)
+    unsupported=sorted(set(schema)-SUPPORTED_SCHEMA_KEYWORDS)
     if unsupported:return f"{path} uses unsupported JSON Schema keyword(s): {', '.join(unsupported)}."
     root_schema=_root_schema or schema
     if "$ref" in schema:

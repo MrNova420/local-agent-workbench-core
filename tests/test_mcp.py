@@ -28,6 +28,24 @@ class MCPTests(unittest.TestCase):
   except ImportError:self.skipTest('MCP SDK not installed; lifecycle exercised via mocked SDK when available')
   asyncio.run(scenario())
 
+ def test_discovery_exposes_unsupported_schema_features_to_the_model_and_catalog(self):
+  async def scenario():
+   m=MCPManager(Path('unused.json'));m.servers={'demo':{'command':'fake'}}
+   unsupported=SimpleNamespace(name='schedule',description='create a schedule',inputSchema={
+    'type':'object','properties':{'when':{'type':'string','format':'date-time'}}})
+   class SchemaSession(FakeSession):
+    async def list_tools(self):return SimpleNamespace(tools=[unsupported])
+   with patch('mcp.ClientSession',SchemaSession),patch('mcp.StdioServerParameters',lambda **kw:kw),patch('mcp.client.stdio.stdio_client',FakeManager):
+    tools=await m.discover()
+   name='mcp__demo__schedule'
+   self.assertIn(name,m.schema_warnings)
+   self.assertIn('format',tools[0]['function']['description'])
+   self.assertEqual(tools[0]['function']['parameters'],unsupported.inputSchema)
+   await m.close()
+  try:import mcp
+  except ImportError:self.skipTest('MCP SDK not installed; discovery schema reporting is exercised via mocked SDK when available')
+  asyncio.run(scenario())
+
  def test_remote_streamable_http_resolves_env_backed_headers_without_persisting_secrets(self):
   async def scenario():
    m=MCPManager(Path('unused.json'));m.servers={'remote':{'transport':'streamable-http','url':'https://tools.example.test/mcp','headers':{'Authorization':'Bearer ${ENV:WORKBENCH_MCP_TOKEN}'}}}

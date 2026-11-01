@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
+from tool_schema_capabilities import unsupported_schema_features
 
 
 class MCPRequestCancelled(Exception):
@@ -27,6 +28,7 @@ class MCPManager:
         self.clients: dict[str, tuple[Any, Any]] = {}
         self.tools: dict[str, tuple[str, str]] = {}
         self.errors: dict[str, str] = {}
+        self.schema_warnings: dict[str, list[str]] = {}
         self.discovered = False
         self.loop: asyncio.AbstractEventLoop | None = None
         self.loop_thread: threading.Thread | None = None
@@ -92,6 +94,7 @@ class MCPManager:
             raise RuntimeError("Optional MCP SDK missing; install requirements-mcp.txt") from exc
 
         self.errors.clear()
+        self.schema_warnings.clear()
         found = []
         for name, cfg in self.servers.items():
             if not isinstance(cfg, dict):
@@ -155,12 +158,18 @@ class MCPManager:
                 for tool in response.tools:
                     key = f"mcp__{name}__{tool.name}"
                     self.tools[key] = (name, tool.name)
+                    schema = tool.inputSchema or {"type": "object", "properties": {}}
+                    unsupported = unsupported_schema_features(schema)
+                    description = (tool.description or "") + " (MCP tool; requires approval)"
+                    if unsupported:
+                        self.schema_warnings[key] = unsupported
+                        description += " [Workbench tool-argument validation does not currently support: " + "; ".join(unsupported) + ". Calls using these schema features will fail closed.]"
                     found.append({
                         "type": "function",
                         "function": {
                             "name": key,
-                            "description": (tool.description or "") + " (local MCP tool; requires approval)",
-                            "parameters": tool.inputSchema or {"type": "object", "properties": {}},
+                            "description": description,
+                            "parameters": schema,
                         },
                     })
             except BaseException as exc:
