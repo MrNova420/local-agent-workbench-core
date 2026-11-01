@@ -241,7 +241,9 @@ def _tool_activity_status(name: str, result: str) -> str:
         return "cancelled"
     if folded.startswith(("tool error:", "command error:", "unknown tool:")):
         return "failed"
-    if folded.startswith("invalid "):
+    if name == "read_file" and folded.startswith(("invalid start_line:", "invalid end_line:")):
+        return "failed"
+    if name in {"list_files", "search_files", "git_status", "git_diff", "write_file", "edit_file"} and folded.startswith("invalid "):
         return "failed"
     if folded.startswith(("git diff unavailable:", "no git repository rooted", "requested lines ")):
         return "failed"
