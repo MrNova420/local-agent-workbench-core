@@ -1061,7 +1061,16 @@ class AgentEngine:
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
-        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=operation_result_lookup),"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":task_checkpoint if isinstance(task_checkpoint,dict) else {},"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
+        # The app supplies a durable session lookup. Keep an in-memory fallback
+        # as well so standalone AgentEngine/CLI sessions can recover earlier
+        # operation output without advertising a tool that cannot work.
+        self.operation_results:dict[str,str]={}
+        def lookup_operation_result(operation_id:str)->str|None:
+            if operation_result_lookup is not None:
+                saved=operation_result_lookup(operation_id)
+                if saved is not None:return saved
+            return self.operation_results.get(operation_id)
+        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result),"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":task_checkpoint if isinstance(task_checkpoint,dict) else {},"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources)}
     def _approval(self,name:str,args:Any)->bool:
         checkpoint=self.state["task_checkpoint"]
         if self.approval_mode=="auto":
@@ -1213,6 +1222,7 @@ class AgentEngine:
                         operation_id=uuid.uuid4().hex;operation_started=time.time()
                         self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","result":out,"status":"cancelled","affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()}
+                        self.operation_results[operation_id]=out
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
                     elif args_error:
@@ -1221,6 +1231,7 @@ class AgentEngine:
                         operation_id=uuid.uuid4().hex;operation_started=time.time()
                         self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","result":out,"status":"failed","affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()}
+                        self.operation_results[operation_id]=out
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
                     else:
@@ -1264,6 +1275,7 @@ class AgentEngine:
                         elif (completed_project_change or implementation_requested) and name in {"run_command","run_shell"} and status not in {"denied","blocked","cancelled"}:
                             verification_steps.append({"kind":"command","tool":name,"arguments":copy.deepcopy(args),"result":status})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()}
+                        self.operation_results[operation_id]=str(out)
                         record_operation(checkpoint,operation_event)
                         self.event(operation_event)
                         if status == "uncertain":
@@ -1294,6 +1306,7 @@ class AgentEngine:
                             skipped_event={"type":"tool_done","operationId":pending_operation_id,"toolCallId":pending_id,
                                            "name":pending_name,"result":pending_result,"status":"blocked","affectedFiles":[],
                                            "startedAt":pending_started,"completedAt":time.time()}
+                            self.operation_results[pending_operation_id]=pending_result
                             record_operation(checkpoint,skipped_event)
                             self.event(skipped_event)
                             msgs.append({"role":"tool","tool_name":pending_name,"content":pending_result})

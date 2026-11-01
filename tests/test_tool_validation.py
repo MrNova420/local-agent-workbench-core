@@ -46,12 +46,19 @@ class ToolValidationTests(unittest.TestCase):
 
     def test_prior_operation_result_tool_returns_full_result_or_requested_character_slice(self):
         with tempfile.TemporaryDirectory() as folder:
-            registry=AgentEngine(Path(folder),context=CONTEXT_MAX,access="plan").state["registry"]
+            engine=AgentEngine(Path(folder),context=CONTEXT_MAX,access="plan")
+            registry=engine.state["registry"]
             registry.operation_result_lookup=lambda operation_id: "full output from operation" if operation_id=="op-1" else None
             self.assertIn("read_operation_result",[row["function"]["name"] for row in registry.schemas])
             self.assertEqual(registry.run("read_operation_result",{"operation_id":"op-1"}),"full output from operation")
             self.assertIn("characters 5-10 of 26",registry.run("read_operation_result",{"operation_id":"op-1","offset":5,"length":5}))
             self.assertTrue(registry.run("read_operation_result",{"operation_id":"unknown"}).startswith("No saved result"))
+
+    def test_prior_operation_lookup_falls_back_to_current_engine_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine=AgentEngine(Path(folder),context=CONTEXT_MAX,access="plan")
+            engine.operation_results["op-2"]="standalone session output"
+            self.assertEqual(engine.state["registry"].run("read_operation_result",{"operation_id":"op-2"}),"standalone session output")
 
     def test_legacy_saved_tool_result_is_migrated_to_ollama_protocol(self):
         messages=[{"role":"assistant","tool_calls":[{"id":"old-call","function":{"name":"read_file","arguments":{"path":"a.py"}}}]},
