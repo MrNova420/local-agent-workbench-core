@@ -34,6 +34,18 @@ def test_checkpoint_separates_user_decisions_blockers_and_next_action():
     assert "Implement" in checkpoint["current"]["next_action"]
 
 
+def test_plan_decisions_and_assumptions_are_checkpointed_without_duplicates():
+    checkpoint = begin_task(None, prompt="Build the project", turn_id="t1", workspace="C:/p", settings={})
+    items = [{"title": "Implement the existing React app", "status": "in_progress"}]
+    decisions = ["Preserve the existing router; replacing it would break deep links."]
+
+    record_plan(checkpoint, items, ["Deep links continue to work."], decisions)
+    record_plan(checkpoint, items, ["Deep links continue to work."], decisions)
+
+    assert checkpoint["current"]["next_action"] == "Implement the existing React app"
+    assert [row["text"] for row in checkpoint["current"]["decisions"]] == decisions
+
+
 def test_task_acceptance_criteria_survive_followup_compaction_and_archive():
     checkpoint = begin_task(None, prompt="Build a site", turn_id="t1", workspace="C:/p", settings={})
     record_plan(checkpoint, [{"title": "Build", "status": "in_progress"}], [
@@ -127,17 +139,22 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
     from desktop_engine import ToolRegistry, Workspace
 
     events = []
-    registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_args: True, events.append)
+    checkpoint = begin_task(None, prompt="Build a page", turn_id="t1", workspace="C:/p", settings={})
+    registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_args: True, events.append, task_checkpoint=checkpoint)
     schema = next(row["function"]["parameters"] for row in registry.schemas
                   if row["function"]["name"] == "update_plan")
 
     assert registry.plan == []
     assert "acceptance_criteria" not in schema["required"]
     assert schema["properties"]["acceptance_criteria"] == {"type": "array", "items": {"type": "string"}}
+    assert schema["properties"]["decisions"] == {"type": "array", "items": {"type": "string"}}
     registry.run("update_plan", {"items": [{"title": "Build", "status": "pending"}],
-                                "acceptance_criteria": ["The requested page renders."]})
+                                "acceptance_criteria": ["The requested page renders."],
+                                "decisions": ["Use the existing router to preserve deep links."]})
     assert registry.plan == [{"title": "Build", "status": "pending"}]
     assert events[-1]["acceptanceCriteria"] == ["The requested page renders."]
+    assert events[-1]["decisions"] == ["Use the existing router to preserve deep links."]
+    assert checkpoint["current"]["decisions"][0]["text"] == "Use the existing router to preserve deep links."
 
 
 def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_left_alone(tmp_path):

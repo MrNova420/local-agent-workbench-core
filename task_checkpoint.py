@@ -99,7 +99,8 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
     ]
 
 
-def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any = None) -> None:
+def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any = None,
+                decisions: Any = None) -> None:
     checkpoint = _current(checkpoint)
     if isinstance(items, list):
         checkpoint["plan"] = copy.deepcopy(items)
@@ -111,6 +112,15 @@ def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any
         checkpoint["acceptance_criteria"] = [item.strip() for item in acceptance_criteria if isinstance(item, str) and item.strip()]
         checkpoint["acceptance_criteria_source"] = "agent"
         checkpoint["updated_at"] = time.time()
+    if isinstance(decisions, list):
+        saved = checkpoint.setdefault("decisions", [])
+        existing = {str(item.get("text", "")) for item in saved if isinstance(item, dict) and item.get("kind") == "agent_plan_decision"}
+        for decision in decisions:
+            if not isinstance(decision, str) or not decision.strip() or decision.strip() in existing:
+                continue
+            saved.append({"kind": "agent_plan_decision", "text": decision.strip(), "timestamp": time.time()})
+            existing.add(decision.strip())
+            checkpoint["updated_at"] = time.time()
 
 
 def record_decision(checkpoint: dict[str, Any], decision: dict[str, Any]) -> None:

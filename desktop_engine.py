@@ -50,7 +50,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "For long builds, tests, installs, and other approved work, omit timeout_seconds unless a task-specific timeout is required; the host's Cancel control remains available. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
-        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. When earlier tool output is absent from the recent transcript, use read_operation_result with its checkpoint operation_id; request offset/length slices for output too large to fit. The checkpoint is factual state, while complete transcript, reasoning text, and operation results remain in session history.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. Continue from the saved task checkpoint after compaction or a user follow-up; do not restart planning from scratch. When earlier tool output is absent from the recent transcript, use read_operation_result with its checkpoint operation_id; request offset/length slices for output too large to fit. The checkpoint is factual state, while complete transcript, emitted reasoning text, and operation results remain in session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
@@ -433,7 +433,7 @@ class Workspace:
 
 class ToolRegistry:
     """Explicit project tools; approved shell commands run as the host user without OS sandboxing."""
-    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None):
+    def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int=10000,search_byte_limit:int=64*1024*1024,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,task_checkpoint:dict[str,Any]|None=None):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
@@ -443,13 +443,14 @@ class ToolRegistry:
         self.skill_sources=tuple(("project", "user") if skill_sources is None else skill_sources)
         self.operation_result_lookup=operation_result_lookup
         self.permission_rules=validate_permission_rules(permission_rules or [])
+        self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [
           self._schema("list_files", "List a page of project files. Use path to narrow the search and pattern for a filename or project-relative glob such as src/**/*.tsx. Default page size is 1,200; continue with the returned offset and limit when more results exist.", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1200}}, []),
           self._schema("search_files", "Search project text for a literal substring. Use path and include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Default page size is 100; continue with the returned offset and limit when more results exist.", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}}, ["query"]),
           self._schema("read_file", "Read a project file; optional 1-based line bounds let you inspect large files in sections", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
-          self._schema("update_plan", "Create or update the current task checklist and concrete, observable acceptance criteria for this task. Keep each criterion specific enough to inspect or verify.", {"items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}}}, ["items"]),
+          self._schema("update_plan", "Create or update the current task checklist, concrete observable acceptance criteria, and concise user-relevant design decisions or assumptions to preserve across compaction. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, ["items"]),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
@@ -506,8 +507,11 @@ class ToolRegistry:
                 return (r.stdout+r.stderr) or "No tracked changes."
             except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
         if name == "update_plan":
-            self.plan=args.get("items",[]);self.plan_source="agent";criteria=args.get("acceptance_criteria");event={"type":"plan","items":self.plan}
+            self.plan=args.get("items",[]);self.plan_source="agent";criteria=args.get("acceptance_criteria");decisions=args.get("decisions");event={"type":"plan","items":self.plan}
             if isinstance(criteria,list):event["acceptanceCriteria"]=criteria
+            if isinstance(decisions,list):event["decisions"]=decisions
+            if self.task_checkpoint is not None:
+                record_plan(self.task_checkpoint,self.plan,criteria if isinstance(criteria,list) else None,decisions)
             self.event(event);return "Plan updated."
         if name == "skill":
             if not self.skills_enabled:return "Skills are disabled for this run. Enable them in Run configuration before requesting a skill."
@@ -1115,9 +1119,9 @@ class AgentEngine:
                 saved=operation_result_lookup(operation_id)
                 if saved is not None:return saved
             return self.operation_results.get(operation_id)
-        self.permission_rules=validate_permission_rules(permission_rules or [])
-        registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result,permission_rules=self.permission_rules)
         checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
+        self.permission_rules=validate_permission_rules(permission_rules or [])
+        registry=ToolRegistry(self.workspace,self._approval,self.event,self.cancel_event,skills_enabled=skills_enabled,skill_sources=skill_sources,operation_result_lookup=lookup_operation_result,permission_rules=self.permission_rules,task_checkpoint=checkpoint)
         registry.plan=copy.deepcopy(current_task(checkpoint).get("plan",[]))
         if any(isinstance(item,dict) and item.get("source")=="agent" for item in registry.plan):
             registry.plan_source="agent"

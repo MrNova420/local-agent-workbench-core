@@ -9,6 +9,8 @@ def test_agent_prompt_uses_structured_tools_to_start_actions_and_trigger_approva
     assert "the workbench will show its approval dialog" in prompt
     assert "Do not claim that an action ran unless its tool result confirms it" in prompt
     assert "Project-specific guidance" in prompt
+    assert "concise user-relevant design decisions and assumptions" in prompt
+    assert "not private chain-of-thought" in prompt
 
 
 def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_limit():
