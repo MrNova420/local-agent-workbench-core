@@ -75,3 +75,10 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The engine commit is not yet in the published app package, and the latest paired app/engine regression batch has not yet passed its final verification gate. Do not call it packaged or release-ready.
 - For the current product-wide source promotion, test, package, visible acceptance, and release sequence, see the paired app repository's `docs/MASTER_ROADMAP.md`. Keep this engine repo as the engine implementation/status authority.
 - The engine is currently consumed by the desktop product as an immutable commit SHA. Do not create an independent engine version or release tag for app-only updates. Revisit separate engine releases only if a separately supported distributable/API contract is approved.
+
+## 2026-11-01 beta.3 paired release
+
+- Engine `main` now contains commit `742ddb55a0fcdd7d0d205b29c04228cef5b9c0ff`; the desktop beta.3 package pins tested engine implementation commit `e5158359cca2e780ca506cfd98e8b8015c63852a`.
+- The paired local verification passed: **140 engine pytest tests**; app release evidence includes **53 renderer tests, 45 sidecar tests, typecheck, Windows package build, and bundled-worker protocol smoke**. The engine does not have a separate release tag; it is shipped as a pinned dependency of the desktop app.
+- GitHub Actions failed before any steps started because no hosted runner was allocated. Local suite results passed; hosted CI remains blocked, not passing.
+- The beta.3 desktop release is public. Its packaged UI was not opened because the previous app instance had an active run and was intentionally left untouched. Visible UI/update-cycle acceptance remains pending in the paired desktop `docs/MASTER_ROADMAP.md`.
