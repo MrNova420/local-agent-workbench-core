@@ -86,6 +86,20 @@ class ToolTests(unittest.TestCase):
    tools=ToolRegistry(Workspace(t),lambda *_:True)
    self.assertEqual(tools.run('read_file',{'path':'large.txt','start_line':4,'end_line':6}),'000003\n000004\n000005\n')
    self.assertEqual(tools.run('read_file',{'path':'large.txt'}),content)
+
+ def test_context_budgeted_read_file_returns_resumable_unicode_column(self):
+   import re
+   with tempfile.TemporaryDirectory() as t:
+    root=Path(t); content='a'*900+'雪'*100+'\nsecond line\n'; (root/'large.txt').write_text(content,encoding='utf8')
+    tools=ToolRegistry(Workspace(root),lambda *_:True,read_output_token_budget=512)
+    first=tools.run('read_file',{'path':'large.txt'})
+    match=re.search(r'continue with read_file at line (\d+), column (\d+)',first)
+    self.assertIsNotNone(match)
+    line,column=map(int,match.groups())
+    self.assertEqual(line,1)
+    remainder=tools.run('read_file',{'path':'large.txt','start_line':line,'start_column':column})
+    self.assertIn('second line',remainder)
+    self.assertIn('雪'*10,remainder)
  def test_write_file_accepts_files_over_old_cap(self):
   with tempfile.TemporaryDirectory() as t:
    content='x'*600000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
