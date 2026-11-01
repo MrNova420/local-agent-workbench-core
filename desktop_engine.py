@@ -19,6 +19,7 @@ MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
 CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
+PROJECT_LIST_SCAN_LIMIT = 20000
 
 class RequestCancelled(Exception):
  def __init__(self,message='Cancelled',partial_message:dict|None=None):
@@ -529,8 +530,9 @@ class ToolRegistry:
             if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=1200:return "Invalid limit: expected an integer from 1 to 1,200."
             import fnmatch
             matches=[];matched=0;scanned=0;used_bytes=0;has_more=False;scan_capped=False
-            for p in iter_project_files(base,max_files=20000):
+            for p in iter_project_files(base,max_files=PROJECT_LIST_SCAN_LIMIT+1):
                 scanned+=1
+                if scanned>PROJECT_LIST_SCAN_LIMIT:scan_capped=True;break
                 relative=p.relative_to(base).as_posix()
                 if "/" in pattern:
                     is_match=fnmatch.fnmatchcase(relative.casefold(),pattern.casefold())
@@ -543,7 +545,6 @@ class ToolRegistry:
                     if len(matches)<limit and (self.read_output_byte_budget is None or used_bytes+item_bytes<=self.read_output_byte_budget or not matches):
                         matches.append(item);used_bytes+=item_bytes
                     else:has_more=True;break
-            if scanned>=20000 and not has_more:scan_capped=True
             result="\n".join(matches)
             if not result and not has_more and not scan_capped:
                 result=f"No project files found under '{args.get('path', '.')}'. The directory is empty or contains only ignored files."
@@ -554,7 +555,7 @@ class ToolRegistry:
                 result+=f"More results are available. Next offset {offset+len(matches)}; continue with limit {limit}."
             elif scan_capped:
                 result+="\n\n" if result else ""
-                result+="[File listing scan capped at 20,000 files; results may be incomplete. Narrow the path or pattern.]"
+                result+=f"[File listing scan capped at {PROJECT_LIST_SCAN_LIMIT:,} files; results may be incomplete. Narrow the path or pattern.]"
             return result
         if name == "search_files":
             search_root=self.workspace.resolve(args.get("path","."));include=str(args.get("include","*")).strip() or "*"
@@ -564,8 +565,9 @@ class ToolRegistry:
             if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=100:return "Invalid limit: expected an integer from 1 to 100."
             if not query:return "Search query must not be empty."
             import fnmatch
-            for p in iter_project_files(search_root,max_files=self.search_file_limit):
+            for p in iter_project_files(search_root,max_files=self.search_file_limit+1):
                 scanned+=1
+                if scanned>self.search_file_limit:capped=True;break
                 if p.suffix.casefold() not in TEXT_EXT:continue
                 relative=p.relative_to(search_root).as_posix()
                 if "/" in include:
@@ -594,7 +596,6 @@ class ToolRegistry:
                         hits.append(record);used_bytes+=record_bytes
                 if has_more:break
             result="\n".join(hits) or "No matches."
-            if scanned>=self.search_file_limit:capped=True
             if has_more:result+=f"\n\nMore results are available. Next offset {args.get('offset',0)+len(hits)}; continue with limit {limit}."
             if capped:result+=f"\n\n[Search scan capped at {scanned} files or {bytes_read:,} bytes; results may be incomplete. Narrow the query or project path.]"
             return result

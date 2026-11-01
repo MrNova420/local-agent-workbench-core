@@ -1,4 +1,5 @@
 import unittest,tempfile
+from unittest.mock import patch
 from pathlib import Path
 from desktop_engine import Workspace,ToolRegistry
 class ToolTests(unittest.TestCase):
@@ -131,6 +132,19 @@ class ToolTests(unittest.TestCase):
     self.assertIn('matching line exceeds the result budget',result)
     self.assertIn('read_file at line 1',result)
     self.assertLess(len(result.encode('utf8')),1300)
+
+ def test_file_list_scan_cap_is_reported_only_when_more_files_exist(self):
+   import desktop_engine
+   with tempfile.TemporaryDirectory() as t:
+    root=Path(t)
+    for name in ('a.py','b.py'):(root/name).write_text('x')
+    tools=ToolRegistry(Workspace(root),lambda *_:True)
+    with patch.object(desktop_engine,'PROJECT_LIST_SCAN_LIMIT',2):
+     complete=tools.run('list_files',{})
+     self.assertNotIn('scan capped',complete.casefold())
+     (root/'c.py').write_text('x')
+     incomplete=tools.run('list_files',{})
+     self.assertIn('scan capped',incomplete.casefold())
  def test_write_file_accepts_files_over_old_cap(self):
   with tempfile.TemporaryDirectory() as t:
    content='x'*600000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
