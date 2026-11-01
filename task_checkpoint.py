@@ -114,6 +114,10 @@ def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any
         checkpoint["updated_at"] = time.time()
     if isinstance(decisions, list):
         saved = checkpoint.setdefault("decisions", [])
+        if not isinstance(saved, list):
+            # Preserve safe forward progress when a pre-schema or damaged checkpoint
+            # contains a scalar in the decisions slot.
+            saved = checkpoint["decisions"] = []
         existing = {str(item.get("text", "")) for item in saved if isinstance(item, dict) and item.get("kind") == "agent_plan_decision"}
         for decision in decisions:
             if not isinstance(decision, str) or not decision.strip() or decision.strip() in existing:

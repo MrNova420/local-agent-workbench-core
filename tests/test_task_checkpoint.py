@@ -46,6 +46,18 @@ def test_plan_decisions_and_assumptions_are_checkpointed_without_duplicates():
     assert [row["text"] for row in checkpoint["current"]["decisions"]] == decisions
 
 
+def test_plan_decisions_recover_from_malformed_legacy_decision_field():
+    checkpoint = {"current": {"decisions": "legacy value", "plan": []}}
+
+    record_plan(checkpoint, [{"title": "Continue safely", "status": "pending"}],
+                decisions=["Inspect the interrupted write before retrying."])
+
+    decisions = checkpoint["current"]["decisions"]
+    assert len(decisions) == 1
+    assert decisions[0]["kind"] == "agent_plan_decision"
+    assert decisions[0]["text"] == "Inspect the interrupted write before retrying."
+
+
 def test_task_acceptance_criteria_survive_followup_compaction_and_archive():
     checkpoint = begin_task(None, prompt="Build a site", turn_id="t1", workspace="C:/p", settings={})
     record_plan(checkpoint, [{"title": "Build", "status": "in_progress"}], [
