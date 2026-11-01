@@ -45,6 +45,8 @@ class EngineToolBatchTests(unittest.TestCase):
     def test_reports_every_tool_call_in_large_response_without_dropping_any(self):
         with tempfile.TemporaryDirectory() as root:
             engine = AgentEngine(root)
+            events = []
+            engine.event = events.append
             captured = {}
             batches = [
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
@@ -66,6 +68,8 @@ class EngineToolBatchTests(unittest.TestCase):
             self.assertEqual(len(tool_messages), 17)
             self.assertTrue(all(m["tool_name"] == "update_plan" for m in tool_messages))
             self.assertEqual(len([m for m in full_history if m.get("role") == "tool"]), 17)
+            batch_event = next(row for row in events if row.get("type") == "tool_batch")
+            self.assertEqual(batch_event["request_index"], 0)
 
 
 if __name__ == "__main__":

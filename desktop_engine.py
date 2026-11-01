@@ -1184,7 +1184,7 @@ class AgentEngine:
                 record_assistant_status(checkpoint,msg)
                 calls=msg.get("tool_calls") or []
                 if calls:
-                    self.event({"type":"tool_batch","assistantMessage":{"role":"assistant",**msg},"calls":[
+                    self.event({"type":"tool_batch","request_index":request_index,"assistantMessage":{"role":"assistant",**msg},"calls":[
                         {"id":call.get("id",f"call-{index}"),"name":(call.get("function") or {}).get("name","")}
                         for index,call in enumerate(calls)
                     ]})

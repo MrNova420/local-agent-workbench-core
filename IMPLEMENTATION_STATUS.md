@@ -2,6 +2,8 @@
 
 ## 2026-11-01 unpublished continuity source work
 
+- Tool-batch events now include the inference request index so the desktop activity layer can settle streamed per-call preparation rows against the exact request. A regression is queued; no verification was run.
+
 - Added a factual task checkpoint module for continuing the same user task across turns and compaction, retaining plan, captured settings, completed operation references, changed files, and verification. Older flat checkpoints migrate forward; terminal tasks remain in local checkpoint history.
 - Compaction injects the checkpoint alongside the configured system prompt and recent complete-turn tail, and emits omitted/retained turns plus checkpoint inclusion and estimated size. Context/output/reasoning values remain unmodified.
 - The Ollama stream adapter now retains prompt_eval_cached_count when the provider returns it.
