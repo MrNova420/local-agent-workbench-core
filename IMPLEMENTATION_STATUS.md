@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-01 living plan progression and batch safety
+
+- Starter checklist stages now carry stable phase identifiers instead of depending on display-text matching. Legacy title-only plans remain readable, the captured task brief starts complete rather than appearing as permanently pending, and plan-only presentation can complete from the host terminal event. The model can still replace, extend, and repeatedly revise its own plan; workbench progress will not overwrite an agent-owned plan. A queued regression covers phase metadata; tests remain intentionally unrun.
+- The engine's current batch behavior supports multiple calls in one provider response and concurrent execution for validated, independent, read-only tools. Mutating file actions, commands, MCP, and permission-sensitive work remain sequential so approval and side-effect order stay inspectable. This boundary is explicit in the agent guidance and is not being broadened without a safe approval/rollback design.
+
 ## 2026-11-01 unpublished continuity source work
 
 - Added an app-wide persistent permission-rule evaluator for exact/wildcard tools, project-relative path globs, and command prefixes. Deny wins over allow and run auto-approval; ask rules force the ordinary approval UI; absent rules preserve existing behavior. Rules are captured with the run and checkpointed; the paired Electron source adds a Settings editor. Regression cases are queued and unrun; Windows process containment remains a separate pending gap.

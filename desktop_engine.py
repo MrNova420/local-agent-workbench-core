@@ -1261,15 +1261,26 @@ class AgentEngine:
         changed=False
         for item in plan:
             if not isinstance(item,dict):continue
-            title=str(item.get("title","")).casefold()
+            phase=str(item.get("phase", "")).casefold()
+            if not phase:
+                # Migrate old host checklists without relying on their display text going forward.
+                title=str(item.get("title","")).casefold()
+                phase=("inspect" if "inspect relevant project context" in title else
+                       "implementation" if "implement the requested changes" in title else
+                       "verification" if "inspect the changes and run relevant approved checks" in title else
+                       "planning" if "refine " in title else "")
             target=None
-            if "inspect relevant project context" in title and name in inspect_tools:
+            if phase=="inspect" and name in inspect_tools:
                 target="completed" if status=="completed" else "in_progress"
-            elif "implement the requested changes" in title and name in write_tools|{"run_command","run_shell"}:
+            elif phase=="planning" and name=="update_plan" and status=="completed":
+                target="completed"
+            elif phase=="implementation" and name in write_tools|{"run_command","run_shell"}:
                 target="completed" if final and project_changed else "in_progress"
-            elif "inspect the changes and run relevant approved checks" in title:
+            elif phase=="verification":
                 if name in inspect_tools|{"run_command","run_shell"} and status=="completed":target="in_progress"
                 if final and (verification=="command_completed" or (verification=="inspected" and post_change_inspection)):target="completed"
+            elif phase=="present" and final:
+                target="completed"
             if target and item.get("status")!=target:
                 item["status"]=target;changed=True
         if changed:

@@ -80,22 +80,22 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
         return []
     if intent == "plan":
         phases = [
-            ("Inspect relevant project context", "pending"),
-            ("Refine this request into sequenced steps and surface assumptions", "pending"),
-            ("Present the plan without changing workspace files", "pending"),
+            ("inspect", "Inspect relevant project context", "pending"),
+            ("planning", "Refine this request into sequenced steps and surface assumptions", "pending"),
+            ("present", "Present the plan without changing workspace files", "pending"),
         ]
     elif intent == "implement" or requests_implementation(prompt):
         phases = [
-            ("Inspect relevant project context", "pending"),
-            ("Refine the checklist with affected files and acceptance criteria", "pending"),
-            ("Implement the requested changes under the selected access and approval rules", "pending"),
-            ("Inspect the changes and run relevant approved checks", "pending"),
+            ("inspect", "Inspect relevant project context", "pending"),
+            ("planning", "Refine the checklist with affected files and acceptance criteria", "pending"),
+            ("implementation", "Implement the requested changes under the selected access and approval rules", "pending"),
+            ("verification", "Inspect the changes and run relevant approved checks", "pending"),
         ]
     else:
         return []
     return [
-        {"title": "Use the task brief and project instructions as the objective", "status": "pending", "source": "workbench"},
-        *({"title": title, "status": status, "source": "workbench"} for title, status in phases),
+        {"title": "Use the task brief and project instructions as the objective", "status": "completed", "source": "workbench", "phase": "task_brief"},
+        *({"title": title, "status": status, "source": "workbench", "phase": phase} for phase, title, status in phases),
     ]
 
 
