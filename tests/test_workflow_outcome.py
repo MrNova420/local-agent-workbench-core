@@ -1,4 +1,4 @@
-from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _implementation_evidence, _plan_requests_implementation, _verification_report, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_requests_implementation, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import initial_task_plan
 
 
@@ -110,6 +110,12 @@ def test_final_content_requires_user_visible_text_after_tool_work():
     assert _assistant_has_final_content({"content": "The page is ready."})
     assert not _assistant_has_final_content({"content": "  \n", "thinking": "Working through the result."})
     assert not _assistant_has_final_content({"content": None})
+
+
+def test_structured_task_mode_change_counts_as_continuation_progress():
+    plan = [{"title": "Build", "status": "pending"}]
+    assert _continuation_progress_signature({"task_mode": "plan"}, plan, []) != _continuation_progress_signature(
+        {"task_mode": "implement"}, plan, [])
 
 
 def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp_path):

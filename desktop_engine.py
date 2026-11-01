@@ -422,6 +422,7 @@ def _continuation_progress_signature(task: dict[str, Any], plan: list[dict[str, 
         for item in operations if isinstance(item, dict)
     }) if isinstance(operations, list) else []
     evidence = {
+        "task_mode": task.get("task_mode", "auto"),
         "plan": plan_state,
         "operations": operation_state,
         "verification": verification_steps,
