@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-02 preserve concrete next action after tool results
+
+- `record_operation` no longer overwrites a concrete plan-derived `next_action` with a generic reminder after every tool result. This keeps compaction and same-task continuation pointed at the saved open step. Unplanned tasks still receive a concise operation-review fallback.
+- Regression tests passed: `tests/test_task_checkpoint.py` **25 passed**. Full engine suite, packaged app, and long-run model continuation remain pending.
+
 ## 2026-11-02 per-request reasoning budget for llama.cpp
 
 - Added an optional `reasoning_budget_tokens` runtime value for llama.cpp requests. `null` remains unlimited; configured values are sent in `thinking_budget_tokens` without changing `max_tokens`. The accepted range follows llama.cpp's signed 32-bit request field. Provider telemetry records the requested value and field, but does not claim that a model template enforced it.

@@ -205,7 +205,13 @@ def record_operation(checkpoint: dict[str, Any], event: dict[str, Any]) -> None:
         if path and path not in changed and row["name"] in {"write_file", "append_file", "edit_file", "apply_patch"} and row["status"] == "completed":
             changed.append(path)
     checkpoint["updated_at"] = time.time()
-    checkpoint["next_action"] = "Continue from the saved plan and inspect the completed operation result before retrying or changing files."
+    # Do not replace a concrete plan-derived next step with a generic post-tool
+    # reminder. The operation result is already captured separately; the model
+    # gets it in the tool response and can revise the next step when evidence
+    # changes the plan. Keep a fallback only for unplanned tasks.
+    next_action = checkpoint.get("next_action")
+    if not isinstance(next_action, str) or not next_action.strip():
+        checkpoint["next_action"] = "Inspect the completed operation result before retrying or changing files."
 
 
 def record_assistant_status(checkpoint: dict[str, Any], message: dict[str, Any]) -> None:

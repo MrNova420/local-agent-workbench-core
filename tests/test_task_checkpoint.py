@@ -77,6 +77,28 @@ def test_next_action_tracks_unknown_open_plan_statuses():
     assert checkpoint["current"]["next_action"] == "Continue building"
 
 
+def test_completed_operation_does_not_overwrite_the_open_plan_next_action():
+    checkpoint = begin_task(None, prompt="Build", turn_id="t1", workspace="C:/p", settings={})
+    record_plan(checkpoint, [
+        {"title": "Inspect the starter app", "status": "completed"},
+        {"title": "Implement the requested page", "status": "pending"},
+    ], plan_source="agent")
+
+    record_operation(checkpoint, {"operationId": "op1", "name": "read_file", "status": "completed",
+                                  "affectedFiles": [], "result": "Read app source"})
+
+    assert checkpoint["current"]["next_action"] == "Implement the requested page"
+
+
+def test_operation_records_a_review_fallback_when_no_plan_step_exists():
+    checkpoint = begin_task(None, prompt="Inspect this project", turn_id="t1", workspace="C:/p", settings={})
+
+    record_operation(checkpoint, {"operationId": "op1", "name": "read_file", "status": "completed",
+                                  "affectedFiles": [], "result": "Read app source"})
+
+    assert checkpoint["current"]["next_action"] == "Inspect the completed operation result before retrying or changing files."
+
+
 def test_explicit_read_only_followup_clears_prior_implementation_obligation():
     checkpoint = begin_task(None, prompt="Build a feature", turn_id="build", workspace="C:/p", settings={"task_intent": "auto"})
     record_implementation_requested(checkpoint)
