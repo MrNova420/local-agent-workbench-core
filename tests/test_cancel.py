@@ -1,9 +1,23 @@
-import unittest,threading,tempfile,json,time
+import unittest,threading,tempfile,json,time,socket
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
+from cancellable_http import InterruptibleHTTPResponse
 from desktop_engine import AgentEngine, InferenceStreamError, OllamaRuntime, RequestCancelled
 class CancelTests(unittest.TestCase):
+ def test_interruptible_response_reads_chunked_body_and_trailers(self):
+  reader,writer=socket.socketpair();cancel=threading.Event()
+  try:
+   writer.sendall(b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Provider: local\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: complete\r\n\r\n')
+   response=InterruptibleHTTPResponse(reader,cancel)
+   response.begin()
+   body=response.read()
+   self.assertEqual(response.status,200)
+   self.assertEqual(response.headers.get('X-Provider'),'local')
+   self.assertEqual(body,b'hello world')
+  finally:
+   writer.close();reader.close()
+
  def test_cancel_between_stream_chunks_ends_only_request(self):
   class Response:
    def __init__(self):self.lines=iter([b'{"message":{"content":"first"}}\n',b''])
