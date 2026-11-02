@@ -155,4 +155,25 @@ class MCPTests(unittest.TestCase):
     m.run(awaitable)
   self.assertIsNone(awaitable.cr_frame)
 
+ def test_discovery_cancellation_closes_transport_when_session_exit_is_cancelled(self):
+  async def scenario():
+   m=MCPManager(Path('unused.json'));m.servers={'demo':{'command':'fake'}}
+   closed=[]
+   class CancellingSession(FakeSession):
+    async def initialize(self):raise asyncio.CancelledError()
+    async def __aexit__(self,*_):
+     closed.append('session')
+     raise asyncio.CancelledError()
+   class TrackingTransport:
+    async def __aenter__(self):return (object(),object())
+    async def __aexit__(self,*_):closed.append('transport')
+   with patch('mcp.ClientSession',CancellingSession),patch('mcp.StdioServerParameters',lambda **kw:kw),patch('mcp.client.stdio.stdio_client',lambda *_args,**_kwargs:TrackingTransport()):
+    with self.assertRaises(asyncio.CancelledError):
+     await m.discover()
+   self.assertEqual(closed,['session','transport'])
+   self.assertEqual(m.clients,{})
+  try:import mcp
+  except ImportError:self.skipTest('MCP SDK not installed; discovery lifecycle uses its optional interfaces')
+  asyncio.run(scenario())
+
 if __name__=='__main__':unittest.main()

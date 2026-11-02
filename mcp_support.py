@@ -201,12 +201,12 @@ class MCPManager:
                 if session_entered:
                     try:
                         await session.__aexit__(None, None, None)
-                    except Exception:
+                    except BaseException:
                         pass
                 if manager_entered:
                     try:
                         await manager.__aexit__(None, None, None)
-                    except Exception:
+                    except BaseException:
                         pass
                 if isinstance(exc, asyncio.CancelledError):
                     raise
