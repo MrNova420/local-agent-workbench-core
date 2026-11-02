@@ -125,4 +125,25 @@ class MCPTests(unittest.TestCase):
   except ImportError:self.skipTest('MCP SDK not installed; configuration retry state requires its optional interface')
   asyncio.run(scenario())
 
+ def test_close_attempts_every_mcp_client_even_if_one_exit_raises(self):
+  async def scenario():
+   m=MCPManager(Path('unused.json'));closed=[]
+   class Session:
+    def __init__(self,name,fail=False):self.name=name;self.fail=fail
+    async def __aexit__(self,*_):
+     closed.append('session:'+self.name)
+     if self.fail:raise RuntimeError('session close failed')
+   class Transport:
+    def __init__(self,name):self.name=name
+    async def __aexit__(self,*_):closed.append('transport:'+self.name)
+   m.clients={'bad':(Session('bad',True),Transport('bad')),'good':(Session('good'),Transport('good'))}
+   m.tools={'mcp__bad__write':('bad','write'),'mcp__good__read':('good','read')};m.discovered=True
+   with self.assertRaisesRegex(RuntimeError,'1 MCP client connection failed to close'):
+    await m.close()
+   self.assertEqual(set(closed),{'session:bad','transport:bad','session:good','transport:good'})
+   self.assertEqual(m.clients,{})
+   self.assertEqual(m.tools,{})
+   self.assertFalse(m.discovered)
+  asyncio.run(scenario())
+
 if __name__=='__main__':unittest.main()

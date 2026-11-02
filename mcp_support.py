@@ -227,14 +227,32 @@ class MCPManager:
         return ("Tool error: " if getattr(result, "isError", False) else "") + output
 
     async def close(self):
-        clients, self.clients = list(self.clients.values()), {}
+        clients, self.clients = list(self.clients.items()), {}
         self.tools.clear()
         self.discovered = False
-        for session, manager in clients:
+        failed_servers: set[str] = set()
+        cancelled = False
+        for name, (session, manager) in clients:
             try:
                 await session.__aexit__(None, None, None)
-            finally:
+            except asyncio.CancelledError:
+                cancelled = True
+                failed_servers.add(name)
+            except Exception:
+                failed_servers.add(name)
+            try:
                 await manager.__aexit__(None, None, None)
+            except asyncio.CancelledError:
+                cancelled = True
+                failed_servers.add(name)
+            except Exception:
+                failed_servers.add(name)
+        if cancelled:
+            raise asyncio.CancelledError()
+        if failed_servers:
+            count = len(failed_servers)
+            noun = "connection" if count == 1 else "connections"
+            raise RuntimeError(f"{count} MCP client {noun} failed to close: {', '.join(sorted(failed_servers))}")
 
     @staticmethod
     def _validated_http_url(value: Any) -> str:
