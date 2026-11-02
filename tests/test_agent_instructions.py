@@ -15,6 +15,15 @@ def test_agent_prompt_uses_structured_tools_to_start_actions_and_trigger_approva
     assert "not private chain-of-thought" in prompt
 
 
+def test_implementation_pacing_prefers_early_tool_work_without_a_scope_or_iteration_cap():
+    for profile in ("standard", "small-model"):
+        prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile=profile)
+        assert "plan only enough to identify the next safe, useful action" in prompt
+        assert "Do not repeat a plan or reread a checkpoint section" in prompt
+        assert "This is a pacing preference, not a cap" in prompt
+        assert "context, output, or runtime" in prompt
+
+
 def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_limit():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="small-model")
 
