@@ -64,6 +64,8 @@ def test_automatic_guidance_separates_plan_phase_from_plan_only_request():
     assert "task_mode=plan_only only when the user explicitly asks" in prompt
     assert "different from task_mode=plan" in prompt
     assert "continue into implementation" in prompt
+    assert "After publishing or revising an implementation plan, take its next open step" in prompt
+    assert "not a cap on reasoning, planning" in prompt
 
 
 def test_plan_tool_result_hands_implementation_to_next_open_step_without_replanning(tmp_path):

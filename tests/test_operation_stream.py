@@ -1,4 +1,5 @@
 import os
+import copy
 import sys
 import tempfile
 import unittest
@@ -361,12 +362,21 @@ class OperationStreamTests(unittest.TestCase):
                 {"message": {"role": "assistant", "content": "The project file is implemented and inspected."}},
             ]
             calls = []
-            engine.runtime.stream = lambda *_args: (calls.append(1) or responses.pop(0))
+            request_snapshots = []
+            def stream(_state, request_messages, *_args):
+                calls.append(1)
+                request_snapshots.append(copy.deepcopy(request_messages))
+                return responses.pop(0)
+            engine.runtime.stream = stream
 
             engine.run("Implement a small project file.")
 
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(len(calls), 6)
+            continuation_system = request_snapshots[2][0]["content"]
+            self.assertIn("Create and inspect the project file", continuation_system)
+            self.assertIn("next open step", continuation_system)
+            self.assertIn("Do not re-plan unless new evidence changes the work", continuation_system)
             self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
             self.assertEqual(completion["workflowOutcome"], "inspected")
             self.assertFalse(any(event.get("type") == "implementation_incomplete" for event in events))
