@@ -236,3 +236,20 @@ def test_server_load_passes_exact_context_and_reasoning_then_only_stops_its_own_
     assert events[-1]["effective_context"] == 32768
     assert server.stop() is True
     process.terminate.assert_called_once()
+
+
+def test_server_maps_template_supported_off_choice_to_reasoning_off_flag(tmp_path):
+    server = LlamaCppServer(tmp_path)
+    binary = tmp_path / "llama-server.exe"; binary.write_bytes(b"test")
+    model = tmp_path / "model.gguf"; model.write_bytes(b"test")
+    process = Mock()
+    process.pid = 124
+    process.poll.return_value = None
+    with patch.object(server, "_healthy", side_effect=[False, True]), \
+         patch.object(server, "_effective_context", return_value=8192), \
+         patch("subprocess.Popen", return_value=process) as popen, \
+         patch("time.sleep"):
+        server.load(binary, model, 8192, False, threading.Event(), lambda _: None)
+    args = popen.call_args.args[0]
+    assert args[args.index("--reasoning") + 1] == "off"
+    assert "--reasoning-effort" not in args
