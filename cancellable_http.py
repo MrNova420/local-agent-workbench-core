@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.client
+import os
 import socket
 import ssl
 import threading
@@ -9,6 +10,27 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request
 from typing import Callable
+
+
+def cancel_windows_synchronous_io(thread_id: int | None) -> bool:
+    """Interrupt a pending blocking socket read on Windows before closing the socket."""
+    if os.name != "nt" or not isinstance(thread_id, int) or thread_id <= 0:
+        return False
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    kernel32.OpenThread.restype = ctypes.c_void_p
+    kernel32.CancelSynchronousIo.argtypes = (ctypes.c_void_p,)
+    kernel32.CancelSynchronousIo.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int
+    handle = kernel32.OpenThread(0x0001, 0, thread_id)  # THREAD_TERMINATE
+    if not handle:
+        return False
+    try:
+        return bool(kernel32.CancelSynchronousIo(handle))
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def open_http_stream(request: Request, cancel: threading.Event,
