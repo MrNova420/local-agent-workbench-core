@@ -844,6 +844,25 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
             self.assertEqual(completion["workflowOutcome"], "inspected")
 
+    def test_repeated_response_cycle_is_detected_across_intervening_reasoning(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append, task_intent="implement")
+            responses = [
+                {"message": {"role": "assistant", "content": "I am considering the project structure."}},
+                {"message": {"role": "assistant", "content": "I should inspect before choosing a file."}},
+                {"message": {"role": "assistant", "content": "I am considering the project structure."}},
+                {"message": {"role": "assistant", "content": "I am considering the project structure."}},
+            ]
+            calls = []
+            engine.runtime.stream = lambda *_args: (calls.append(1) or responses.pop(0))
+
+            engine.run("Implement the requested project change.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
+
     def test_pending_plan_expansion_alone_does_not_keep_automatic_run_planning(self):
         with tempfile.TemporaryDirectory() as root:
             events = []

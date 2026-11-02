@@ -1816,7 +1816,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;last_continuation_signature=None;last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        start=time.monotonic();request_index=0;seen_continuation_signatures=set();last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
         implementation_requested=(
             True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
             bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
@@ -1941,8 +1941,8 @@ class AgentEngine:
                         completed_project_change,review_required,plan_remaining,
                         command_effects_inspected=command_side_effects_possible and post_change_inspection)
                     progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps,msg)
-                    if (unfinished or missing_final_response) and progress_signature!=last_continuation_signature:
-                        last_continuation_signature=progress_signature
+                    if (unfinished or missing_final_response) and progress_signature not in seen_continuation_signatures:
+                        seen_continuation_signatures.add(progress_signature)
                         if missing_final_response and not unfinished:
                             continuation="Return a concise user-visible response for the user. Summarize only work confirmed by saved tool results and state the terminal status or the remaining blocker. Do not start another operation unless the saved plan or evidence shows work remains."
                             reason="model produced no user-visible final response"
