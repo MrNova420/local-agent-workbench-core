@@ -1,3 +1,4 @@
+import desktop_engine
 from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_has_open_work, _plan_requests_implementation, _restored_plan_requests_implementation, _saved_plan_source, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import begin_task, initial_task_plan
 
@@ -210,6 +211,19 @@ def test_final_content_requires_user_visible_text_after_tool_work():
 def test_structured_task_mode_change_counts_as_continuation_progress():
     assert _continuation_progress_signature({"task_mode": "plan"}, []) != _continuation_progress_signature(
         {"task_mode": "implement"}, [])
+
+
+def test_current_continuation_replaces_stale_guidance_without_changing_base_prompt():
+    base = "Base agent contract.\nProject instructions remain here."
+    replace_guidance = getattr(desktop_engine, "_replace_continuation_guidance", None)
+    assert callable(replace_guidance)
+    first = replace_guidance(base, "First next action: inspect the project.")
+    second = replace_guidance(first, "Updated next action: implement the saved plan.")
+
+    assert "Base agent contract." in second
+    assert "Project instructions remain here." in second
+    assert "Updated next action: implement the saved plan." in second
+    assert "First next action:" not in second
 
 
 def test_saved_implementation_obligation_counts_as_continuation_state():

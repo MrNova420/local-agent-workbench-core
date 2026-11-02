@@ -21,6 +21,7 @@ CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 PROJECT_LIST_SCAN_LIMIT = None
+_CONTINUATION_GUIDANCE_MARKER = "\n\n[Current Workbench continuation]\n"
 
 class RequestCancelled(Exception):
  def __init__(self,message='Cancelled',partial_message:dict|None=None):
@@ -469,6 +470,13 @@ def _needs_implementation_continuation(implementation_requested:bool,access:str,
     return bool(implementation_requested and access!="plan" and not action_denied
                 and (review_required or plan_remaining
                      or (not project_change_observed and not command_effects_inspected)))
+
+def _replace_continuation_guidance(system_prompt: str, guidance: str | None) -> str:
+    """Keep only the latest host continuation while preserving the base prompt."""
+    base_prompt = str(system_prompt).split(_CONTINUATION_GUIDANCE_MARKER, 1)[0]
+    if not guidance or not guidance.strip():
+        return base_prompt
+    return base_prompt + _CONTINUATION_GUIDANCE_MARKER + guidance.strip()
 
 def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool,
                          command_side_effects_possible: bool = False, post_effect_inspection: bool | None = None) -> dict[str, Any]:
@@ -1687,6 +1695,7 @@ class AgentEngine:
             "edit":"Project file changes are allowed. Every command still requires approval.",
         }[self.workspace.access]
         system={"role":"system","content":agent_system_prompt(access_policy,self.project_instructions,self.harness_profile,self.state["skills_enabled"],self.task_intent)}
+        base_system_content = system["content"]
         msgs=messages if messages is not None else []
         _normalize_tool_history(msgs)
         if msgs and msgs[0].get("role")=="system":msgs[0]=system
@@ -1717,7 +1726,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;last_continuation_signature=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        start=time.monotonic();request_index=0;last_continuation_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
         implementation_requested=(
             True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
             bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
@@ -1737,6 +1746,7 @@ class AgentEngine:
                 # or an outstanding assistant tool-call batch.
                 if self.steering_handler and self.steering_handler(msgs, False):
                     self.event({"type":"steering_applied","elapsed":time.monotonic()-start})
+                msgs[0]["content"] = _replace_continuation_guidance(base_system_content, current_continuation_guidance)
                 tools=self._tools_for_request(base_request)
                 request_messages=self.context.compact(msgs,tools,self.state["max_tokens"],self.event,checkpoint=checkpoint)
                 request_index+=1
@@ -1816,7 +1826,7 @@ class AgentEngine:
                                 "Do not repeat or expand the plan without new evidence. Update the plan after observable progress. "
                                 "Ask a structured user question only if a missing choice materially affects the work; if genuinely blocked, record the exact blocker and next safe action.")
                             reason="no structured project effect has been recorded for this implementation task"
-                        msgs[0]["content"] += "\n\n"+continuation
+                        current_continuation_guidance = continuation
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
                     if unfinished:
