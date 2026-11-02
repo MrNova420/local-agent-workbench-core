@@ -23,6 +23,22 @@ TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".ts
 PROJECT_LIST_SCAN_LIMIT = None
 _CONTINUATION_GUIDANCE_MARKER = "\n\n[Current Workbench continuation]\n"
 
+def approval_policy_guidance(mode: str) -> str:
+    """Describe the host's actual approval behavior without implying every action is manual."""
+    normalized = mode if mode in {"auto", "per-action", "per-task", "per-session"} else "per-action"
+    mode_guidance = {
+        "auto": "Approval mode: auto; eligible actions run automatically unless a persistent rule asks or denies.",
+        "per-action": "Approval mode: per-action; a separate host decision is required for each eligible action.",
+        "per-task": "Approval mode: per-task; the first eligible action in each task requires a host decision, and later actions are covered only after that decision is granted.",
+        "per-session": "Approval mode: per-session; the first eligible action in each session requires a host decision, and later actions are covered only after that decision is granted.",
+    }[normalized]
+    return (
+        mode_guidance + " Persistent deny rules always block; persistent ask rules still require a host decision; "
+        "persistent allow rules apply only to matching actions. Access mode and project boundaries still apply. "
+        "Submit actions through structured tools instead of asking permission in chat text. If the host requests a decision, "
+        "wait for its result. Shell commands run with host-user permissions and are not OS-sandboxed."
+    )
+
 class RequestCancelled(Exception):
  def __init__(self,message='Cancelled',partial_message:dict|None=None):
   super().__init__(message);self.partial_message=partial_message
@@ -31,7 +47,7 @@ class InferenceStreamError(RuntimeError):
  def __init__(self,message:str,partial_message:dict|None=None):
   super().__init__(message);self.partial_message=partial_message
 
-def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto") -> str:
+def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto", approval_guidance: str = "") -> str:
     profile_guidance = (
         "Small-model workflow: break complex work into manageable steps while completing the full request. Choose action sizes that fit the task, then take the next unfinished action instead of stopping after planning. For implementation tasks, carry the plan into actual project changes, inspection, and relevant verification. Treat the visible plan as a living, expandable plan: add independent workstreams, acceptance criteria, and newly discovered work when useful. Preserve completed items and useful decisions. Plan only enough to identify the next safe, useful action; move into implementation or inspection without waiting for a perfect plan. Revisit or revise priorities when new evidence or user direction changes the work. Avoid repeating unchanged analysis without a reason; keep making progress through planning, implementation, inspection, and verification as the task needs. Batch independent tool calls in one response when their inputs are already known; do not batch actions that depend on an earlier result. Group independent read-only operations when useful; the host may execute validated read-only calls concurrently, while writes, commands, and MCP calls preserve order and approval. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Respect discussion and plan-only intent; do not implement those tasks. After compaction, continue from the saved checkpoint, retain and extend prior plans, and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
         if harness_profile == "small-model" else ""
@@ -51,19 +67,19 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Tool and approval protocol: perform project operations by calling the structured tools provided to you. Do not narrate an intended tool call and then stop. "
         "When the host provides ask_user, use it only when a missing requirement or user choice would materially change the implementation; keep working from reasonable defaults otherwise. It is for task clarification, never for permission to run a file change or command. "
         "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. Structured file tools stay inside the selected project unless a matching external_directory rule grants a concrete folder; an external_directory ask rule requires approval for each outside-project path action. Shell commands and MCP retain their separately described host capabilities. "
-        "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
+        "Do not ask for approval in chat text; submit the action through its structured tool and follow the configured host approval mode and persistent permission rules. "
         "When the request's tool set is context-adaptive, use load_tools to page through the available tool catalog and select any missing capability by exact name; selected schemas are added to the next model request. Deferred tools remain available through this mechanism and are not permission grants. "
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in structured file-tool arguments, not in a chat message. For files too large for one response, create them with write_file and add ordered chunks using append_file; inspect the finished file. "
         "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
         "When list_files or search_files says more results are available, continue with its exact next offset when needed; do not assume the first page is complete. "
-        "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; it always requires approval and runs with host-user permissions. "
+        "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; both follow the configured host approval mode and persistent permission rules. "
         "For long builds, tests, installs, and other approved work, omit timeout_seconds unless a task-specific timeout is required; the host's Cancel control remains available. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
         "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revise the plan when new evidence or user direction changes scope or priorities; do not keep reworking a plan for speculative improvements. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When checkpoint omissions are reported, use read_task_checkpoint to recover omitted plan, decisions, updates, operation references, or verification; use read_conversation_history for omitted user/assistant transcript and emitted reasoning; use read_operation_result for full tool output and exact ranges. The complete transcript, emitted reasoning text, checkpoint, and operation results remain in saved session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
-        + profile_guidance + "Access policy: " + access_policy + "\n\nProject instructions:\n" + project_instructions
+        + profile_guidance + "Access policy: " + access_policy + "\n\n" + (approval_guidance or approval_policy_guidance("per-action")) + "\n\nProject instructions:\n" + project_instructions
     )
 
 def _command_timeout(args:dict[str,Any])->int|None:
@@ -638,8 +654,8 @@ class ToolRegistry:
           self._schema("append_file", "Append UTF-8 text to an existing project or explicitly granted external file without resending its existing contents. Use ordered chunks for files larger than one model response; inspect the completed file. This appends only and cannot insert or overwrite. Subject to active access and approval settings.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("edit_file", "Replace exact text in one project or explicitly granted external file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
           self._schema("apply_patch", "Apply a unified diff in the active project or an explicitly granted external folder, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
-          self._schema("run_command", "Run an argv command in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. The exact command ['pwd'] returns the selected project root. Other commands launch directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1}}, ["argv"]),
-          self._schema("run_shell", "Run a PowerShell command string in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. Use for Windows workflows needing pipes, redirects, or script wrappers. Commands run with host-user permissions and are not OS-sandboxed; the user reviews the exact command before it runs.", {"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1}}, ["command"]),
+          self._schema("run_command", "Run an argv command in the project, subject to the configured host approval mode and persistent permission rules. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. The exact command ['pwd'] returns the selected project root. Other commands launch directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1}}, ["argv"]),
+          self._schema("run_shell", "Run a PowerShell command string in the project, subject to the configured host approval mode and persistent permission rules. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. Use for Windows workflows needing pipes, redirects, or script wrappers. Commands run with host-user permissions and are not OS-sandboxed; a host decision is required only when the configured policy asks for one.", {"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1}}, ["command"]),
         ]
         if self.ask_user_callback is not None:
             self.schemas.append(self._schema("ask_user", "Pause this run to ask the user for missing requirements or a meaningful choice. Use only when the answer affects the work; do not use this for file/command approval, which has its own approval dialog. Offer optional choices and accept a freeform response.", {"question":{"type":"string","minLength":1},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","minLength":1},"description":{"type":"string"}},"required":["label"],"additionalProperties":False}},"title":{"type":"string"}}, ["question"]))
@@ -1799,11 +1815,11 @@ class AgentEngine:
     def run(self,prompt:str,messages:list[dict]|None=None)->list[dict]:
         access_policy={
             "plan":"Read-only: do not request project writes or commands.",
-            "copy":"Structured file tools edit this disposable workspace copy. Approved commands run as the current Windows user and are not OS-sandboxed; a command may access files outside this copy, including the source project. Every command still requires approval. Do not describe copy mode as containing command effects.",
-            "ask":"Request approval before every project file change and command.",
-            "edit":"Project file changes are allowed. Every command still requires approval.",
+            "copy":"Structured file tools edit this disposable workspace copy. Commands run as the current Windows user and are not OS-sandboxed; they may access files outside this copy, including the source project. Commands use the selected approval mode and persistent permission rules. Do not describe copy mode as containing command effects.",
+            "ask":"Project file changes and commands use the selected approval mode and persistent permission rules; the host blocks actions that are not allowed.",
+            "edit":"Project file changes are allowed subject to persistent permission rules and the selected approval mode. Commands use the same host policy and run with the current user's permissions.",
         }[self.workspace.access]
-        system={"role":"system","content":agent_system_prompt(access_policy,self.project_instructions,self.harness_profile,self.state["skills_enabled"],self.task_intent)}
+        system={"role":"system","content":agent_system_prompt(access_policy,self.project_instructions,self.harness_profile,self.state["skills_enabled"],self.task_intent,approval_policy_guidance(self.approval_mode))}
         base_system_content = system["content"]
         msgs=messages if messages is not None else []
         _normalize_tool_history(msgs)
