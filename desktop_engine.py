@@ -424,7 +424,7 @@ def _assistant_has_final_content(message: dict[str, Any]) -> bool:
 
 def _provider_message_history(messages: list[dict]) -> list[dict]:
     """Remove Workbench-only transcript metadata before sending provider JSON."""
-    internal_keys = {"turn_id", "steering_id", "steering_status"}
+    internal_keys = {"turn_id", "steering_id", "steering_status", "partial_response"}
     return [
         {key: copy.deepcopy(value) for key, value in message.items() if key not in internal_keys}
         for message in messages if isinstance(message, dict)
@@ -2273,7 +2273,7 @@ class AgentEngine:
             partial=getattr(exc,"partial_message",None)
             partial_saved=isinstance(partial,dict) and any(partial.get(key) for key in ("content","thinking"))
             if partial_saved:
-                saved={"role":"assistant",**{key:partial[key] for key in ("thinking","content") if partial.get(key)}}
+                saved={"role":"assistant",**{key:partial[key] for key in ("thinking","content") if partial.get(key)},"partial_response":True}
                 msgs.append(saved)
                 record_assistant_status(checkpoint,saved)
             finish_task(checkpoint,"failed",blocker=f"{type(exc).__name__}: {exc}")

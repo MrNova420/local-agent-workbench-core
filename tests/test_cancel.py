@@ -36,7 +36,7 @@ class CancelTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as root:
    engine=AgentEngine(Path(root),access='plan');engine.runtime=PartialRuntime();events=[];engine.event=events.append
    messages=engine.run('review the project',[])
-  self.assertEqual(messages[-1],{'role':'assistant','thinking':'checked the files','content':'I found the cause.'})
+  self.assertEqual(messages[-1],{'role':'assistant','thinking':'checked the files','content':'I found the cause.','partial_response':True})
   failure=next(event for event in events if event.get('type')=='error')
   self.assertTrue(failure['partial_response_saved'])
  def test_ollama_stream_error_carries_only_received_text_not_partial_tool_arguments(self):
@@ -52,6 +52,10 @@ class CancelTests(unittest.TestCase):
    with self.assertRaises(InferenceStreamError) as raised:runtime.stream(state,[],threading.Event(),lambda _event:None)
   self.assertIn('provider disconnected',str(raised.exception))
   self.assertEqual(raised.exception.partial_message,{'role':'assistant','thinking':'reasoning','content':'partial'})
+ def test_partial_response_marker_is_not_sent_as_provider_message_metadata(self):
+  from desktop_engine import _provider_message_history
+  self.assertEqual(_provider_message_history([{'role':'assistant','content':'partial','partial_response':True}]),
+                   [{'role':'assistant','content':'partial'}])
  def test_stream_close_during_read_preserves_partial_reply(self):
   entered_read=threading.Event();closed=threading.Event();cancel=threading.Event();errors=[]
   class Response:
