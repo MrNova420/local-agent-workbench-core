@@ -14,7 +14,7 @@ def _message_source(message: dict[str, Any]) -> str:
     role = str(message.get("role", "unknown"))
     content = str(message.get("content", ""))
     if role == "system":
-        return "task_checkpoint" if content.startswith(_CHECKPOINT_PREFIX) else "system_guidance_and_project_instructions"
+        return "task_checkpoint" if _CHECKPOINT_PREFIX in content else "system_guidance_and_project_instructions"
     if role == "user" and "[Context notice:" in content:
         return "compaction_notice"
     if role == "user" and "Relevant project files:" in content:

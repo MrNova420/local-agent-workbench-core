@@ -34,6 +34,23 @@ def test_manifest_accounts_for_the_exact_request_sources_without_copying_prompt_
     assert "source content" not in str(manifest)
 
 
+def test_manifest_recognizes_checkpoint_embedded_in_merged_system_guidance():
+    messages = [{
+        "role": "system",
+        "content": "Coding guidance\nFollow project instructions.\n\n"
+                   "Active task continuity checkpoint (facts from saved state): {\"task_id\":\"t1\"}",
+    }]
+
+    manifest = build_prompt_manifest(
+        messages, [], request_index=1, context=65536, output_tokens=8192, input_budget=57344,
+        skills_enabled=False, skill_sources=[], available_skills=[], catalog_skill_names=[],
+        project_instructions="(none found)", harness_profile="standard", task_intent="implement", access="ask",
+    )
+
+    assert manifest["checkpoint_included"] is True
+    assert manifest["messages"][0]["source"] == "task_checkpoint"
+
+
 def test_manifest_reports_only_skill_calls_with_corresponding_tool_results():
     messages = [
         {"role": "assistant", "tool_calls": [{"function": {"name": "skill", "arguments": {"action": "load", "name": "python-review"}}}]},
