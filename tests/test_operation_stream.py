@@ -402,6 +402,25 @@ class OperationStreamTests(unittest.TestCase):
             self.assertIn("雪" * 20000, result)
             self.assertGreater(len(result), 12000)
 
+    def test_command_does_not_inherit_sidecar_stdin(self):
+        import subprocess
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
+            captured = {}
+            real_popen = subprocess.Popen
+
+            def recording_popen(*args, **kwargs):
+                captured.update(kwargs)
+                return real_popen(*args, **kwargs)
+
+            with patch("subprocess.Popen", side_effect=recording_popen):
+                result = registry._command({"argv": [sys.executable, "-c", "import sys; print('eof' if sys.stdin.read() == '' else 'inherited')"]})
+
+            self.assertIs(captured["stdin"], subprocess.DEVNULL)
+            self.assertIn("eof", result)
+
     def test_command_cancellation_uses_and_closes_windows_process_job(self):
         from types import SimpleNamespace
         from unittest.mock import Mock, patch
