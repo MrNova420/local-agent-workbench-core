@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-02 continuation recognizes distinct model responses
+
+- An implementation continuation no longer treats two different assistant responses as identical merely because plan, operation, and verification state did not change. The no-progress signature for a tool-free implementation response now includes a local SHA-256 fingerprint of emitted content/reasoning; it stores no duplicate response text in that signature. New responses may continue the same task toward a structured action; an exact repeated response with unchanged host-observed state still becomes an explicit `implementation_incomplete` outcome. Plan-only tool batches retain their separate no-progress behavior. No attempt, runtime, context, output, or reasoning cap was added.
+- TDD regression first failed by ending after three model calls before the expected write, then passed after the change. Focused `tests/test_operation_stream.py` plus `tests/test_workflow_outcome.py`: **71 passed**; `py_compile` and `git diff --check` passed. The integration regression reaches write, inspection, plan completion, and an `inspected` terminal outcome. Full suites and packaged/visible long-run acceptance remain queued.
+
 ## 2026-11-02 case-aware regular-expression project search
 
 - `search_files` keeps case-insensitive literal matching as the default and now accepts `regex`, `case_sensitive`, and `match_timeout_seconds` options. Invalid expressions return a correctable error. A regex timeout preserves any matches already found and returns an explicit incomplete result; the activity layer classifies it as partial. Regex matching uses the `regex` package's per-operation timeout support, and the runtime dependency is included in both engine and packaged-sidecar requirements.
@@ -15,7 +20,7 @@
 ## 2026-11-02 automatic task progress visibility and plan-loop balance
 
 - Automatic runs now publish one generic, host-owned in-progress checklist item before the first model request, so the Live Work Sheet is not empty while the model reasons. It does not infer discussion versus implementation from prompt wording. A model-authored plan replaces it and remains freely expandable; the generic item completes with the task and does not turn an ordinary Auto answer into `plan_only`.
-- The no-progress detector deliberately does not treat plan text/expansion or agent-authored decision notes alone as project implementation progress. Identical plan-only loops still stop with resumable state; host decisions, user updates, actual operations, and verification remain observable evidence. No step/runtime/token cap was added.
+- The no-progress detector deliberately does not treat plan text/expansion or agent-authored decision notes alone as project implementation progress. Tool-free implementation responses also compare an exact response fingerprint so a new model response can continue the same task; identical repeated responses with unchanged host state stop with resumable incomplete status. Plan-only tool loops remain separately detected. Host decisions, user updates, actual operations, and verification remain observable evidence. No step/runtime/token cap was added.
 - Focused evidence: `tests/test_workflow_outcome.py` **23 passed**; `tests/test_operation_stream.py -k "automatic or repeated_identical_plan or pending_plan_expansion"` **7 passed**; `py_compile` and `git diff --check` passed. Full engine/app suites and packaged worksheet acceptance remain queued. Model and inference settings unchanged.
 
 ## 2026-11-02 same-task live steering during model responses

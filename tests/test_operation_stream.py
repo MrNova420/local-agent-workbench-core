@@ -688,6 +688,7 @@ class OperationStreamTests(unittest.TestCase):
             responses = [
                 {"message": {"role": "assistant", "content": "I will implement the requested change."}},
                 {"message": {"role": "assistant", "content": "I could not make the change."}},
+                {"message": {"role": "assistant", "content": "I could not make the change."}},
             ]
             engine.runtime.stream = lambda *_args: responses.pop(0)
 
@@ -809,6 +810,40 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
             self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])
 
+    def test_distinct_reasoning_after_implementation_nudge_does_not_end_run_as_no_progress(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "plan", "function": {"name": "update_plan", "arguments": {
+                        "items": [{"title": "Create the source file", "status": "pending"}]}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The entry point must match the existing package layout."}},
+                {"message": {"role": "assistant", "content": "I found the package layout; now I can write its entry point."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "write", "function": {"name": "write_file", "arguments": {
+                        "path": "app.py", "content": "print('ready')\\n"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect", "function": {"name": "read_file", "arguments": {"path": "app.py"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "finish-plan", "function": {"name": "update_plan", "arguments": {
+                        "items": [{"title": "Create the source file", "status": "completed"}]}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The file is implemented and inspected."}},
+            ]
+            calls = []
+            engine.runtime.stream = lambda *_args: (calls.append(1) or responses.pop(0))
+
+            engine.run("Implement a small project file.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(len(calls), 7)
+            self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
+            self.assertEqual(completion["workflowOutcome"], "inspected")
+
     def test_pending_plan_expansion_alone_does_not_keep_automatic_run_planning(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
@@ -828,6 +863,7 @@ class OperationStreamTests(unittest.TestCase):
                     }
                 ]}},
                 {"message": {"role": "assistant", "content": "I am still refining the plan."}},
+                {"message": {"role": "assistant", "content": "I am still refining the plan."}},
             ]
             calls = []
             engine.runtime.stream = lambda *_args: (calls.append(1) or responses.pop(0))
@@ -835,7 +871,7 @@ class OperationStreamTests(unittest.TestCase):
             engine.run("Implement a small project change.")
 
             completion = next(event for event in events if event.get("type") == "complete")
-            self.assertEqual(len(calls), 4)
+            self.assertEqual(len(calls), 5)
             self.assertEqual(len(engine.state["registry"].plan), 2)
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
             self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])

@@ -1,6 +1,6 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
-import codecs, copy, json, os, queue, re, tempfile, threading, time, urllib.request, uuid
+import codecs, copy, hashlib, json, os, queue, re, tempfile, threading, time, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonschema.exceptions import SchemaError
 from referencing import Registry
@@ -341,7 +341,8 @@ def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str,
     return bool(project_changed or command_side_effects_possible or mutation_attempted
                 or _plan_requests_implementation(task_mode, plan_source, plan))
 
-def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]]) -> str:
+def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]],
+                                     assistant_message: dict[str, Any] | None = None) -> str:
     """Compare observable progress, not elapsed time or a fixed continuation count."""
     operations = task.get("operations", [])
     operation_state = sorted({
@@ -363,6 +364,19 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
         {key: copy.deepcopy(item[key]) for key in ("id", "instruction", "status") if key in item}
         for item in user_updates if isinstance(item, dict)
     ] if isinstance(user_updates, list) else []
+    # A second implementation-focused response may contain newly emitted
+    # reasoning even when the host has not observed an operation yet. Preserve
+    # that as continuity progress so a long reasoning run is not ended solely
+    # because its project/plan state is unchanged. Hash it locally instead of
+    # copying potentially large reasoning text into the signature.
+    response_text = {
+        key: assistant_message.get(key)
+        for key in ("content", "thinking")
+        if isinstance(assistant_message, dict) and isinstance(assistant_message.get(key), str)
+    }
+    response_fingerprint = hashlib.sha256(json.dumps(
+        response_text, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest() if response_text else ""
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
         "plan_source": task.get("plan_source", "workbench"),
@@ -372,6 +386,7 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
         "operations": operation_state,
         "verification": verification_steps,
         "changed_files": task.get("changed_files", []),
+        "assistant_response_fingerprint": response_fingerprint,
     }
     return json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -1925,7 +1940,7 @@ class AgentEngine:
                         implementation_requested,self.workspace.access,action_denied,
                         completed_project_change,review_required,plan_remaining,
                         command_effects_inspected=command_side_effects_possible and post_change_inspection)
-                    progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps)
+                    progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps,msg)
                     if (unfinished or missing_final_response) and progress_signature!=last_continuation_signature:
                         last_continuation_signature=progress_signature
                         if missing_final_response and not unfinished:
