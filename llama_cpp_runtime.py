@@ -39,14 +39,26 @@ class LlamaCppServer:
         except (urllib.error.URLError, TimeoutError, OSError):
             return False
 
-    def _effective_context(self) -> int | None:
+    def _runtime_props(self) -> dict[str, Any]:
         try:
             with urllib.request.urlopen(self.base_url + "/props", timeout=2) as response:
                 data = json.loads(response.read().decode("utf-8"))
-            value = (data.get("default_generation_settings") or {}).get("n_ctx")
-            return value if isinstance(value, int) and not isinstance(value, bool) else None
+            return data if isinstance(data, dict) else {}
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, AttributeError):
-            return None
+            return {}
+
+    def _effective_context(self) -> int | None:
+        value = (self._runtime_props().get("default_generation_settings") or {}).get("n_ctx")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _reasoning_capability(props: dict[str, Any]) -> dict[str, Any]:
+        """Expose only reasoning modes explicitly reported by the loaded template."""
+        caps = props.get("chat_template_caps")
+        levels = caps.get("reasoning_effort_levels") if isinstance(caps, dict) else None
+        values = list(dict.fromkeys(value for value in levels if isinstance(value, str) and value.strip())) if isinstance(levels, list) else []
+        support = "levels" if values else "unknown"
+        return {"support": support, "default": None, "values": values}
 
     def _slot_metrics(self) -> dict[str, Any]:
         """Read public llama-server slot counters without exposing prompt text."""
@@ -155,9 +167,12 @@ class LlamaCppServer:
             model = str(self.model) if live and self.model else None
             context = self.context if live else None
             binary = str(self.binary) if live and self.binary else None
-        effective = self._effective_context() if live else None
+        props = self._runtime_props() if live else {}
+        effective_value = (props.get("default_generation_settings") or {}).get("n_ctx")
+        effective = effective_value if isinstance(effective_value, int) and not isinstance(effective_value, bool) else None
         return {"running": live, "owned": live, "model": model, "context": context,
                 "effective_context": effective, "reasoning": self.reasoning if live else None,
+                "reasoning_capability": self._reasoning_capability(props) if live else {"support": "unknown", "default": None, "values": []},
                 "binary": binary, "base_url": self.base_url if live else None,
                 "slot_metrics": self._slot_metrics() if live and include_slot_metrics else None}
 

@@ -372,3 +372,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The selected folder's structured file tools (`list_files`, `search_files`, `read_file`, `write_file`, `append_file`, `edit_file`, and `apply_patch`) work when the external scope matches. `ask` prompts for each external path operation; `allow` is an explicit persistent grant. Missing/unavailable folders, ungranted paths, and symlink/junction traversal fail closed. Copy mode blocks external structured writes because they would bypass staged copy review.
 - The agent is told about the external access policy, and tool descriptions identify supported external paths. Search/list display absolute external paths so results can be used in follow-up file calls.
 - Focused permission/tool suites: **47 passed**. Full engine suite, worker integration, package, and live visible acceptance remain queued. This does not contain PowerShell/commands or MCP; those can still act with host-user rights. App-side folder-picker wiring and full packaged approval-flow acceptance are pending.
+# 2026-11-02 runtime-reported llama.cpp reasoning capabilities
+
+- llama.cpp status now reads `/props` once per status request and derives reasoning-effort choices only from `chat_template_caps.reasoning_effort_levels`. Missing capability metadata stays `unknown`; no generic effort list or guessed model default is exposed.
+- This keeps reasoning mode/effort separate from the optional per-request `thinking_budget_tokens` control. Budget remains unlimited by default and does not change `max_tokens` or impose a deadline.
+- Focused runtime tests: **13 passed**, including exact reported levels and unknown/omitted levels. The app-side worker tests for unloaded and loaded GGUF capability reporting: **2 passed**. Broader suites, packaged UI, runtime-template compatibility, and live enforcement remain pending.
+

@@ -132,6 +132,53 @@ def test_slot_metrics_expose_token_counts_without_prompt_text(tmp_path):
     assert "must not leak" not in json.dumps(metrics)
 
 
+def test_runtime_status_reports_only_chat_template_reasoning_levels(tmp_path):
+    server = LlamaCppServer(tmp_path)
+    server.owned = True
+    server.proc = Mock()
+    server.proc.poll.return_value = None
+    server.model = tmp_path / "model.gguf"
+    server.context = 32768
+    props = {
+        "default_generation_settings": {"n_ctx": 32768},
+        "chat_template_caps": {
+            "supports_reasoning_effort": True,
+            "reasoning_effort_levels": ["low", "medium", "high"],
+        },
+    }
+    response = Mock()
+    response.read.return_value = json.dumps(props).encode()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    with patch("llama_cpp_runtime.urllib.request.urlopen", return_value=response):
+        status = server.status()
+    assert status["effective_context"] == 32768
+    assert status["reasoning_capability"] == {
+        "support": "levels", "default": None, "values": ["low", "medium", "high"],
+    }
+
+
+def test_runtime_status_does_not_guess_reasoning_when_template_levels_are_unknown(tmp_path):
+    server = LlamaCppServer(tmp_path)
+    server.owned = True
+    server.proc = Mock()
+    server.proc.poll.return_value = None
+    server.model = tmp_path / "model.gguf"
+    server.context = 8192
+    response = Mock()
+    response.read.return_value = json.dumps({
+        "default_generation_settings": {"n_ctx": 8192},
+        "chat_template_caps": {"supports_reasoning_effort": True},
+    }).encode()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    with patch("llama_cpp_runtime.urllib.request.urlopen", return_value=response):
+        status = server.status()
+    assert status["reasoning_capability"] == {
+        "support": "unknown", "default": None, "values": [],
+    }
+
+
 def test_reasoning_phase_transitions_to_generation_only_when_user_facing_text_arrives():
     chunks = [
         {"choices": [{"delta": {"reasoning_content": "considering"}}]},
