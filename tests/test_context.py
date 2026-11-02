@@ -192,9 +192,10 @@ class ContextTests(unittest.TestCase):
             engine.mcp_tools=[engine.state['registry']._schema(f'mcp__catalog__{i}', 'Distinct tool capability '+('description '*10), {'value':{'type':'string'}}, ['value']) for i in range(12)]
             engine.state['mcp_tools']=engine.mcp_tools
             base=[{'role':'system','content':'system'},{'role':'user','content':'discover tools'}]
-            page=json.loads(engine._load_tools({'query':'mcp__catalog__','offset':0},base,response_byte_budget=1500))
+            page=json.loads(engine._load_tools({'query':'mcp__catalog__','offset':0,'limit':12},base,response_byte_budget=1500))
             self.assertLess(len(page['schemas']),12)
             self.assertIsNotNone(page['next_offset'])
+            self.assertLessEqual(len(json.dumps(page,ensure_ascii=False).encode('utf8')),1500)
     def test_budget_refuses_to_silently_lower_context(self):
         manager=ContextManager(context=4096,reserve=1024);huge=[{'role':'system','content':'s'},{'role':'user','content':'x'*50000}]
         with self.assertRaisesRegex(ValueError,'context was not reduced'):manager.compact(huge)

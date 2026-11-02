@@ -1762,13 +1762,15 @@ class AgentEngine:
         needle=query.casefold().strip()
         rows=[tool for tool in catalog if (not requested or tool.get("function",{}).get("name") in requested)
               and (not needle or needle in json.dumps(tool,ensure_ascii=False).casefold())]
-        if limit is not None:
-            page=rows[offset:offset+limit]
-        elif response_byte_budget is None:
-            page=rows[offset:]
+        available_rows=rows[offset:offset+limit] if limit is not None else rows[offset:]
+        if response_byte_budget is None:
+            page=available_rows
         else:
+            # An explicit page size is a preference, not permission to overflow
+            # the remaining model-response budget. Honor it when it fits, then
+            # let the model request the next page using next_offset.
             page=[]
-            for row in rows[offset:]:
+            for row in available_rows:
                 candidate=page+[row]
                 preview={"total_matches":len(rows),"offset":offset,"next_offset":offset+len(candidate),
                          "selected_for_next_request":sorted(self._selected_tool_names),"schemas":candidate}

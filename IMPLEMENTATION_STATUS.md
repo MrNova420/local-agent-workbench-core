@@ -390,3 +390,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Focused runtime tests: **13 passed**, including exact reported levels and unknown/omitted levels. The app-side worker tests for unloaded and loaded GGUF capability reporting: **2 passed**. Broader suites, packaged UI, runtime-template compatibility, and live enforcement remain pending.
 - When the loaded template reports effort levels, the model capability contract also exposes the llama.cpp reasoning-off control. Unknown templates do not receive a fabricated toggle. This supports Default/Off/exact-level selection without confusing qualitative effort with a numeric token budget.
 
+# 2026-11-02 tool-catalog pagination under small response budgets
+
+- Explicit `load_tools.limit` values now respect the response budget supplied by the engine, just like automatically sized pages. The requested count is honored when it fits; otherwise the response ends at the largest fitting page and returns `next_offset` for continued discovery. No fixed catalog/page cap was introduced.
+- Regression was first run red (the 12-schema explicit page exceeded the 1,500-byte budget), then green after the fix. Focused page-selection tests: **2 passed**. `git diff --check` and Python compilation passed.
+- This is engine source evidence only. Broader schema/context suites, paired sidecar/package tests, visible UI acceptance, and live Flint work remain queued.
+
