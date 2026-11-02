@@ -388,7 +388,8 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
         "changed_files": task.get("changed_files", []),
         "assistant_response_fingerprint": response_fingerprint,
     }
-    return json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    serialized = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _provider_response_was_truncated(result: dict[str, Any]) -> bool:
