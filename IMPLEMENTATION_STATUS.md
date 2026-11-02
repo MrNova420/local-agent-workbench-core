@@ -173,7 +173,7 @@ Current status: active development; **not approved for unrestricted real-project
 - Measure actual Ollama first-token latency, generation speed, allocated context, and peak RAM/VRAM under the approved model-preservation protocol.
 - Revisit packaging, diagnostic exports, and installation/updating before calling the app production-ready.
 
-See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for findings, architecture direction, and gates.
+The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is a historical review of the Tkinter prototype at `2e10b37`, not the current defect list or release gate. For current paired-source status, evidence, backlog, and release gates, see the Electron app repository's `docs/MASTER_ROADMAP.md`, `docs/CORE_HARNESS_READINESS.md`, `docs/PRODUCT_BACKLOG.md`, and `docs/ACCEPTANCE_LOG.md`.
 
 ## 2026-10-31 shared-engine handoff
 
