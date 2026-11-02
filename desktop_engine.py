@@ -653,6 +653,12 @@ class ToolRegistry:
                 self.task_mode=authoritative_mode
             elif task_mode in {"discussion", "plan_only", "plan", "implement"}:
                 self.task_mode=task_mode
+            # In Automatic intent, `plan` is a phase, not a separate read-only
+            # collaboration mode. Once the agent has supplied an actionable
+            # plan, let the host advance it to implementation; explicit Plan
+            # intent and plan_only remain read-only above.
+            if self.task_intent=="auto" and self.task_mode=="plan" and self.plan:
+                self.task_mode="implement"
             event={"type":"plan","items":self.plan}
             if self.task_mode in {"discussion", "plan_only", "plan", "implement"}:
                 event["taskMode"]=self.task_mode

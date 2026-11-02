@@ -340,3 +340,9 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - The shared agent guidance now explicitly asks for the first useful inspection/change after adequate scoping and the next open plan step immediately after plan publication, while preserving reasoning defaults, scope, planning freedom, approval requirements, context/output settings, and unbounded task runtime.
 - Added regressions for the request-level next-step handoff and shared prompt guidance. They are queued and intentionally unrun until the agreed verification batch; no live model task was resumed.
 - Root-cause evidence remains limited: the cancelled Flint run emitted 23,477 characters of reasoning and no tool call before the user cancelled it. It does not prove the model would never have implemented. This change targets the confirmed weak generic continuation handoff; verify with the queued mocked tests and a later user-approved visible run.
+
+## 2026-11-02 automatic plan-to-implementation phase transition
+
+- Root-cause review confirmed that an Automatic run labeled an agent-authored phase `plan` as active in its saved/UI state, even though write tools were still available. The engine depended on the model to change that state to `implement` itself, so there was no host-owned mode transition after planning.
+- Automatic intent now promotes a non-empty agent-authored `plan` phase to `implement` when saving the plan update. The plan remains editable and expandable, and tools remain subject to the selected access and approval policy. Explicit Plan intent and `plan_only` remain read-only.
+- Added a regression for the automatic phase promotion, including the saved checkpoint and emitted plan state. It is queued and unrun; no model request or app launch was started.

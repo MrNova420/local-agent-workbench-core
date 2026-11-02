@@ -97,6 +97,30 @@ def test_plan_tool_result_hands_implementation_to_next_open_step_without_replann
     assert "This request is read-only/plan-only" in result
 
 
+def test_automatic_plan_phase_promotes_actionable_plan_to_implementation(tmp_path):
+    checkpoint = begin_task(None, prompt="Build and verify the requested feature", turn_id="auto-turn",
+                            workspace=str(tmp_path), settings={"task_intent": "auto"})
+    events = []
+    registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_: True,
+                            task_checkpoint=checkpoint, event=events.append)
+    registry.task_intent = "auto"
+
+    result = registry.run("update_plan", {
+        "items": [
+            {"title": "Inspect existing files", "status": "completed"},
+            {"title": "Implement the requested feature", "status": "pending"},
+            {"title": "Inspect and verify the change", "status": "pending"},
+        ],
+        "task_mode": "plan",
+    })
+
+    assert '"task_mode": "implement"' in result
+    assert '"next_action": "Implement the requested feature"' in result
+    assert "structured project tools now" in result
+    assert events[-1]["taskMode"] == "implement"
+    assert checkpoint["current"]["task_mode"] == "implement"
+
+
 def test_host_starter_plan_is_visible_and_intent_specific():
     assert initial_task_plan("", "implement") == []
     assert initial_task_plan("Explain this code", "discuss") == []
