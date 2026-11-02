@@ -71,13 +71,17 @@ def test_automatic_guidance_separates_plan_phase_from_plan_only_request():
     assert "not a cap on reasoning, planning" in prompt
 
 
-def test_small_model_profile_keeps_safe_batching_and_full_scope():
-    prompt = agent_system_prompt("Edit with approval", "", harness_profile="small-model")
-    assert "batch independent tool calls when their inputs are known" in prompt
-    assert "run validated independent reads concurrently" in prompt
-    assert "keeping writes, commands, and MCP operations ordered" in prompt
-    assert "Keep the entire requested scope and expandable plan" in prompt
-    assert "do not cap required work" in prompt
+def test_all_model_profiles_keep_safe_batching_and_full_scope():
+    prompts = [
+        agent_system_prompt("Edit with approval", "", harness_profile="standard"),
+        agent_system_prompt("Edit with approval", "", harness_profile="small-model"),
+    ]
+    for prompt in prompts:
+        assert "Batch independent tool calls in one response when their inputs are known" in prompt
+        assert "validated independent reads concurrently" in prompt
+        assert "Keep writes, commands, and MCP calls ordered" in prompt
+    assert "keep the entire requested scope and expandable plan" in prompts[1]
+    assert "do not cap required work" in prompts[1]
 
 
 def test_plan_tool_result_hands_implementation_to_next_open_step_without_replanning(tmp_path):
