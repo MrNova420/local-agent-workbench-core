@@ -30,6 +30,15 @@ class ToolValidationTests(unittest.TestCase):
                 [r"C:\Program Files\PowerShell\7\pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ChildItem"],
             )
 
+    def test_run_shell_dispatches_cmd_through_the_approved_command_runner(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = AgentEngine(Path(folder), context=CONTEXT_MAX, access="ask", approve=lambda *_args: True)
+            result = engine.state["registry"].run(
+                "run_shell", {"shell": "cmd", "command": "echo CMD_READY", "timeout_seconds": 10}
+            )
+            self.assertIn("CMD_READY", result)
+            self.assertIn("[exit 0]", result)
+
     def test_run_shell_rejects_unknown_shell_and_cmd_outside_windows(self):
         with self.assertRaisesRegex(ValueError, "shell must be"):
             _build_shell_argv("bash", "echo ready")
