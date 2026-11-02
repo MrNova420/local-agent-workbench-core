@@ -1318,15 +1318,27 @@ class ContextManager:
         system_content="\n\n".join(str(message.get("content", "")) for message in system_messages if message.get("content"))
         full_checkpoint_text=render_checkpoint(checkpoint)
         checkpoint_text=full_checkpoint_text
-        checkpoint_target=max(64,budget//4)
-        if checkpoint_text and self.estimate(checkpoint_text)>checkpoint_target:
-            checkpoint_text=render_checkpoint(checkpoint,token_budget=checkpoint_target)
-        checkpoint_omitted=checkpoint_omissions(checkpoint_text)
-        if checkpoint_text:
-            system_content=(system_content+"\n\n" if system_content else "")+checkpoint_text
-        base=[{"role":"system","content":system_content}] if system_content else []
+        system_base=system_content
+        def assemble_base(checkpoint_value:str)->list[dict]:
+            combined=system_base
+            if checkpoint_value:
+                combined=(combined+"\n\n" if combined else "")+checkpoint_value
+            return [{"role":"system","content":combined}] if combined else []
+        base=assemble_base(checkpoint_text)
         request=base+conversation
         total=request_size(request)
+        # Preserve the complete checkpoint whenever it fits with the current
+        # conversation. Only spend its detail when actual context pressure
+        # requires compaction, so a fixed share cannot discard useful history
+        # from otherwise-fitting requests.
+        if total>budget and checkpoint_text:
+            checkpoint_target=max(64,budget//4)
+            if self.estimate(checkpoint_text)>checkpoint_target:
+                checkpoint_text=render_checkpoint(checkpoint,token_budget=checkpoint_target)
+                base=assemble_base(checkpoint_text)
+                request=base+conversation
+                total=request_size(request)
+        checkpoint_omitted=checkpoint_omissions(checkpoint_text)
         if total<=budget:
             if checkpoint_text!=full_checkpoint_text and on_compact:
                 on_compact({"type":"context_compacted","omittedTurns":0,"retainedTurns":0,"omittedOperationGroups":0,

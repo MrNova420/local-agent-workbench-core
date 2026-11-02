@@ -87,6 +87,19 @@ class ContextTests(unittest.TestCase):
         self.assertGreater(events[0]['omittedTurns'],0)
         self.assertTrue(events[0]['checkpointIncluded'])
         self.assertGreater(events[0]['checkpointEstimate'],0)
+    def test_full_checkpoint_is_preserved_when_checkpoint_and_conversation_fit(self):
+        manager=ContextManager(context=4096,reserve=512)
+        goal='Keep the full task continuity record. '*55
+        checkpoint={'current':{'task_id':'task-fit','goal':goal,'status':'active',
+                               'workspace':'C:/fixture','plan':[{'title':'Implement the requested feature','status':'pending'}]}}
+        messages=[{'role':'system','content':'SYSTEM'},{'role':'user','content':'Continue the implementation.'}]
+        events=[]
+
+        compacted=manager.compact(messages,output_tokens=512,on_compact=events.append,checkpoint=checkpoint)
+
+        system_content=compacted[0]['content']
+        self.assertIn(goal,system_content)
+        self.assertEqual(events,[])
     def test_compaction_preserves_tool_call_and_result_pairs(self):
         manager=ContextManager(context=4096,reserve=1024)
         messages=[{'role':'system','content':'SYSTEM'}]
