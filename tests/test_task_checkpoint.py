@@ -1,7 +1,31 @@
 import copy
 
 from desktop_engine import ContextManager
-from task_checkpoint import begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
+from task_checkpoint import begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, record_user_update, render_checkpoint
+
+
+def test_same_task_steering_is_durable_and_delivery_updates_are_idempotent():
+    checkpoint = begin_task(None, prompt="Build the requested feature", turn_id="turn-1", workspace="C:/p", settings={})
+    update = {"id": "steer-1", "turn_id": "turn-1", "instruction": "Keep the existing visual style", "status": "pending", "created_at": 10}
+
+    record_user_update(checkpoint, update)
+    record_user_update(checkpoint, {**update, "status": "delivered", "delivered_at": 12})
+    record_user_update(checkpoint, {**update, "status": "delivered", "delivered_at": 12})
+
+    saved = checkpoint["current"]["user_updates"]
+    assert len(saved) == 1
+    assert saved[0]["instruction"] == "Keep the existing visual style"
+    assert saved[0]["status"] == "delivered"
+    assert saved[0]["delivered_at"] == 12
+
+
+def test_same_task_steering_id_cannot_be_reused_for_different_text():
+    checkpoint = begin_task(None, prompt="Build", turn_id="turn-1", workspace="C:/p", settings={})
+    record_user_update(checkpoint, {"id": "steer-1", "instruction": "First"})
+
+    import pytest
+    with pytest.raises(ValueError, match="cannot be reused"):
+        record_user_update(checkpoint, {"id": "steer-1", "instruction": "Different"})
 
 
 def test_checkpoint_keeps_active_task_and_user_followups_across_turns():

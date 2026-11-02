@@ -142,6 +142,29 @@ def record_implementation_requested(checkpoint: dict[str, Any], requested: bool 
     task["updated_at"] = time.time()
 
 
+def record_user_update(checkpoint: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Persist one same-task steering input and update its delivery state idempotently."""
+    task = _current(checkpoint)
+    update_id = str(update.get("id", "")).strip()
+    instruction = str(update.get("instruction", "")).strip()
+    if not update_id or not instruction:
+        raise ValueError("A user update requires a stable id and non-empty instruction.")
+    updates = task.setdefault("user_updates", [])
+    if not isinstance(updates, list):
+        updates = task["user_updates"] = []
+    existing = next((row for row in updates if isinstance(row, dict) and row.get("id") == update_id), None)
+    if existing is None:
+        existing = {"id": update_id, "instruction": instruction}
+        updates.append(existing)
+    elif existing.get("instruction") != instruction:
+        raise ValueError("A user update id cannot be reused for different text.")
+    for key, value in update.items():
+        if key != "id" and key != "instruction":
+            existing[key] = copy.deepcopy(value)
+    task["updated_at"] = time.time()
+    return copy.deepcopy(existing)
+
+
 def record_decision(checkpoint: dict[str, Any], decision: dict[str, Any]) -> None:
     task = _current(checkpoint)
     task.setdefault("decisions", []).append({**copy.deepcopy(decision), "timestamp": time.time()})

@@ -414,6 +414,15 @@ def _assistant_has_final_content(message: dict[str, Any]) -> bool:
     content = message.get("content")
     return isinstance(content, str) and bool(content.strip())
 
+
+def _provider_message_history(messages: list[dict]) -> list[dict]:
+    """Remove Workbench-only transcript metadata before sending provider JSON."""
+    internal_keys = {"turn_id", "steering_id", "steering_status"}
+    return [
+        {key: copy.deepcopy(value) for key, value in message.items() if key not in internal_keys}
+        for message in messages if isinstance(message, dict)
+    ]
+
 def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str, plan: list[dict[str, Any]],
                              project_changed: bool, command_side_effects_possible: bool,
                              mutation_attempted: bool = False) -> bool:
@@ -1344,10 +1353,11 @@ class OllamaRuntime:
         request_options.update(temperature=state["temperature"],num_ctx=state["context"],num_predict=state["max_tokens"])
         request_tools=state.get("request_tools")
         request_tools=request_tools if isinstance(request_tools,list) else state["registry"].schemas+state.get("mcp_tools",[])
-        payload={"model":state["model"],"messages":messages,"stream":True,"tools":request_tools,"keep_alive":state.get("keep_alive","30m"),
+        provider_messages=_provider_message_history(messages)
+        payload={"model":state["model"],"messages":provider_messages,"stream":True,"tools":request_tools,"keep_alive":state.get("keep_alive","30m"),
                  "options":request_options}
         if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
-        estimated_input=ContextManager.estimate(json.dumps({"messages":messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
+        estimated_input=ContextManager.estimate(json.dumps({"messages":provider_messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
         additional_fields={"think":payload["think"]} if "think" in payload else {}
         if ignored_overrides:additional_fields["ignored_runtime_option_overrides"]=ignored_overrides
         emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"tool_names":[(item.get("function") or {}).get("name","") for item in payload["tools"]],"deferred_tool_names":state.get("deferred_tool_names",[]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":additional_fields,"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
@@ -1442,11 +1452,12 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
+        self.steering_handler=steering_handler
         # The app supplies a durable session lookup. Keep an in-memory fallback
         # as well so standalone AgentEngine/CLI sessions can recover earlier
         # operation output without advertising a tool that cannot work.
@@ -1720,6 +1731,12 @@ class AgentEngine:
                 if self.stop_after_operation.is_set():
                     finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
+                # A steering handler may append durable user updates only at this
+                # request boundary, after the prior response and its complete tool
+                # exchange have been resolved. It must not mutate an active stream
+                # or an outstanding assistant tool-call batch.
+                if self.steering_handler and self.steering_handler(msgs, False):
+                    self.event({"type":"steering_applied","elapsed":time.monotonic()-start})
                 tools=self._tools_for_request(base_request)
                 request_messages=self.context.compact(msgs,tools,self.state["max_tokens"],self.event,checkpoint=checkpoint)
                 request_index+=1
@@ -1755,6 +1772,12 @@ class AgentEngine:
                     finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
                 if not calls:
+                    # A steer can arrive during a final prose response, when the
+                    # normal loop would otherwise return without another request.
+                    # Persist it and continue this same task before reporting done.
+                    if self.steering_handler and self.steering_handler(msgs, True):
+                        self.event({"type":"steering_applied","elapsed":time.monotonic()-start})
+                        continue
                     missing_final_response = not _assistant_has_final_content(msg)
                     post_change_inspection=last_inspection_action_index>last_effect_action_index
                     implementation_requested = _implementation_evidence(

@@ -9,6 +9,34 @@ from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace, _n
 
 
 class OperationStreamTests(unittest.TestCase):
+    def test_steering_during_final_response_is_inserted_before_same_task_continues(self):
+        with tempfile.TemporaryDirectory() as root:
+            requests = []
+            responses = [
+                {"message": {"role": "assistant", "content": "I am still working through the task."}},
+                {"message": {"role": "assistant", "content": "I incorporated the user's update."}},
+            ]
+            pending = [{"id": "steer-1", "instruction": "Keep the existing style"}]
+
+            def steer(messages, finishing):
+                if not finishing or not pending:
+                    return False
+                update = pending.pop(0)
+                messages.append({"role": "user", "content": update["instruction"], "turn_id": "turn-1", "steering_id": update["id"]})
+                return True
+
+            engine = AgentEngine(root, access="plan", task_intent="plan", steering_handler=steer)
+            def stream(_state, messages, *_args):
+                requests.append(copy.deepcopy(messages))
+                return responses.pop(0)
+            engine.runtime.stream = stream
+
+            result = engine.run("Review this project")
+
+            self.assertEqual(len(requests), 2)
+            self.assertTrue(any(row.get("steering_id") == "steer-1" for row in requests[1]))
+            self.assertEqual(result[-1]["content"], "I incorporated the user's update.")
+
     def test_continuation_uses_verified_work_state_not_model_wording(self):
         self.assertTrue(_needs_implementation_continuation(True, "edit", False, False, False, False))
         self.assertTrue(_needs_implementation_continuation(True, "edit", False, True, False, True))

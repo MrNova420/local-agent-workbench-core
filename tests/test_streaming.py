@@ -1,6 +1,6 @@
 import unittest, json, threading
 from unittest.mock import patch
-from desktop_engine import OllamaRuntime
+from desktop_engine import OllamaRuntime, _provider_message_history
 class FakeResponse:
  def __init__(self,lines):self.lines=iter(lines);self.closed=False
  def __enter__(self):return self
@@ -8,6 +8,11 @@ class FakeResponse:
  def readline(self):return next(self.lines,b'')
  def close(self):self.closed=True
 class StreamTests(unittest.TestCase):
+ def test_provider_payload_omits_internal_same_task_steering_metadata(self):
+  messages=[{'role':'user','content':'Keep the style','turn_id':'turn-1','steering_id':'steer-1','steering_status':'delivered'}]
+  self.assertEqual(_provider_message_history(messages),[{'role':'user','content':'Keep the style'}])
+  self.assertEqual(messages[0]['steering_id'],'steer-1')
+
  def test_ollama_request_uses_the_context_selected_tool_schemas(self):
   lines=[json.dumps({'message':{'content':'ready'},'done':True}).encode()+b'\n']
   response=FakeResponse(lines);runtime=OllamaRuntime();events=[]
