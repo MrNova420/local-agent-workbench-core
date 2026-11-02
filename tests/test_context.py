@@ -78,7 +78,10 @@ class ContextTests(unittest.TestCase):
                                'operations':[{'operation_id':'op-1','status':'completed','result_ref':'op-1'}]}}
         events=[]
         compacted=manager.compact(messages,output_tokens=512,on_compact=events.append,checkpoint=checkpoint)
-        checkpoint_message=next(message for message in compacted if 'Active task continuity checkpoint' in str(message.get('content','')))
+        system_messages=[message for message in compacted if message.get('role')=='system']
+        self.assertEqual(len(system_messages),1,'provider chat templates require continuity to remain inside the leading system message')
+        checkpoint_message=system_messages[0]
+        self.assertIn('Active task continuity checkpoint',checkpoint_message['content'])
         self.assertIn('Finish the website',checkpoint_message['content'])
         self.assertIn('Implement page',checkpoint_message['content'])
         self.assertGreater(events[0]['omittedTurns'],0)

@@ -1,5 +1,13 @@
 # Implementation and verification status
 
+## 2026-11-01 Ollama system-message ordering fix
+
+- A visible request using the selected Ornith GGUF reached Ollama with the configured 65,536 context, 8,192 output allowance, model-default reasoning, and a ~15,628-token input estimate, then failed with HTTP 500 before its first token.
+- The Ollama server log identified the root cause: the model's chat template rejects a second `system` message. Compaction had injected the durable task checkpoint as a separate system message after the configured agent prompt.
+- Provider-bound compaction now folds existing system instructions and the task checkpoint into one leading system message while preserving every non-system conversation message and the canonical saved transcript. No context, output, reasoning, warm-model, or runtime placement setting was changed.
+- Regression coverage first failed with two system messages, then passed after the fix. Full engine suite: **251 passed**, one upstream `python_multipart` pending-deprecation warning.
+- The packaged app still contains the earlier engine revision; paired app pin, sidecar/package rebuild, and visible retry remain pending. The first live request produced no model response or workspace changes.
+
 ## 2026-11-01 full harness audit: verified engine stabilization milestone
 
 - Committed as `f3809e82ed6266e25ac50722535d1d9bb3030ffe` on `workbench/approval-tool-continuation`; paired app pin is updated to this revision.

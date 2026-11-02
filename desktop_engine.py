@@ -1177,16 +1177,22 @@ class ContextManager:
         def request_size(rows):return self.estimate(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))
         tool_size=self.estimate(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
         if tool_size+max(self.reserve,output_tokens+1024)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
-        system=messages[:1] if messages and messages[0].get("role")=="system" else []
+        # Ollama chat templates (including the selected Ornith GGUF template)
+        # require every system instruction to be in the first message. Keep
+        # saved history intact, but normalize provider-bound context into one
+        # leading system message before adding the task checkpoint.
+        system_messages=[message for message in messages if message.get("role")=="system"]
+        conversation=[message for message in messages if message.get("role")!="system"]
+        system_content="\n\n".join(str(message.get("content", "")) for message in system_messages if message.get("content"))
         full_checkpoint_text=render_checkpoint(checkpoint)
         checkpoint_text=full_checkpoint_text
         checkpoint_target=max(64,budget//4)
         if checkpoint_text and self.estimate(checkpoint_text)>checkpoint_target:
             checkpoint_text=render_checkpoint(checkpoint,token_budget=checkpoint_target)
         checkpoint_omitted=checkpoint_omissions(checkpoint_text)
-        continuity=[{"role":"system","content":checkpoint_text}] if checkpoint_text else []
-        base=system+continuity
-        conversation=messages[len(system):]
+        if checkpoint_text:
+            system_content=(system_content+"\n\n" if system_content else "")+checkpoint_text
+        base=[{"role":"system","content":system_content}] if system_content else []
         request=base+conversation
         total=request_size(request)
         if total<=budget:
