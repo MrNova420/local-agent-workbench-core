@@ -106,7 +106,7 @@ def unsupported_schema_features(schema: Any, *, max_depth: int = 64, max_nodes: 
                             "object", "array", "string", "integer", "number", "boolean", "null",
                         }:
                             issues.add(f"{path}.type: unsupported JSON Schema type {schema_type!r}")
-                elif key in {"$ref", "$dynamicRef"} and (
+                elif key in {"$ref", "$dynamicRef", "$recursiveRef"} and (
                     not isinstance(child, str) or not child.startswith("#")
                 ):
                     issues.add(f"{path}.{key}: external or invalid reference; remote resolution is disabled")

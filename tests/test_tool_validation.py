@@ -135,6 +135,13 @@ class ToolValidationTests(unittest.TestCase):
                             "type":"object"}
         self.assertIn("required vocabulary",_validate_tool_arguments({},unknown_vocabulary))
 
+    def test_draft_2019_recursive_external_references_are_reported_and_rejected(self):
+        schema={"$schema":"https://json-schema.org/draft/2019-09/schema",
+                "$recursiveRef":"https://example.test/recursive.json"}
+        report=unsupported_schema_features(schema)
+        self.assertTrue(any("$recursiveRef" in item and "remote resolution" in item for item in report))
+        self.assertIn("unsupported JSON Schema feature",_validate_tool_arguments({},schema))
+
     def test_invalid_file_tool_arguments_never_reach_the_write(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);engine=AgentEngine(root,context=CONTEXT_MAX,access="edit");responses=[
