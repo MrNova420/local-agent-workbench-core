@@ -85,6 +85,37 @@ class OperationStreamTests(unittest.TestCase):
         self.assertEqual(event["status"], "failed")
         self.assertIn("Tool error: OSError", event["result"])
 
+    def test_model_receives_failed_tool_result_and_can_retry_in_same_task(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "present.txt").write_text("recovered", encoding="utf-8")
+            events = []
+            requests = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            responses = [
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "call-missing", "function": {"name": "read_file", "arguments": {"path": "missing.txt"}}}
+                ]}},
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "call-retry", "function": {"name": "read_file", "arguments": {"path": "present.txt"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "Recovered and continued."}},
+            ]
+
+            def stream(_state, messages, *_args):
+                requests.append(copy.deepcopy(messages))
+                return responses.pop(0)
+
+            engine.runtime.stream = stream
+            result = engine.run("Read the project file")
+
+            self.assertEqual(len(requests), 3)
+            self.assertTrue(any("Tool error: FileNotFoundError" in str(row.get("content", "")) for row in requests[1]))
+            tool_results = [row for row in requests[2] if row.get("role") == "tool"]
+            self.assertTrue(any(row.get("content") == "recovered" for row in tool_results))
+            completed = [event for event in events if event.get("type") == "tool_done"]
+            self.assertEqual([event["status"] for event in completed], ["failed", "completed"])
+            self.assertEqual(result[-1]["content"], "Recovered and continued.")
+
     def test_append_file_builds_large_unicode_files_in_multiple_atomic_chunks(self):
         with tempfile.TemporaryDirectory() as root:
             registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
