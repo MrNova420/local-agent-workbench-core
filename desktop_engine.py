@@ -65,7 +65,7 @@ class _InferenceCancelSignal:
 
 def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto", approval_guidance: str = "") -> str:
     profile_guidance = (
-        "Small-model workflow: choose one useful next action at a time, then use its result to continue; keep the entire requested scope and expandable plan. Start acting once the next safe step is clear instead of waiting for perfect analysis. Split work only when dependencies, review, or output size make smaller steps useful.\n\n"
+        "Small-model workflow: batch independent tool calls when their inputs are known; run validated independent reads concurrently, while keeping writes, commands, and MCP operations ordered and subject to approval. Keep the entire requested scope and expandable plan, and do not cap required work. Once the next safe step is clear, act and use results to continue; split work only when dependencies, review, or output size make smaller steps useful.\n\n"
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
