@@ -375,6 +375,8 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
         return "changed"
     if plan:
         return "plan_only"
+    if task_intent == "auto" and task_mode == "auto" and not implementation_requested:
+        return "no_action"
     return "discussion"
 
 def _plan_has_open_work(plan: list[dict[str, Any]]) -> bool:
