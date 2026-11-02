@@ -64,7 +64,7 @@ class ToolTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as t:
    base=Path(t);project=base/'project';external=base/'shared';project.mkdir();(external/'nested').mkdir(parents=True)
    target=external/'nested'/'shared.py';target.write_text('external needle\n',encoding='utf-8')
-   rules=[{'tool':'external_directory','decision':'allow','path_glob':str(external).replace('\\','/')+'/**'}]
+   rules=[{'tool':'external_directory','decision':'allow','path_glob':str(external).replace('\\','/')+'/**','workspace':str(project)}]
    tools=ToolRegistry(Workspace(project,external_directories=[external]),lambda *_:True,permission_rules=rules)
    listing=tools.run('list_files',{'path':str(external),'pattern':'*.py'})
    search=tools.run('search_files',{'path':str(external),'query':'needle','include':'*.py'})
@@ -76,7 +76,7 @@ class ToolTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as t:
    base=Path(t);project=base/'project';external=base/'shared';project.mkdir();external.mkdir()
    target=external/'notes.txt'
-   rules=[{'tool':'external_directory','decision':'allow','path_glob':str(external).replace('\\','/')+'/**'}]
+   rules=[{'tool':'external_directory','decision':'allow','path_glob':str(external).replace('\\','/')+'/**','workspace':str(project)}]
    engine=AgentEngine(project,access='edit',permission_rules=rules)
    registry=engine.state['registry']
    self.assertEqual(registry.run('write_file',{'path':str(target),'content':'start'}),f'Wrote {target}')

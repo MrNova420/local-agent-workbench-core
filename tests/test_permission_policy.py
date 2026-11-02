@@ -56,8 +56,8 @@ def test_external_directory_rules_accept_absolute_windows_paths_and_match_scoped
     from permission_policy import external_directory_decision
 
     rules = validate_permission_rules([
-        {"tool": "external_directory", "decision": "ask", "path_glob": r"C:\Users\kayde\Documents\**"},
-        {"tool": "external_directory", "decision": "deny", "path_glob": r"C:\Users\kayde\Documents\private\**"},
+        {"tool": "external_directory", "decision": "ask", "path_glob": r"C:\Users\kayde\Documents\**", "workspace": r"C:\project"},
+        {"tool": "external_directory", "decision": "deny", "path_glob": r"C:\Users\kayde\Documents\private\**", "workspace": r"C:\project"},
     ])
     assert external_directory_decision(r"C:\Users\kayde\Documents\project\src\main.py", rules) == "ask"
     assert external_directory_decision(r"C:\Users\kayde\Documents", rules) == "ask"
@@ -66,12 +66,21 @@ def test_external_directory_rules_accept_absolute_windows_paths_and_match_scoped
         validate_permission_rules([{"tool": "read_file", "decision": "allow", "path_glob": r"C:\Users\**"}])
 
 
+def test_external_directory_rule_requires_an_absolute_workspace_identity():
+    with pytest.raises(ValueError, match="workspace"):
+        validate_permission_rules([{"tool": "external_directory", "decision": "ask", "path_glob": r"C:\Users\kayde\Documents\**", "workspace": "relative"}])
+    with pytest.raises(ValueError, match="workspace"):
+        validate_permission_rules([{"tool": "external_directory", "decision": "ask", "path_glob": r"C:\Users\kayde\Documents\**"}])
+    with pytest.raises(ValueError, match="only valid"):
+        validate_permission_rules([{"tool": "read_file", "decision": "allow", "workspace": r"C:\project"}])
+
+
 def test_external_directory_scope_treats_brackets_in_folder_names_literally(tmp_path):
     from permission_policy import external_directory_decision
 
     folder = tmp_path / "shared [fixtures]"
     folder.mkdir()
-    rules = validate_permission_rules([{"tool": "external_directory", "decision": "allow", "path_glob": str(folder).replace("\\", "/") + "/**"}])
+    rules = validate_permission_rules([{"tool": "external_directory", "decision": "allow", "path_glob": str(folder).replace("\\", "/") + "/**", "workspace": str(tmp_path)}])
     assert external_directory_decision(str(folder / "nested" / "file.txt"), rules) == "allow"
     assert external_directory_decision(str(tmp_path / "shared ffixtures" / "file.txt"), rules) is None
 
@@ -91,7 +100,7 @@ def test_external_file_access_requires_a_scoped_rule_and_asks_for_each_ask_scope
 
     approvals = []
     asked = AgentEngine(project, access="edit", approve=lambda tool, args: approvals.append((tool, args)) or True,
-                        permission_rules=[{"tool": "external_directory", "decision": "ask", "path_glob": str(external).replace("\\", "/") + "/**"}])
+                        permission_rules=[{"tool": "external_directory", "decision": "ask", "path_glob": str(external).replace("\\", "/") + "/**", "workspace": str(project)}])
     assert asked.state["registry"].run("read_file", {"path": raw_path}) == "external content"
     assert approvals == [("external_directory", {"path": raw_path, "tool": "read_file"})]
 
@@ -106,8 +115,8 @@ def test_external_directory_allow_grants_only_its_folder_and_nested_deny_overrid
     (external / "notes.txt").write_text("shared", encoding="utf-8")
     (private / "token.txt").write_text("secret", encoding="utf-8")
     rules = [
-        {"tool": "external_directory", "decision": "allow", "path_glob": str(external).replace("\\", "/") + "/**"},
-        {"tool": "external_directory", "decision": "deny", "path_glob": str(private).replace("\\", "/") + "/**"},
+        {"tool": "external_directory", "decision": "allow", "path_glob": str(external).replace("\\", "/") + "/**", "workspace": str(project)},
+        {"tool": "external_directory", "decision": "deny", "path_glob": str(private).replace("\\", "/") + "/**", "workspace": str(project)},
     ]
     prompts = []
     engine = AgentEngine(project, access="edit", approve=lambda *args: prompts.append(args) or True, permission_rules=rules)
@@ -124,7 +133,7 @@ def test_copy_mode_does_not_write_through_to_an_external_original_folder(tmp_pat
     external = tmp_path / "shared"
     project.mkdir(); external.mkdir()
     target = external / "notes.txt"
-    rules = [{"tool": "external_directory", "decision": "allow", "path_glob": str(external).replace("\\", "/") + "/**"}]
+    rules = [{"tool": "external_directory", "decision": "allow", "path_glob": str(external).replace("\\", "/") + "/**", "workspace": str(project)}]
     engine = AgentEngine(project, access="copy", permission_rules=rules)
     result = engine.state["registry"].run("write_file", {"path": str(target), "content": "change"})
     assert "not staged for copy review" in result
@@ -138,10 +147,28 @@ def test_missing_saved_external_folder_scope_fails_with_repairable_message(tmp_p
     missing = tmp_path / "disconnected"
     project.mkdir()
     engine = AgentEngine(project, access="edit", permission_rules=[
-        {"tool": "external_directory", "decision": "allow", "path_glob": str(missing).replace("\\", "/") + "/**"},
+        {"tool": "external_directory", "decision": "allow", "path_glob": str(missing).replace("\\", "/") + "/**", "workspace": str(project)},
     ])
     result = engine.state["registry"].run("read_file", {"path": str(missing / "file.txt")})
     assert "scope is unavailable" in result
+
+
+def test_external_folder_grant_does_not_follow_a_run_to_another_project(tmp_path):
+    from desktop_engine import AgentEngine
+
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    external = tmp_path / "shared"
+    project_a.mkdir(); project_b.mkdir(); external.mkdir()
+    target = external / "private.txt"
+    target.write_text("belongs to project A", encoding="utf-8")
+    grant = {"tool": "external_directory", "decision": "allow",
+             "path_glob": str(external).replace("\\", "/") + "/**", "workspace": str(project_a)}
+    engine_a = AgentEngine(project_a, access="edit", permission_rules=[grant])
+    engine_b = AgentEngine(project_b, access="edit", permission_rules=[grant])
+
+    assert engine_a.state["registry"].run("read_file", {"path": str(target)}) == "belongs to project A"
+    assert "outside the selected project" in engine_b.state["registry"].run("read_file", {"path": str(target)})
 
 
 def test_command_prefix_matches_argv_tokens_without_matching_a_longer_program_name():

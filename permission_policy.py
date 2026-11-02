@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import shlex
+from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -17,7 +19,7 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(value):
         if not isinstance(item, dict):
             raise ValueError(f"Permission rule {index + 1} must be an object.")
-        unknown = set(item) - {"tool", "decision", "path_glob", "command_prefix"}
+        unknown = set(item) - {"tool", "decision", "path_glob", "command_prefix", "workspace"}
         if unknown:
             raise ValueError(f"Permission rule {index + 1} has unsupported fields: {', '.join(sorted(unknown))}.")
         tool = item.get("tool")
@@ -27,6 +29,17 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
         if not isinstance(decision, str) or decision not in DECISIONS:
             raise ValueError(f"Permission rule {index + 1} decision must be allow, ask, or deny.")
         rule: dict[str, Any] = {"tool": tool.strip(), "decision": decision}
+        workspace = item.get("workspace")
+        if tool == "external_directory":
+            normalized_workspace = workspace.replace("\\", "/").strip() if isinstance(workspace, str) else ""
+            posix_workspace = PurePosixPath(normalized_workspace)
+            windows_workspace = PureWindowsPath(normalized_workspace)
+            if (not normalized_workspace or ".." in posix_workspace.parts
+                    or not (posix_workspace.is_absolute() or (windows_workspace.is_absolute() and windows_workspace.drive))):
+                raise ValueError(f"Permission rule {index + 1} external_directory needs an absolute workspace path.")
+            rule["workspace"] = normalized_workspace
+        elif workspace is not None:
+            raise ValueError(f"Permission rule {index + 1} workspace is only valid for external_directory.")
         path_glob = item.get("path_glob")
         if path_glob is not None:
             normalized_glob = path_glob.replace("\\", "/").strip() if isinstance(path_glob, str) else ""
@@ -60,6 +73,21 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
             raise ValueError(f"Permission rule {index + 1} cannot combine path_glob and command_prefix.")
         rows.append(rule)
     return rows
+
+
+def workspace_identity(path: str | os.PathLike[str]) -> str:
+    """Return a stable comparison key for a selected project root."""
+    return os.path.normcase(os.path.normpath(str(Path(path).resolve(strict=False))))
+
+
+def permission_rules_for_workspace(rules: list[dict[str, Any]] | None, workspace: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    """Keep project-local rules global, but include external grants only for their owning project."""
+    selected = workspace_identity(workspace)
+    filtered: list[dict[str, Any]] = []
+    for rule in validate_permission_rules(rules or []):
+        if rule.get("tool") != "external_directory" or workspace_identity(str(rule["workspace"])) == selected:
+            filtered.append(rule)
+    return filtered
 
 
 def _paths(tool: str, args: dict[str, Any]) -> list[str]:
