@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-02 continuation and checkpoint focused verification
+
+- Engine source commit `dcdf7fc2c3b1ca61bfd44cb2449e4e77b7e69c59` passes `tests/test_operation_stream.py` and `tests/test_task_checkpoint.py`: **61 passed**.
+- This focused pass covers observable-state implementation continuation, no-progress outcomes, tool activity/results, and checkpoint plan continuity. It does not replace the full engine/sidecar/renderer suites or packaged/visible long-run acceptance.
+
 ## 2026-11-02 preserve concrete next action after tool results
 
 - `record_operation` no longer overwrites a concrete plan-derived `next_action` with a generic reminder after every tool result. This keeps compaction and same-task continuation pointed at the saved open step. Unplanned tasks still receive a concise operation-review fallback.
