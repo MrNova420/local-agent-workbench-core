@@ -146,4 +146,13 @@ class MCPTests(unittest.TestCase):
    self.assertFalse(m.discovered)
   asyncio.run(scenario())
 
+ def test_run_closes_coroutine_if_mcp_loop_cannot_start(self):
+  m=MCPManager(Path('unused.json'))
+  async def pending():return None
+  awaitable=pending()
+  with patch.object(m,'_ensure_loop',side_effect=RuntimeError('event loop unavailable')):
+   with self.assertRaisesRegex(RuntimeError,'event loop unavailable'):
+    m.run(awaitable)
+  self.assertIsNone(awaitable.cr_frame)
+
 if __name__=='__main__':unittest.main()

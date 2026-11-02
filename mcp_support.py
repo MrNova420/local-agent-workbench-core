@@ -77,8 +77,16 @@ class MCPManager:
         return self.loop
 
     def run(self, awaitable, cancel_event: threading.Event | None = None):
-        loop = self._ensure_loop()
-        future = asyncio.run_coroutine_threadsafe(awaitable, loop)
+        try:
+            loop = self._ensure_loop()
+            future = asyncio.run_coroutine_threadsafe(awaitable, loop)
+        except BaseException:
+            # If startup or scheduling fails before ownership transfers to the
+            # loop, dispose of the unstarted coroutine instead of leaking it.
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise
         while True:
             try:
                 return future.result(timeout=0.1)
