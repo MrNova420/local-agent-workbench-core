@@ -4,6 +4,8 @@ Date: 2026-10-30
 Audit mode: read-only source inspection; no model request, project write, command approval, test execution, or app code change was performed for this audit.  
 Baseline: `2e10b37` (`chore: checkpoint current local agent desk prototype`), clean worktree.
 
+> **Historical baseline — not the current implementation status.** This audit describes the Tkinter prototype at commit `2e10b37`. The product was subsequently restarted as the separate Electron/React desktop app with a paired Python engine, and many findings below have since been addressed or superseded. Do not use the findings or remediation sequence below as a current defect list. For current code, evidence, open work, and release gates, use the app repository's `docs/MASTER_ROADMAP.md`, `docs/CORE_HARNESS_READINESS.md`, `docs/PRODUCT_BACKLOG.md`, and `docs/ACCEPTANCE_LOG.md`. Keep this document only as a record of the original audit and product direction.
+
 ## Executive finding
 
 This is an early functional prototype, not a reliable full-project development platform yet. The highest risk is that UI state, session state, and the workspace used by a background turn are not an immutable snapshot. A workspace/session change while a task is starting can redirect what that task inspects or modifies. Cancellation, MCP event-loop ownership, command isolation, context accounting, and UI lifecycle have additional gaps. The current visual is a fixed dark two-column control panel, not a developed coding-workbench interaction model.
