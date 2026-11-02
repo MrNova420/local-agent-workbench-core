@@ -29,6 +29,16 @@ class StreamTests(unittest.TestCase):
   with patch('desktop_engine.open_http_stream',return_value=response):runtime.stream(state,[],threading.Event(),events.append)
   self.assertEqual([event['phase'] for event in events if event['type']=='phase'],['reasoning','generating'])
 
+ def test_ollama_done_reason_is_retained_for_output_budget_diagnostics(self):
+  lines=[json.dumps({'message':{'thinking':'reasoning'},'done':True,'done_reason':'length','eval_count':8192}).encode()+b'\n']
+  events=[];state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),
+                   'temperature':0.2,'context':65536,'max_tokens':8192,'runtime_options':{},'request_index':4}
+  with patch('desktop_engine.open_http_stream',return_value=FakeResponse(lines)):
+   result=OllamaRuntime().stream(state,[],threading.Event(),events.append)
+  self.assertEqual(result['done_reason'],'length')
+  completed=next(event for event in events if event['type']=='request_complete')
+  self.assertEqual(completed['provider_done_reason'],'length')
+
  def test_default_reasoning_and_tool_call_are_preserved_in_one_response(self):
   call={'type':'function','function':{'name':'write_file','arguments':'{"path":"index.html","content":"<main>Fieldnote</main>"}'}}
   lines=[json.dumps({'message':{'thinking':'Choose the page structure, then write it.'}}).encode()+b'\n',

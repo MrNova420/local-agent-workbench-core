@@ -264,6 +264,8 @@ class LlamaCppRuntime:
                     if isinstance(timings.get("predicted_ms"), (int, float)):
                         result["eval_duration"] = int(timings["predicted_ms"] * 1_000_000)
                 for choice in item.get("choices", []):
+                    if choice.get("finish_reason") is not None:
+                        result["done_reason"] = choice["finish_reason"]
                     delta = choice.get("delta") or {}
                     text = delta.get("content") or ""
                     thinking = delta.get("reasoning_content") or ""
@@ -299,7 +301,8 @@ class LlamaCppRuntime:
             if calls:
                 result["message"]["tool_calls"] = [calls[index] for index in sorted(calls)]
             emit({"type": "request_complete", "provider": "llama.cpp", "request_index": request_index,
-                  "provider_done": done_marker_received})
+                  "provider_done": done_marker_received,
+                  "provider_done_reason": result.get("done_reason")})
             return result
         except Exception as exc:
             with self.lock:

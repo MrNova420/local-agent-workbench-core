@@ -1,5 +1,5 @@
 from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_has_open_work, _plan_requests_implementation, _restored_plan_requests_implementation, _saved_plan_source, _verification_report, _workflow_outcome, agent_system_prompt
-from task_checkpoint import initial_task_plan
+from task_checkpoint import begin_task, initial_task_plan
 
 
 def test_workflow_outcome_distinguishes_plan_change_inspection_and_command():
@@ -64,6 +64,35 @@ def test_automatic_guidance_separates_plan_phase_from_plan_only_request():
     assert "task_mode=plan_only only when the user explicitly asks" in prompt
     assert "different from task_mode=plan" in prompt
     assert "continue into implementation" in prompt
+
+
+def test_plan_tool_result_hands_implementation_to_next_open_step_without_replanning(tmp_path):
+    checkpoint = begin_task(None, prompt="Build a small website", turn_id="turn-1",
+                            workspace=str(tmp_path), settings={})
+    registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_: True, task_checkpoint=checkpoint)
+    plan = [
+        {"title": "Inspect the empty project", "status": "completed"},
+        {"title": "Implement the website", "status": "pending"},
+        {"title": "Inspect and verify the result", "status": "pending"},
+    ]
+
+    updated = registry.run("update_plan", {"items": plan, "task_mode": "implement"})
+    repeated = registry.run("update_plan", {"items": plan, "task_mode": "implement"})
+
+    assert '"next_action": "Implement the website"' in updated
+    assert "continue with this step through the structured project tools" in updated.casefold()
+    assert '"plan_changed": true' in updated
+    assert '"plan_changed": false' in repeated
+    assert '"next_action": "Implement the website"' in repeated
+
+    plan_only_checkpoint = begin_task(None, prompt="Plan a small website", turn_id="turn-plan",
+                                      workspace=str(tmp_path), settings={})
+    plan_only = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_: True,
+                             task_checkpoint=plan_only_checkpoint)
+    plan_only.task_intent = "plan"
+    result = plan_only.run("update_plan", {"items": plan, "task_mode": "implement"})
+    assert '"task_mode": "plan"' in result
+    assert "This request is read-only/plan-only" in result
 
 
 def test_host_starter_plan_is_visible_and_intent_specific():

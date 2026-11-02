@@ -641,6 +641,10 @@ class ToolRegistry:
         if name == "update_plan":
             replacement=args.get("items");additions=args.get("add_items")
             if not isinstance(replacement,list) and not isinstance(additions,list):return "Invalid plan update: provide items to revise the full plan or add_items to expand the current plan."
+            previous_plan=copy.deepcopy(self.plan);previous_mode=self.task_mode
+            previous_task=current_task(self.task_checkpoint) if self.task_checkpoint is not None else {}
+            previous_criteria=copy.deepcopy(previous_task.get("acceptance_criteria",[]))
+            previous_decisions=copy.deepcopy(previous_task.get("decisions",[]))
             self.plan=copy.deepcopy(replacement) if isinstance(replacement,list) else copy.deepcopy(self.plan)
             if isinstance(additions,list):self.plan.extend(copy.deepcopy(additions))
             self.plan_source="agent";criteria=args.get("acceptance_criteria");added_criteria=args.get("add_acceptance_criteria");decisions=args.get("decisions");task_mode=args.get("task_mode")
@@ -668,10 +672,35 @@ class ToolRegistry:
             saved_decisions=saved_task.get("decisions",[])
             if not isinstance(saved_decisions,list):saved_decisions=[]
             decisions_text=[row.get("text","") for row in saved_decisions if isinstance(row,dict) and isinstance(row.get("text"),str)]
+            next_action=saved_task.get("next_action")
+            if not isinstance(next_action,str) or not next_action.strip():
+                open_item=next((item for item in self.plan if isinstance(item,dict) and plan_item_is_open(item)),None)
+                next_action=next((open_item.get(key) for key in ("title","text","name")
+                                  if isinstance(open_item,dict) and isinstance(open_item.get(key),str)
+                                  and open_item.get(key).strip()),None)
+            plan_changed=(previous_plan!=self.plan or previous_mode!=saved_task.get("task_mode",self.task_mode)
+                          or previous_criteria!=(saved_criteria if isinstance(saved_criteria,list) else [])
+                          or previous_decisions!=saved_decisions)
+            implementation_expected=(self.task_intent=="implement" or
+                                     (self.task_intent=="auto" and _plan_requests_implementation(
+                                         self.task_mode,self.plan_source,self.plan)))
+            if self.task_intent in {"discuss","plan"} or self.task_mode in {"discussion","plan_only"}:
+                execution_guidance="This request is read-only/plan-only; do not implement project changes."
+            elif self.workspace.access=="plan":
+                execution_guidance="Project access is read-only. Continue only with permitted inspection or planning tools."
+            elif implementation_expected and isinstance(next_action,str):
+                execution_guidance=(f"Continue with this next open step through the appropriate structured project tools now: {next_action}. "
+                                    "Update its status after an observable operation; add more plan detail only when evidence requires it.")
+            elif implementation_expected:
+                execution_guidance=("No checklist item is currently open, but implementation is still the requested outcome. "
+                                    "Use observed project state and unmet acceptance checks to add the next necessary work or inspect/verify the result; do not repeat an unchanged plan.")
+            else:
+                execution_guidance="Continue the requested discussion or task using the latest saved state."
             current_state={"task_mode":saved_task.get("task_mode",self.task_mode),"items":self.plan,
                            "acceptance_criteria":saved_criteria if isinstance(saved_criteria,list) else [],
-                           "decisions":decisions_text}
-            return "Plan updated. Current plan and saved task state:\n"+json.dumps(current_state,ensure_ascii=False,indent=2)
+                           "decisions":decisions_text,"plan_changed":plan_changed,"next_action":next_action,
+                           "execution_guidance":execution_guidance}
+            return "Authoritative plan and implementation handoff:\n"+json.dumps(current_state,ensure_ascii=False,indent=2)
         if name == "skill":
             if not self.skills_enabled:return "Skills are disabled for this run. Enable them in Run configuration before requesting a skill."
             knowledge=ProjectKnowledge(self.workspace.root);skills=self.skill_rows
@@ -1370,7 +1399,7 @@ class OllamaRuntime:
                     emit({"type":"tool_call_progress","provider":"ollama","request_index":request_index,
                           "call_index":ordinal,"tool_name":slot["function"].get("name",""),
                           "argument_characters":argument_characters,"at":time.time()})
-                for key in ("done","total_duration","load_duration","prompt_eval_count","prompt_eval_cached_count","eval_count","prompt_eval_duration","eval_duration"):
+                for key in ("done","done_reason","total_duration","load_duration","prompt_eval_count","prompt_eval_cached_count","eval_count","prompt_eval_duration","eval_duration"):
                     if key in item:result[key]=item[key]
             if cancel.is_set():
                 partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
@@ -1384,7 +1413,8 @@ class OllamaRuntime:
                 result["message"]["tool_calls"]=[calls[i] for i in sorted(calls)]
             if result.get("done") is not True:
                 raise RuntimeError("Ollama stream closed without its final done=true record; received output was preserved as partial.")
-            emit({"type":"request_complete","provider":"ollama","request_index":request_index,"provider_done":result.get("done")})
+            emit({"type":"request_complete","provider":"ollama","request_index":request_index,
+                  "provider_done":result.get("done"),"provider_done_reason":result.get("done_reason")})
             return result
         except Exception as exc:
             with self.lock:active_response=self.response
