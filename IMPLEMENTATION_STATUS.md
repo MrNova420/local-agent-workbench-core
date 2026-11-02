@@ -428,3 +428,9 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 - Added `jsonschema>=4.26,<5` to the engine dependency set; app-sidecar dependency synchronization and package integration are in progress.
 - Focused validation and MCP discovery checks: **19 passed**. Python compilation and `git diff --check` passed. Coverage includes 2020-12 conditionals, dependencies, property names, arrays, unevaluated keywords, booleans, local refs, external ref rejection, Draft 7 tuple arrays, unknown vocabulary, malformed arguments, MCP capability reporting, and provider tool-result shape. Full suites, package verification, and visible model acceptance remain deferred.
 - A follow-up discovery audit found Draft 2019-09 `$recursiveRef` was fail-closed by runtime resolution but not listed as an unsupported remote reference at discovery. It is now explicitly rejected/reported alongside `$ref` and `$dynamicRef`; the focused validation/MCP files pass **20 tests** with Python compilation and `git diff --check` clean. No remote schema fetching is enabled.
+
+## 2026-11-02 progressive file scan activity
+
+- Long `list_files` and `search_files` operations now emit compact `tool_progress` updates with inspected-file counts, matches, and bytes read where applicable. They retain the existing cancellable traversal, pagination, ignore handling, and optional explicit scan budgets; progress sampling is observational only and adds no scan cap.
+- The paired desktop sidecar integration stores these updates on the existing operation activity row so chat and Activity Trace can show the same operation while it runs and after session recovery. No model output or partial tool arguments are exposed through these progress events.
+- Focused engine file-tool tests pass (**37 passed**). Sidecar recovery/renderer checks are pending the paired app integration; full suites and package/visible acceptance remain deferred.

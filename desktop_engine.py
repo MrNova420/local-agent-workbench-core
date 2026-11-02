@@ -694,10 +694,19 @@ class ToolRegistry:
             if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
             import fnmatch
             matches=[];matched=0;scanned=0;used_bytes=0;has_more=False;scan_capped=False;cancelled=False
+            last_progress_at=time.monotonic();last_progress_scanned=0
+            def report_list_progress():
+                nonlocal last_progress_at,last_progress_scanned
+                now=time.monotonic()
+                if scanned-last_progress_scanned<256 and now-last_progress_at<1.0:return
+                self.event({"type":"tool_progress","progress":{"message":f"Scanning files · {scanned:,} inspected · {len(matches):,} matches on this page",
+                             "filesScanned":scanned,"matches":matched,"timestamp":time.time()}})
+                last_progress_at=now;last_progress_scanned=scanned
             list_scan_max=PROJECT_LIST_SCAN_LIMIT+1 if PROJECT_LIST_SCAN_LIMIT is not None else None
             for p in iter_project_files(base,max_files=list_scan_max):
                 if self.cancel_event.is_set():cancelled=True;break
                 scanned+=1
+                report_list_progress()
                 if PROJECT_LIST_SCAN_LIMIT is not None and scanned>PROJECT_LIST_SCAN_LIMIT:scan_capped=True;break
                 relative=p.relative_to(base).as_posix()
                 if "/" in pattern:
@@ -732,10 +741,19 @@ class ToolRegistry:
             if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
             if not query:return "Search query must not be empty."
             import fnmatch
+            last_progress_at=time.monotonic();last_progress_scanned=0
+            def report_search_progress():
+                nonlocal last_progress_at,last_progress_scanned
+                now=time.monotonic()
+                if scanned-last_progress_scanned<256 and now-last_progress_at<1.0:return
+                self.event({"type":"tool_progress","progress":{"message":f"Searching files · {scanned:,} inspected · {bytes_read:,} bytes read · {len(hits):,} matches on this page",
+                             "filesScanned":scanned,"bytesRead":bytes_read,"matches":len(hits),"timestamp":time.time()}})
+                last_progress_at=now;last_progress_scanned=scanned
             scan_max_files=self.search_file_limit+1 if self.search_file_limit is not None else None
             for p in iter_project_files(search_root,max_files=scan_max_files):
                 if self.cancel_event.is_set():cancelled=True;break
                 scanned+=1
+                report_search_progress()
                 if self.search_file_limit is not None and scanned>self.search_file_limit:capped=True;break
                 if p.suffix.casefold() not in TEXT_EXT:continue
                 relative=p.relative_to(search_root).as_posix()
@@ -752,6 +770,7 @@ class ToolRegistry:
                             if self.search_byte_limit is not None and bytes_read+line_bytes>self.search_byte_limit:
                                 capped=True;break
                             bytes_read+=line_bytes
+                            report_search_progress()
                             if query in line.casefold():
                                 if offset>0:offset-=1;continue
                                 if len(hits)>=limit:has_more=True;break

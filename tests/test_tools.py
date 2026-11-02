@@ -17,6 +17,32 @@ class ToolTests(unittest.TestCase):
    self.assertIn('[This page reached the requested 1200-file page size.]',result)
    self.assertIsNone(tools.search_file_limit)
    self.assertIsNone(tools.search_byte_limit)
+ def test_large_file_listing_emits_live_scan_progress(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for i in range(300):(root/f'{i:04}.txt').write_text('x')
+   events=[];tools=ToolRegistry(Workspace(root),lambda *_:True,event=events.append)
+   with patch('desktop_engine.time.monotonic',side_effect=[0.0]+[i/256 for i in range(1,1000)]):
+    result=tools.run('list_files',{'path':'.','pattern':'*.none','limit':500})
+   progress=[event for event in events if event.get('type')=='tool_progress']
+   self.assertTrue(progress)
+   self.assertEqual(progress[-1]['progress']['filesScanned'],256)
+   self.assertIn('Scanning files',progress[-1]['progress']['message'])
+   self.assertIn('No project files found',result)
+ def test_large_project_search_emits_live_progress_without_exposing_query_or_paths(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for i in range(300):(root/f'{i:04}.py').write_text('needle in source\n')
+   events=[];tools=ToolRegistry(Workspace(root),lambda *_:True,event=events.append)
+   with patch('desktop_engine.time.monotonic',side_effect=[0.0]+[i/256 for i in range(1,1000)]):
+    result=tools.run('search_files',{'query':'needle','limit':500})
+   progress=[event for event in events if event.get('type')=='tool_progress']
+   self.assertTrue(progress)
+   self.assertEqual(progress[-1]['progress']['filesScanned'],256)
+   self.assertGreater(progress[-1]['progress']['bytesRead'],0)
+   self.assertNotIn('needle',progress[-1]['progress']['message'])
+   self.assertNotIn('0000.py',progress[-1]['progress']['message'])
+   self.assertIn('needle in source',result)
  def test_file_listing_pages_through_matches_without_restarting_at_first_page(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)
