@@ -629,6 +629,39 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(contract["post_command_inspection"], "completed")
             self.assertEqual(contract["approved_command_results"], ["failed"])
 
+    def test_failed_file_action_can_be_corrected_and_retried_in_the_same_task(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append, task_intent="implement")
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "bad-path", "function": {"name": "write_file", "arguments": {"path": "../escape.txt", "content": "unsafe"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "corrected-path", "function": {"name": "write_file", "arguments": {"path": "result.txt", "content": "ready\\n"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect-result", "function": {"name": "read_file", "arguments": {"path": "result.txt"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "Created and inspected result.txt after correcting the rejected path."}},
+            ]
+            request_snapshots = []
+
+            def stream(_state, request_messages, *_args):
+                request_snapshots.append(copy.deepcopy(request_messages))
+                return responses.pop(0)
+
+            engine.runtime.stream = stream
+
+            engine.run("Implement result.txt and inspect the finished file.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            operations = [event for event in events if event.get("type") == "tool_done"]
+            self.assertEqual([event["status"] for event in operations], ["failed", "completed", "completed"])
+            self.assertIn("escapes the selected project", request_snapshots[1][-1]["content"])
+            self.assertEqual((Path(root) / "result.txt").read_text(encoding="utf-8"), "ready\\n")
+            self.assertEqual(completion["workflowOutcome"], "inspected")
+
     def test_denied_implementation_command_does_not_claim_possible_side_effects(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
