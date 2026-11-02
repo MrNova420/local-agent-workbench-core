@@ -71,6 +71,18 @@ class ToolTests(unittest.TestCase):
    self.assertEqual(listing,str(target))
    self.assertIn(f'{target}:1: external needle',search)
    self.assertEqual(tools.run('read_file',{'path':str(target)}),'external needle\n')
+ def test_external_folder_file_edits_follow_the_selected_access_mode(self):
+  from desktop_engine import AgentEngine
+  with tempfile.TemporaryDirectory() as t:
+   base=Path(t);project=base/'project';external=base/'shared';project.mkdir();external.mkdir()
+   target=external/'notes.txt'
+   rules=[{'tool':'external_directory','decision':'allow','path_glob':str(external).replace('\\','/')+'/**'}]
+   engine=AgentEngine(project,access='edit',permission_rules=rules)
+   registry=engine.state['registry']
+   self.assertEqual(registry.run('write_file',{'path':str(target),'content':'start'}),f'Wrote {target}')
+   self.assertEqual(registry.run('edit_file',{'path':str(target),'old_text':'start','new_text':'changed'}),f'Edited {target}')
+   self.assertEqual(registry.run('append_file',{'path':str(target),'content':'!'}),f'Appended {target}')
+   self.assertEqual(target.read_text(encoding='utf-8'),'changed!')
  def test_plan_mode_blocks_edits_even_after_approval(self):
   with tempfile.TemporaryDirectory() as t:
    tools=ToolRegistry(Workspace(t,'plan'),lambda *_:True)
