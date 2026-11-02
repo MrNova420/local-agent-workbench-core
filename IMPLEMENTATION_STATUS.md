@@ -319,3 +319,4 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 
 - `update_plan` now returns the full authoritative current checklist, task mode, acceptance criteria, and durable decisions after each accepted revision. The model can verify current state instead of blindly repeating an update when the generic “Plan updated.” result provides no state. Planning remains expandable with no pass or item cap.
 - Focused task-checkpoint and operation-stream suites: 48 passed.
+- Full engine suite on the pinned tree: **252 passed** in 47.19 seconds with one existing Starlette deprecation warning. One earlier full run timed out in the response-header cancellation test under active model load; that test passed standalone, in its module, and in the full rerun. Keep the transient recorded for continued cancellation reliability review.
