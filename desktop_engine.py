@@ -1575,7 +1575,7 @@ class AgentEngine:
             checkpoint_state["plan_source"]=registry.plan_source
         self._selected_tool_names:set[str]=set()
         self._deferred_tool_names:list[str]=[]
-        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"runtime_options":runtime_options or {},"registry":registry,"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":checkpoint,"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources),"request_tools":None,"deferred_tool_names":[]}
+        self.state={"project_instructions":project_instructions,"model":model,"context":context,"temperature":temperature,"max_tokens":max_tokens,"reasoning_budget_tokens":None,"runtime_options":runtime_options or {},"registry":registry,"mcp_tools":self.mcp_tools,"messages":[],"task_checkpoint":checkpoint,"skills_enabled":bool(skills_enabled),"skill_sources":tuple(("project","user") if skill_sources is None else skill_sources),"request_tools":None,"deferred_tool_names":[]}
     def _advance_workbench_plan(self,name:str,status:str,*,final:bool=False,verification:str|None=None,project_changed:bool=False,post_change_inspection:bool=False)->None:
         """Reflect host-observed work in the starter checklist without rewriting agent plans."""
         registry=self.state["registry"]

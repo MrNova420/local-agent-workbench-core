@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-02 per-request reasoning budget for llama.cpp
+
+- Added an optional `reasoning_budget_tokens` runtime value for llama.cpp requests. `null` remains unlimited; configured values are sent in `thinking_budget_tokens` without changing `max_tokens`. The accepted range follows llama.cpp's signed 32-bit request field. Provider telemetry records the requested value and field, but does not claim that a model template enforced it.
+- The existing model-specific reasoning mode/effort control remains separate: it selects the runtime-advertised on/off/level behavior. The new token budget only constrains supported reasoning sections; it does not impose a time limit, cap total output, or guarantee model quality/behavior.
+- Focused llama.cpp runtime, operation-stream, context, context-budget, and task-checkpoint suites passed: **90 passed**. This is not a full engine-suite or runtime acceptance result. Packaged UI and a live llama.cpp budget enforcement check remain pending.
+
 ## 2026-11-02 same-task steering boundary (verification queued)
 
 - Engine commit `39ff5495256e12f5f7e43232f269e5ace8d1ff88` adds an optional host steering callback. The agent loop polls it only before a provider request and at the safe boundary before completing a tool-free response, after the current response and complete structured tool exchange have been resolved.

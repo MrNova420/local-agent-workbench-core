@@ -65,6 +65,53 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     assert [event["type"] for event in events].count("thinking") == 1
 
 
+def test_llama_cpp_sends_selected_per_request_thinking_budget_without_changing_output_cap():
+    server = Mock()
+    server.status.return_value = {"running": True, "context": 32768}
+    server.base_url = "http://127.0.0.1:11436"
+    runtime = LlamaCppRuntime(server)
+    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 32768, "max_tokens": 8192,
+             "reasoning_budget_tokens": 4096, "reasoning": None,
+             "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
+    events = []
+    with patch("llama_cpp_runtime.open_http_stream", return_value=FakeSSE([])) as open_url:
+        runtime.stream(state, [], threading.Event(), events.append)
+
+    payload = json.loads(open_url.call_args.args[0].data)
+    assert payload["thinking_budget_tokens"] == 4096
+    assert payload["max_tokens"] == 8192
+    settings = next(event for event in events if event["type"] == "inference_settings")
+    assert settings["reasoning_budget_tokens"] == 4096
+    assert settings["reasoning_budget_applied_by"] == "request"
+
+
+def test_llama_cpp_omits_thinking_budget_when_unlimited():
+    server = Mock()
+    server.status.return_value = {"running": True, "context": 32768}
+    server.base_url = "http://127.0.0.1:11436"
+    runtime = LlamaCppRuntime(server)
+    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 32768, "max_tokens": 8192,
+             "reasoning_budget_tokens": None, "reasoning": None,
+             "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
+    with patch("llama_cpp_runtime.open_http_stream", return_value=FakeSSE([])) as open_url:
+        runtime.stream(state, [], threading.Event(), lambda _: None)
+    payload = json.loads(open_url.call_args.args[0].data)
+    assert "thinking_budget_tokens" not in payload
+
+
+@pytest.mark.parametrize("budget", [-1, True, 2_147_483_648])
+def test_llama_cpp_rejects_thinking_budgets_outside_request_schema(budget):
+    server = Mock()
+    server.status.return_value = {"running": True, "context": 32768}
+    server.base_url = "http://127.0.0.1:11436"
+    runtime = LlamaCppRuntime(server)
+    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 32768, "max_tokens": 8192,
+             "reasoning_budget_tokens": budget,
+             "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
+    with pytest.raises(ValueError, match="non-negative integer"):
+        runtime.stream(state, [], threading.Event(), lambda _: None)
+
+
 def test_slot_metrics_expose_token_counts_without_prompt_text(tmp_path):
     server = LlamaCppServer(tmp_path)
     payload = [{"id": 0, "id_task": 12, "n_ctx": 32768, "is_processing": True,

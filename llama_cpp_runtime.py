@@ -191,14 +191,22 @@ class LlamaCppRuntime:
         payload = {"model": "local-workbench", "messages": messages, "stream": True,
                    "temperature": state["temperature"], "max_tokens": state["max_tokens"],
                    "tools": tools, "stream_options": {"include_usage": True}}
+        reasoning_budget_tokens = state.get("reasoning_budget_tokens")
+        if reasoning_budget_tokens is not None:
+            if (isinstance(reasoning_budget_tokens, bool) or not isinstance(reasoning_budget_tokens, int)
+                    or reasoning_budget_tokens < 0 or reasoning_budget_tokens > 2_147_483_647):
+                raise ValueError("Thinking budget must be a non-negative integer or unlimited.")
+            payload["thinking_budget_tokens"] = reasoning_budget_tokens
         emit({"type": "inference_settings", "provider": "llama.cpp", "request_api": "/v1/chat/completions",
               "request_index": state.get("request_index"), "model": state["model"], "api_model": payload["model"],
               "stream": payload["stream"], "tool_count": len(payload["tools"]),
               "requested_context": state["context"], "max_output_tokens": state["max_tokens"],
+              "reasoning_budget_tokens": reasoning_budget_tokens,
+              "reasoning_budget_applied_by": "request" if reasoning_budget_tokens is not None else "unlimited",
               "reasoning_override": None, "reasoning_field_sent": False,
               "runtime_reasoning": status.get("reasoning"),
               "request_options": {"temperature": payload["temperature"], "max_tokens": payload["max_tokens"]},
-              "additional_fields": {"stream_options": payload["stream_options"]},
+              "additional_fields": {key: payload[key] for key in ("stream_options", "thinking_budget_tokens") if key in payload},
               "runtime_context": status["context"]})
         req = urllib.request.Request(self.server.base_url + "/v1/chat/completions", data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json", "Accept": "text/event-stream"}, method="POST")
