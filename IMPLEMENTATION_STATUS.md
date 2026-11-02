@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-02 evidence-based tool failure recovery guidance
+
+- The model now receives general recovery guidance after ordinary tool failures: inspect the error and current project state, correct the cause before retrying, preserve successful work, and continue after recoverable errors. Potentially partial/uncertain effects must be inspected before a retry; denials must not be retried or routed around. The prompt sets no fixed retry/iteration cap and requires each retry to respond to observed evidence.
+- `tests/test_agent_instructions.py`: **10 passed**, including a regression for failure recovery, uncertainty, denial respect, and no fixed retry cap. This changes model guidance only; it does not change host approval behavior, project access, runtime settings, or model inference. Paired app pin and packaged behavior remain to be synced/verified.
+
 ## 2026-11-02 continuation and checkpoint focused verification
 
 - Engine source commit `dcdf7fc2c3b1ca61bfd44cb2449e4e77b7e69c59` passes `tests/test_operation_stream.py` and `tests/test_task_checkpoint.py`: **61 passed**.

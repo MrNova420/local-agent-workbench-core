@@ -16,6 +16,16 @@ def test_agent_prompt_uses_structured_tools_to_start_actions_and_trigger_approva
     assert "not private chain-of-thought" in prompt
 
 
+def test_tool_failure_recovery_is_evidence_based_and_preserves_retry_scope():
+    prompt = agent_system_prompt("Editing is allowed", "")
+
+    assert "inspect the reported error and current project state" in prompt.casefold()
+    assert "correct the cause before retrying" in prompt.casefold()
+    assert "inspect for partial effects before retrying" in prompt.casefold()
+    assert "do not retry denied actions or route around a denial" in prompt.casefold()
+    assert "no fixed retry or iteration cap" in prompt.casefold()
+
+
 def test_implementation_pacing_prefers_early_tool_work_without_a_scope_or_iteration_cap():
     for profile in ("standard", "small-model"):
         prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile=profile)
