@@ -49,3 +49,25 @@ def test_terminating_job_stops_process_and_child_started_after_assignment():
         if root.poll() is None:
             root.kill()
             root.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects are Windows-only")
+def test_suspended_process_starts_only_after_job_assignment_and_resume(tmp_path):
+    marker = tmp_path / "started.txt"
+    script = f"from pathlib import Path; Path({str(marker)!r}).write_text('started')"
+    root = subprocess.Popen([sys.executable, "-c", script], creationflags=0x00000004)
+    job = WindowsProcessJob.attach(root.pid)
+    if job is None:
+        root.kill()
+        root.wait(timeout=5)
+        pytest.skip("The current Windows host does not permit assigning a child process to a Job Object")
+    try:
+        assert not marker.exists()
+        assert WindowsProcessJob.resume_primary_thread(root.pid)
+        assert root.wait(timeout=5) == 0
+        assert marker.read_text() == "started"
+    finally:
+        job.close()
+        if root.poll() is None:
+            root.kill()
+            root.wait(timeout=5)

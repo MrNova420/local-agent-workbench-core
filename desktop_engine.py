@@ -1026,10 +1026,18 @@ class ToolRegistry:
         try:
             try:limit=_command_timeout(args)
             except ValueError as exc:return f"Invalid command timeout: {exc}"
-            process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+            creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)
+            if os.name=="nt":creationflags|=0x00000004  # CREATE_SUSPENDED: assign the Job Object before user code runs.
+            process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,shell=False,creationflags=creationflags)
             # Job Objects improve descendant cancellation. They do not restrict
             # filesystem, network, registry, or host-user permissions.
             process_job=WindowsProcessJob.attach(process.pid)
+            if os.name=="nt" and not WindowsProcessJob.resume_primary_thread(process.pid):
+                if process_job is not None:process_job.terminate()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                return "Command error: could not safely resume the process after assigning its cancellation Job Object."
             deadline=time.monotonic()+limit if limit is not None else None
             chunks={"stdout":[],"stderr":[]};output:queue.Queue=queue.Queue();readers=[];known_descendants={};last_tree_scan=0.0;drain_deadline=None;incomplete_output=False
             def scan_descendants():

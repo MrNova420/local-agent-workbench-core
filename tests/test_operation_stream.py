@@ -411,7 +411,8 @@ class OperationStreamTests(unittest.TestCase):
             registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True, cancel_event=cancel)
             job = SimpleNamespace(terminate=Mock(return_value=True), close=Mock())
             timer = threading.Timer(0.2, cancel.set)
-            with patch("desktop_engine.WindowsProcessJob.attach", return_value=job) as attach:
+            with patch("desktop_engine.WindowsProcessJob.attach", return_value=job) as attach, \
+                    patch("desktop_engine.WindowsProcessJob.resume_primary_thread", return_value=True) as resume:
                 timer.start()
                 try:
                     result = registry._command({"argv": [sys.executable, "-c", "import time; time.sleep(20)"]})
@@ -420,6 +421,8 @@ class OperationStreamTests(unittest.TestCase):
                     timer.join()
 
             attach.assert_called_once()
+            if os.name == "nt":
+                resume.assert_called_once()
             job.terminate.assert_called_once()
             job.close.assert_called_once()
             self.assertIn("[command cancelled by user]", result)
