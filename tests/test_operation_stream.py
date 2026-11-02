@@ -107,6 +107,55 @@ class OperationStreamTests(unittest.TestCase):
             self.assertTrue(any(row.get("steering_id") == "steer-1" for row in requests[1]))
             self.assertEqual(result[-1]["content"], "I incorporated the user's update.")
 
+    def test_steering_interrupts_active_reasoning_and_resumes_same_task_with_partial_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            interrupt = threading.Event()
+            request_started = threading.Event()
+            pending = [{"id": "steer-active", "instruction": "Start implementing after the needed inspection."}]
+            requests = []
+            events = []
+
+            def steer(messages, _finishing):
+                if not pending:
+                    return False
+                update = pending.pop(0)
+                messages.append({"role": "user", "content": update["instruction"],
+                                 "turn_id": "turn-live", "steering_id": update["id"]})
+                return True
+
+            engine = AgentEngine(root, access="plan", event=events.append,
+                                 steering_handler=steer, steering_interrupt_event=interrupt,
+                                 task_intent="plan")
+
+            def stream(_state, messages, signal, _emit):
+                requests.append(copy.deepcopy(messages))
+                if len(requests) == 1:
+                    request_started.set()
+                    if not signal.wait(3):
+                        raise AssertionError("active generation was not interrupted by the steering update")
+                    raise RequestCancelled("Redirected by user", {
+                        "role": "assistant", "content": "Partial visible response", "thinking": "Partial reasoning"})
+                self.assertTrue(any(row.get("steering_id") == "steer-active" for row in messages))
+                self.assertTrue(any(row.get("steering_interrupted") for row in messages))
+                return {"message": {"role": "assistant", "content": "I continued the same implementation."}}
+
+            engine.runtime.stream = stream
+            result_holder = []
+            worker = threading.Thread(target=lambda: result_holder.append(engine.run("Implement the feature")))
+            worker.start()
+            self.assertTrue(request_started.wait(2), "provider request did not start")
+            interrupt.set()
+            worker.join(3)
+
+            self.assertFalse(worker.is_alive(), "redirected task did not continue")
+            self.assertEqual(len(requests), 2)
+            partial = next(row for row in result_holder[0] if row.get("steering_interrupted"))
+            self.assertEqual(partial["content"], "Partial visible response")
+            self.assertEqual(partial["thinking"], "Partial reasoning")
+            self.assertNotIn("tool_calls", partial)
+            self.assertTrue(any(event.get("type") == "steering_interrupted" for event in events))
+            self.assertEqual(result_holder[0][-1]["content"], "I continued the same implementation.")
+
     def test_steering_during_action_approval_waits_for_decision_and_does_not_bypass_denial(self):
         with tempfile.TemporaryDirectory() as root:
             approval_waiting = threading.Event()

@@ -47,6 +47,19 @@ class InferenceStreamError(RuntimeError):
  def __init__(self,message:str,partial_message:dict|None=None):
   super().__init__(message);self.partial_message=partial_message
 
+class _InferenceCancelSignal:
+ def __init__(self,cancel_event:threading.Event,steering_event:threading.Event):
+  self.cancel_event=cancel_event;self.steering_event=steering_event
+ def is_set(self)->bool:
+  return self.cancel_event.is_set() or self.steering_event.is_set()
+ def wait(self,timeout:float|None=None)->bool:
+  deadline=None if timeout is None else time.monotonic()+max(0.0,timeout)
+  while not self.is_set():
+   remaining=None if deadline is None else deadline-time.monotonic()
+   if remaining is not None and remaining<=0:return False
+   self.cancel_event.wait(0.05 if remaining is None else min(0.05,remaining))
+  return True
+
 def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto", approval_guidance: str = "") -> str:
     profile_guidance = (
         "Small-model workflow: break complex work into manageable steps while completing the full request. Choose action sizes that fit the task, then take the next unfinished action instead of stopping after planning. For implementation tasks, carry the plan into actual project changes, inspection, and relevant verification. Treat the visible plan as a living, expandable plan: add independent workstreams, acceptance criteria, and newly discovered work when useful. Preserve completed items and useful decisions. Plan only enough to identify the next safe, useful action; move into implementation or inspection without waiting for a perfect plan. Revisit or revise priorities when new evidence or user direction changes the work. Avoid repeating unchanged analysis without a reason; keep making progress through planning, implementation, inspection, and verification as the task needs. Batch independent tool calls in one response when their inputs are already known; do not batch actions that depend on an earlier result. Group independent read-only operations when useful; the host may execute validated read-only calls concurrently, while writes, commands, and MCP calls preserve order and approval. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Respect discussion and plan-only intent; do not implement those tasks. After compaction, continue from the saved checkpoint, retain and extend prior plans, and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
@@ -441,7 +454,7 @@ def _assistant_has_final_content(message: dict[str, Any]) -> bool:
 
 def _provider_message_history(messages: list[dict]) -> list[dict]:
     """Remove Workbench-only transcript metadata before sending provider JSON."""
-    internal_keys = {"turn_id", "steering_id", "steering_status", "partial_response"}
+    internal_keys = {"turn_id", "steering_id", "steering_status", "partial_response", "steering_interrupted"}
     return [
         {key: copy.deepcopy(value) for key, value in message.items() if key not in internal_keys}
         for message in messages if isinstance(message, dict)
@@ -1577,12 +1590,14 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None,steering_interrupt_event:threading.Event|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
         self.steering_handler=steering_handler
+        self.steering_interrupt_event=steering_interrupt_event or threading.Event()
+        self.inference_cancel_signal=_InferenceCancelSignal(self.cancel_event,self.steering_interrupt_event)
         # The app supplies a durable session lookup. Keep an in-memory fallback
         # as well so standalone AgentEngine/CLI sessions can recover earlier
         # operation output without advertising a tool that cannot work.
@@ -1871,6 +1886,7 @@ class AgentEngine:
                 # exchange have been resolved. It must not mutate an active stream
                 # or an outstanding assistant tool-call batch.
                 if self.steering_handler and self.steering_handler(msgs, False):
+                    self.steering_interrupt_event.clear()
                     self.event({"type":"steering_applied","elapsed":time.monotonic()-start})
                 msgs[0]["content"] = _replace_continuation_guidance(base_system_content, current_continuation_guidance)
                 tools=self._tools_for_request(base_request)
@@ -1890,7 +1906,24 @@ class AgentEngine:
                             "deferred_tool_names":list(self._deferred_tool_names)})
                 self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 self.state["request_index"] = request_index
-                result=self.runtime.stream(self.state,request_messages,self.cancel_event,self.event);msg=result["message"]
+                try:
+                    result=self.runtime.stream(self.state,request_messages,self.inference_cancel_signal,self.event)
+                except RequestCancelled as exc:
+                    if self.steering_interrupt_event.is_set() and not self.cancel_event.is_set():
+                        partial=exc.partial_message
+                        saved_partial={"role":"assistant","partial_response":True,"steering_interrupted":True}
+                        if isinstance(partial,dict):
+                            saved_partial.update({key:partial[key] for key in ("content","thinking")
+                                                  if isinstance(partial.get(key),str) and partial[key]})
+                        if saved_partial.get("content") or saved_partial.get("thinking"):
+                            msgs.append(saved_partial)
+                            record_assistant_status(checkpoint,saved_partial)
+                        self.event({"type":"steering_interrupted","request_index":request_index,
+                                    "partial_response_saved":bool(saved_partial.get("content") or saved_partial.get("thinking")),
+                                    "elapsed":time.monotonic()-start})
+                        continue
+                    raise
+                msg=result["message"]
                 calls=msg.get("tool_calls") or []
                 if calls or _assistant_has_final_content(msg) or (isinstance(msg.get("thinking"),str) and msg["thinking"].strip()):
                     msgs.append({"role":"assistant",**msg})
@@ -1912,6 +1945,7 @@ class AgentEngine:
                     # normal loop would otherwise return without another request.
                     # Persist it and continue this same task before reporting done.
                     if self.steering_handler and self.steering_handler(msgs, True):
+                        self.steering_interrupt_event.clear()
                         self.event({"type":"steering_applied","elapsed":time.monotonic()-start})
                         continue
                     if _provider_response_was_truncated(result):

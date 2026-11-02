@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-02 same-task live steering during model responses
+
+- The engine accepts a separate steering interrupt signal alongside user cancellation. A persisted same-session update interrupts only the active provider request, saves the text/reasoning already received as an explicitly partial assistant message, excludes incomplete tool-call arguments, and resumes the same task with the update at its next safe boundary. Ordinary Cancel still takes precedence and ends the task; completed tools and approval decisions are not interrupted or bypassed.
+- The interruption is a request-level HTTP stream close only; it does not stop or unload the provider/model. `tests/test_operation_stream.py -k steering_interrupts_active_reasoning`: **1 passed**. App-side persistence/UI regression tests and package/live behavior remain pending. No model settings changed.
+
 ## 2026-11-02 evidence-based tool failure recovery guidance
 
 - The model now receives general recovery guidance after ordinary tool failures: inspect the error and current project state, correct the cause before retrying, preserve successful work, and continue after recoverable errors. Potentially partial/uncertain effects must be inspected before a retry; denials must not be retried or routed around. The prompt sets no fixed retry/iteration cap and requires each retry to respond to observed evidence.
