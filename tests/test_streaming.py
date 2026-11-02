@@ -29,6 +29,23 @@ class StreamTests(unittest.TestCase):
   with patch('desktop_engine.open_http_stream',return_value=response):runtime.stream(state,[],threading.Event(),events.append)
   self.assertEqual([event['phase'] for event in events if event['type']=='phase'],['reasoning','generating'])
 
+ def test_default_reasoning_and_tool_call_are_preserved_in_one_response(self):
+  call={'type':'function','function':{'name':'write_file','arguments':'{"path":"index.html","content":"<main>Fieldnote</main>"}'}}
+  lines=[json.dumps({'message':{'thinking':'Choose the page structure, then write it.'}}).encode()+b'\n',
+         json.dumps({'message':{'tool_calls':[call]},'done':True}).encode()+b'\n']
+  response=FakeResponse(lines);runtime=OllamaRuntime();events=[]
+  state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),
+         'temperature':0.2,'context':16384,'max_tokens':8192,'runtime_options':{}}
+  with patch('desktop_engine.open_http_stream',return_value=response) as open_url:
+   result=runtime.stream(state,[],threading.Event(),events.append)
+  payload=json.loads(open_url.call_args.args[0].data)
+  self.assertNotIn('think',payload)
+  self.assertEqual(result['message']['thinking'],'Choose the page structure, then write it.')
+  self.assertEqual(result['message']['tool_calls'],[{'type':'function','function':{
+   'name':'write_file','arguments':{'path':'index.html','content':'<main>Fieldnote</main>'}}}])
+  self.assertEqual([event['type'] for event in events if event['type'] in {'thinking','tool_call_progress'}],
+                   ['thinking','tool_call_progress'])
+
  def test_incomplete_stream_preserves_partial_reasoning_and_reports_request_error(self):
   lines=[json.dumps({'message':{'thinking':'partial plan before disconnect'}}).encode()+b'\n']
   response=FakeResponse(lines);runtime=OllamaRuntime();events=[]
