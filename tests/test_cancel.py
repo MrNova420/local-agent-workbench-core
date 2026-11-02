@@ -1,4 +1,4 @@
-import unittest,threading,tempfile
+import unittest,threading,tempfile,json,time,http.client
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -77,4 +77,28 @@ class CancelTests(unittest.TestCase):
   self.assertTrue(any(event.get('type')=='request_dispatched' for event in events))
   failure=next(event for event in events if event.get('type')=='request_error')
   self.assertEqual(failure['phase'],'waiting_response_headers');self.assertTrue(failure['cancelled'])
+ def test_inference_header_wait_has_no_read_timeout_after_connection(self):
+  class DelayedHeaders(BaseHTTPRequestHandler):
+   protocol_version='HTTP/1.1'
+   def do_POST(self):
+    self.rfile.read(int(self.headers.get('Content-Length','0')))
+    time.sleep(0.15)
+    body=json.dumps({'message':{'role':'assistant','content':'ready'},'done':True,'done_reason':'stop'}).encode()+b'\n'
+    self.send_response(200);self.send_header('Content-Type','application/x-ndjson');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+   def log_message(self,*_args):pass
+  server=ThreadingHTTPServer(('127.0.0.1',0),DelayedHeaders)
+  server_thread=threading.Thread(target=server.serve_forever,daemon=True);server_thread.start()
+  runtime=OllamaRuntime(f'http://127.0.0.1:{server.server_port}')
+  state={'model':'mock','registry':type('R',(),{'schemas':[]})(),'temperature':0.2,'context':4096,'max_tokens':12}
+  observed_timeouts=[];getresponse=http.client.HTTPConnection.getresponse
+  def inspect_timeout(connection):
+   observed_timeouts.append(connection.sock.gettimeout())
+   return getresponse(connection)
+  try:
+   with patch('http.client.HTTPConnection.getresponse',inspect_timeout):
+    result=runtime.stream(state,[],threading.Event(),lambda _event:None)
+  finally:
+   server.shutdown();server.server_close();server_thread.join(2)
+  self.assertEqual(result['done_reason'],'stop')
+  self.assertEqual(observed_timeouts,[None])
 if __name__=='__main__':unittest.main()
