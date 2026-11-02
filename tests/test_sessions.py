@@ -1,8 +1,26 @@
-import unittest,tempfile
+import json,os,unittest,tempfile
 from pathlib import Path
 from sessions import SessionStore
 from desktop_engine import AgentEngine, MODEL, CONTEXT_MAX
 class SessionTests(unittest.TestCase):
+ def test_save_retries_a_windows_sharing_lock_longer_than_old_burst(self):
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)/'sessions';store=SessionStore(root);state=store.create(t,MODEL,CONTEXT_MAX);store.save(state)
+   target=root/(state['session_id']+'.json');real_replace=os.replace;attempts=[];clock=[0.0]
+   def replace_after_extended_lock(source,destination):
+    attempts.append(1)
+    if len(attempts)<=9:raise PermissionError('temporary Windows sharing violation')
+    return real_replace(source,destination)
+   def advance_clock(delay):clock[0]+=delay
+   state['marker']='saved after lock'
+   with patch('sessions.os.replace',side_effect=replace_after_extended_lock), \
+        patch('sessions.time.monotonic',side_effect=lambda:clock[0]), \
+        patch('sessions.time.sleep',side_effect=advance_clock):
+    store.save(state)
+   self.assertEqual(json.loads(target.read_text(encoding='utf-8'))['marker'],'saved after lock')
+   self.assertEqual(len(attempts),10);self.assertGreaterEqual(clock[0],2.0)
+   self.assertEqual(list(root.glob('*.tmp')),[])
  def test_create_save_recover_and_list(self):
   with tempfile.TemporaryDirectory() as t:
    store=SessionStore(Path(t)/'sessions');state=store.create(t,MODEL,CONTEXT_MAX);store.save(state);loaded=store.load(state['session_id'])

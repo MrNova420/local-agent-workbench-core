@@ -18,7 +18,9 @@ class SessionStore:
                     tmp=Path(handle.name);json.dump(state,handle,indent=2,ensure_ascii=False);handle.flush();os.fsync(handle.fileno())
                 _replace_with_retry(tmp,path);return path
             finally:
-                if tmp is not None:tmp.unlink(missing_ok=True)
+                if tmp is not None:
+                    try:tmp.unlink(missing_ok=True)
+                    except OSError:pass
     def load(self,sid:str)->dict:
         state=json.loads((self.root/(self._safe(sid)+'.json')).read_text(encoding='utf8'))
         if not isinstance(state,dict) or not {'session_id','workspace','model','context','messages'}<=state.keys():raise ValueError('Session file is incomplete')
@@ -66,14 +68,16 @@ class SessionStore:
 
 
 def _replace_with_retry(source:Path,destination:Path)->None:
-    """Retry transient Windows sharing violations without hiding permanent failures."""
+    """Retry transient Windows sharing locks for up to 30 seconds."""
     delay=0.05
-    for attempt in range(7):
+    deadline=time.monotonic()+30.0
+    while True:
         try:
             os.replace(source,destination)
             return
         except PermissionError:
-            if attempt==6:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
                 raise
-            time.sleep(delay)
-            delay=min(delay*2,0.4)
+            time.sleep(min(delay,remaining))
+            delay=min(delay*2,0.75)
