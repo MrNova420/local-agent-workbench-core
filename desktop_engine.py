@@ -16,6 +16,7 @@ from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import begin_task, checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import schema_validator_class, unsupported_schema_features
 from permission_policy import _paths, external_directory_decision, permission_decision, permission_rules_for_workspace, validate_permission_rules
+from windows_process_job import WindowsProcessJob
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -1021,10 +1022,14 @@ class ToolRegistry:
             if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv): return "argv must be a non-empty string list."
             if any(x in {"&&","||",";","|",">","<"} for x in argv): return "Shell operators are not accepted."
             if len(argv)==1 and argv[0].casefold()=="pwd":return str(self.workspace.root)
+        process_job=None
         try:
             try:limit=_command_timeout(args)
             except ValueError as exc:return f"Invalid command timeout: {exc}"
             process=subprocess.Popen(argv,cwd=self.workspace.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+            # Job Objects improve descendant cancellation. They do not restrict
+            # filesystem, network, registry, or host-user permissions.
+            process_job=WindowsProcessJob.attach(process.pid)
             deadline=time.monotonic()+limit if limit is not None else None
             chunks={"stdout":[],"stderr":[]};output:queue.Queue=queue.Queue();readers=[];known_descendants={};last_tree_scan=0.0;drain_deadline=None;incomplete_output=False
             def scan_descendants():
@@ -1032,6 +1037,8 @@ class ToolRegistry:
                     for child in psutil.Process(process.pid).children(recursive=True):known_descendants[child.pid]=child
                 except (psutil.Error,OSError):pass
             def terminate_tree():
+                if process_job is not None:
+                    process_job.terminate()
                 scan_descendants()
                 try:root_process=psutil.Process(process.pid)
                 except (psutil.Error,OSError):root_process=None
@@ -1096,6 +1103,9 @@ class ToolRegistry:
             if self.cancel_event.is_set():return result+"\n[command cancelled by user]"
             return result+f"\n[exit {process.returncode}]"
         except (OSError,ValueError) as exc: return f"Command error: {exc}"
+        finally:
+            if process_job is not None:
+                process_job.close()
 
 def _utf8_prefix(value:str,budget:int)->tuple[str,int]:
     used=0;index=0

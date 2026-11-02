@@ -402,6 +402,28 @@ class OperationStreamTests(unittest.TestCase):
             self.assertIn("雪" * 20000, result)
             self.assertGreater(len(result), 12000)
 
+    def test_command_cancellation_uses_and_closes_windows_process_job(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        with tempfile.TemporaryDirectory() as root:
+            cancel = threading.Event()
+            registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True, cancel_event=cancel)
+            job = SimpleNamespace(terminate=Mock(return_value=True), close=Mock())
+            timer = threading.Timer(0.2, cancel.set)
+            with patch("desktop_engine.WindowsProcessJob.attach", return_value=job) as attach:
+                timer.start()
+                try:
+                    result = registry._command({"argv": [sys.executable, "-c", "import time; time.sleep(20)"]})
+                finally:
+                    timer.cancel()
+                    timer.join()
+
+            attach.assert_called_once()
+            job.terminate.assert_called_once()
+            job.close.assert_called_once()
+            self.assertIn("[command cancelled by user]", result)
+
     def test_tool_activity_has_one_identity_and_keeps_complete_result(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
