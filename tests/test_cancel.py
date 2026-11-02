@@ -2,7 +2,7 @@ import unittest,threading,tempfile,json,time,http.client
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
-from desktop_engine import AgentEngine, OllamaRuntime, RequestCancelled
+from desktop_engine import AgentEngine, InferenceStreamError, OllamaRuntime, RequestCancelled
 class CancelTests(unittest.TestCase):
  def test_cancel_between_stream_chunks_ends_only_request(self):
   class Response:
@@ -29,6 +29,29 @@ class CancelTests(unittest.TestCase):
    messages=engine.run('do a task',[])
   self.assertEqual(messages[-1],{'role':'assistant','content':'partial reply'})
   self.assertTrue(any(event.get('type')=='cancelled' for event in events))
+ def test_agent_engine_keeps_received_text_when_provider_stream_fails(self):
+  class PartialRuntime:
+   def stream(self,*_args):
+    error=RuntimeError('connection reset');error.partial_message={'role':'assistant','thinking':'checked the files','content':'I found the cause.'};raise error
+  with tempfile.TemporaryDirectory() as root:
+   engine=AgentEngine(Path(root),access='plan');engine.runtime=PartialRuntime();events=[];engine.event=events.append
+   messages=engine.run('review the project',[])
+  self.assertEqual(messages[-1],{'role':'assistant','thinking':'checked the files','content':'I found the cause.'})
+  failure=next(event for event in events if event.get('type')=='error')
+  self.assertTrue(failure['partial_response_saved'])
+ def test_ollama_stream_error_carries_only_received_text_not_partial_tool_arguments(self):
+  class Response:
+   def __init__(self):self.lines=iter([b'{"message":{"thinking":"reasoning","content":"partial","tool_calls":[{"function":{"name":"write_file","arguments":"{\\"path\\":"}}]}}\n'])
+   def readline(self):
+    line=next(self.lines,None)
+    if line:return line
+    raise ConnectionResetError('provider disconnected')
+   def close(self):pass
+  runtime=OllamaRuntime();state={'model':'mock','registry':type('R',(),{'schemas':[]})(),'temperature':0.2,'context':4096,'max_tokens':12}
+  with patch('desktop_engine.open_http_stream',return_value=Response()):
+   with self.assertRaises(InferenceStreamError) as raised:runtime.stream(state,[],threading.Event(),lambda _event:None)
+  self.assertIn('provider disconnected',str(raised.exception))
+  self.assertEqual(raised.exception.partial_message,{'role':'assistant','thinking':'reasoning','content':'partial'})
  def test_stream_close_during_read_preserves_partial_reply(self):
   entered_read=threading.Event();closed=threading.Event();cancel=threading.Event();errors=[]
   class Response:

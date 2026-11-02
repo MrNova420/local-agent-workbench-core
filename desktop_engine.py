@@ -27,6 +27,10 @@ class RequestCancelled(Exception):
  def __init__(self,message='Cancelled',partial_message:dict|None=None):
   super().__init__(message);self.partial_message=partial_message
 
+class InferenceStreamError(RuntimeError):
+ def __init__(self,message:str,partial_message:dict|None=None):
+  super().__init__(message);self.partial_message=partial_message
+
 def agent_system_prompt(access_policy: str, project_instructions: str, harness_profile: str = "standard", skills_enabled: bool = True, task_intent: str = "auto") -> str:
     profile_guidance = (
         "Small-model workflow: break complex work into manageable steps while completing the full request. Choose action sizes that fit the task, then take the next unfinished action instead of stopping after planning. For implementation tasks, carry the plan into actual project changes, inspection, and relevant verification. Treat the visible plan as a living, expandable plan: add independent workstreams, acceptance criteria, and newly discovered work when useful; revisit or revise priorities as evidence or user direction changes. Preserve completed items and useful decisions, but do not limit the number of planning passes, plan items, or improvement cycles. Avoid repeating unchanged analysis without a reason; keep making progress through planning, implementation, inspection, and verification as the task needs. Batch independent tool calls in one response when their inputs are already known; do not batch actions that depend on an earlier result. Group independent read-only operations when useful; the host may execute validated read-only calls concurrently, while writes, commands, and MCP calls preserve order and approval. Prefer focused edits when practical, inspect results, and verify changed files and requested checks. Respect discussion and plan-only intent; do not implement those tasks. After compaction, continue from the saved checkpoint, retain and extend prior plans, and inspect the workspace before repeating an uncertain operation. Do not cap required work; if genuinely blocked, preserve progress and state the exact blocker and next safe action. Do not skip required project work or validation.\n\n"
@@ -1542,7 +1546,8 @@ class OllamaRuntime:
             if cancel.is_set():
                 partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
                 raise RequestCancelled("Cancelled",{"role":"assistant",**partial} if partial else None) from exc
-            raise
+            partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
+            raise InferenceStreamError(str(exc),{"role":"assistant",**partial} if partial else None) from exc
         finally:
             with self.lock:connection=self.connection;active_response=self.response;self.connection=None;self.response=None
             interrupt_connection(connection,active_response)
@@ -2265,8 +2270,14 @@ class AgentEngine:
             finish_task(checkpoint,"cancelled")
             self.event({"type":"cancelled","elapsed":time.monotonic()-start})
         except Exception as exc:
+            partial=getattr(exc,"partial_message",None)
+            partial_saved=isinstance(partial,dict) and any(partial.get(key) for key in ("content","thinking"))
+            if partial_saved:
+                saved={"role":"assistant",**{key:partial[key] for key in ("thinking","content") if partial.get(key)}}
+                msgs.append(saved)
+                record_assistant_status(checkpoint,saved)
             finish_task(checkpoint,"failed",blocker=f"{type(exc).__name__}: {exc}")
-            self.event({"type":"error","error":f"{type(exc).__name__}: {exc}"})
+            self.event({"type":"error","error":f"{type(exc).__name__}: {exc}","partial_response_saved":partial_saved})
         return msgs
 
 
