@@ -40,39 +40,39 @@ def test_implementation_pacing_prefers_early_tool_work_without_a_scope_or_iterat
 def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_limit():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="small-model")
 
-    assert "group independent read-only operations when useful" in prompt.casefold()
-    assert "batch independent tool calls in one response when their inputs are already known" in prompt.casefold()
-    assert "writes, commands, and mcp calls preserve order and approval" in prompt.casefold()
-    assert "choose action sizes that fit the task" in prompt.casefold()
-    assert "do not skip required project work or validation" in prompt.casefold()
-    assert "inspect results" in prompt.casefold()
+    assert "small-model workflow: keep the entire requested scope and expandable plan" in prompt.casefold()
+    assert "once the next safe step is clear, act and use results to continue" in prompt.casefold()
+    assert "batch independent tool calls in one response when their inputs are known" in prompt.casefold()
+    assert "keep writes, commands, and mcp calls ordered under their normal approval rules" in prompt.casefold()
+    assert "keep all required work and acceptance checks" in prompt.casefold()
+    assert "use results to continue" in prompt.casefold()
 
 
 def test_small_model_workflow_allows_iterative_planning_and_plan_expansion():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="small-model")
 
-    assert "living, expandable plan" in prompt.casefold()
-    assert "add independent workstreams" in prompt.casefold()
-    assert "revisit or revise" in prompt.casefold()
+    assert "keep the entire requested scope and expandable plan" in prompt.casefold()
+    assert "use add_items to add discovered tasks or independent workstreams" in prompt.casefold()
+    assert "expand or revise the plan when new evidence" in prompt.casefold()
     assert "plan only enough to identify the next safe, useful action" in prompt.casefold()
-    assert "move into implementation or inspection without waiting for a perfect plan" in prompt.casefold()
+    assert "take its next open step through an appropriate structured tool on the next response" in prompt.casefold()
     assert "do not limit the number of planning passes" not in prompt.casefold()
     assert "plan once" not in prompt.casefold()
-    assert "take the next unfinished action" in prompt.casefold()
-    assert "after compaction, continue from the saved checkpoint" in prompt.casefold()
+    assert "after compaction or a user follow-up, retain prior plans and progress" in prompt.casefold()
 
 
 def test_small_model_continuity_guidance_preserves_discussion_and_plan_intents():
     prompt = agent_system_prompt("Read-only", "", harness_profile="small-model", task_intent="plan")
 
-    assert "for implementation tasks" in prompt.casefold()
-    assert "respect discussion and plan-only intent" in prompt.casefold()
+    assert "task intent: plan only" in prompt.casefold()
+    assert "the host exposes only read-only project tools" in prompt.casefold()
 
 
 def test_standard_workflow_remains_general():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="standard")
 
-    assert "group independent read-only operations when useful" not in prompt.casefold()
+    assert "batch independent tool calls in one response" in prompt.casefold()
+    assert "small-model workflow:" not in prompt.casefold()
     assert "living, expandable plan" not in prompt.casefold()
 
 

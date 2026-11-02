@@ -4,11 +4,39 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from desktop_engine import AgentEngine, CONTEXT_MAX, _normalize_tool_history, _validate_tool_arguments
+from desktop_engine import AgentEngine, CONTEXT_MAX, _build_shell_argv, _normalize_tool_history, _validate_tool_arguments
 from tool_schema_capabilities import unsupported_schema_features
 
 
 class ToolValidationTests(unittest.TestCase):
+    def test_run_shell_exposes_cmd_without_changing_the_existing_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            registry = AgentEngine(Path(folder), context=CONTEXT_MAX, access="edit").state["registry"]
+            schema = next(row["function"] for row in registry.schemas if row["function"]["name"] == "run_shell")
+            self.assertEqual(schema["parameters"]["properties"]["shell"]["enum"], ["powershell", "cmd"])
+            self.assertIn("Omit shell to use PowerShell (default)", schema["description"])
+
+    def test_cmd_shell_argv_is_explicit_windows_command_processor(self):
+        with patch("desktop_engine.os.name", "nt"), patch("desktop_engine.os.environ", {"COMSPEC": r"C:\Windows\System32\cmd.exe"}):
+            self.assertEqual(
+                _build_shell_argv("cmd", "echo ready && dir"),
+                [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c", "echo ready && dir"],
+            )
+
+    def test_run_shell_still_defaults_to_noninteractive_powershell(self):
+        with patch("shutil.which", side_effect=lambda name: r"C:\Program Files\PowerShell\7\pwsh.exe" if name == "pwsh" else None):
+            self.assertEqual(
+                _build_shell_argv("", "Get-ChildItem"),
+                [r"C:\Program Files\PowerShell\7\pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ChildItem"],
+            )
+
+    def test_run_shell_rejects_unknown_shell_and_cmd_outside_windows(self):
+        with self.assertRaisesRegex(ValueError, "shell must be"):
+            _build_shell_argv("bash", "echo ready")
+        with patch("desktop_engine.os.name", "posix"):
+            with self.assertRaisesRegex(ValueError, "only available on Windows"):
+                _build_shell_argv("cmd", "echo ready")
+
     def test_mcp_schema_capability_report_is_recursive_bounded_and_deterministic(self):
         schema={"type":"object","properties":{"settings":{"type":"object","if":{"required":["mode"]},"then":{"properties":{"mode":{"type":"string","format":"date-time"}}}}}}
         report=unsupported_schema_features(schema)

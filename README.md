@@ -7,7 +7,7 @@ This repository contains the Python agent loop and local runtime/tooling service
 - Iterative model/tool/model orchestration with Ollama and optional llama.cpp adapters.
 - Project context assembly, instruction/skill discovery, request-only compaction, and workspace tools. When the selected input budget is tight, the request keeps core project operations available and discovers additional built-in/MCP schemas on demand; selected context and output values are not lowered.
 - Large-file construction through ordered append chunks, resumable reads/results, and progress-based implementation continuation with durable incomplete status when the model stops advancing.
-- Approval-aware file and command operations, MCP support, run events, and session persistence.
+- Approval-aware file and command operations, MCP support, run events, and session persistence. Windows shell commands can select PowerShell (the default) or CMD; both remain non-interactive, receive end-of-input on stdin, stream output, and follow the same approval and cancellation policy.
 - Shared desktop-agent protocols and regression tests.
 
 ## Development
@@ -29,7 +29,7 @@ Project-scoped file operations and approval states are application-level control
 
 Unstable beta development dependency. The desktop repository pins the compatible engine commit in `core-revision.txt`. Do not update that pin without running the app, sidecar, and engine source gates.
 
-The current in-progress source adds context-adaptive per-request tool schemas. `load_tools` pages the project-visible catalog to the available response budget (or a caller-selected page size) and can include exact built-in or MCP schemas in the next request. This makes schemas discoverable under smaller contexts; it does not guarantee a model can complete every task within a 4K–8K request budget. If required schemas plus the configured output reserve do not fit, the engine reports the constraint without changing either setting. Regression tests are queued and this source has not been verified.
+The engine includes context-adaptive per-request tool schemas. `load_tools` pages the project-visible catalog to the available response budget (or a caller-selected page size) and can include exact built-in or MCP schemas in the next request. This makes schemas discoverable under smaller contexts; it does not guarantee a model can complete every task within a 4K–8K request budget. If required schemas plus the configured output reserve do not fit, the engine reports the constraint without changing either setting. Focused context and catalog checks pass; full engine and packaged acceptance remain pending.
 
 ## License
 

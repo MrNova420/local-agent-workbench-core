@@ -90,7 +90,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in structured file-tool arguments, not in a chat message. For files too large for one response, create them with write_file and add ordered chunks using append_file; inspect the finished file. "
         "For focused changes to existing files, prefer edit_file with the exact old and new text; it refuses missing or ambiguous matches. Use apply_patch for structured or multi-file changes, and write_file for new or intentionally replaced whole files. "
         "When list_files or search_files says more results are available, continue with its exact next offset when needed; do not assume the first page is complete. "
-        "Use run_command for a direct argv command without shell syntax. Use run_shell for ordinary Windows PowerShell workflows that require pipes, redirects, or script wrappers; both follow the configured host approval mode and persistent permission rules. "
+        "Use run_command for a direct argv command without shell syntax. Use run_shell for Windows PowerShell or CMD workflows that require pipes, redirects, or script wrappers; it defaults to PowerShell and accepts an explicit shell choice. Both follow the configured host approval mode and persistent permission rules. "
         "For long builds, tests, installs, and other approved work, omit timeout_seconds unless a task-specific timeout is required; the host's Cancel control remains available. "
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "Tool failure recovery: inspect the reported error and current project state, identify its cause, and correct the cause before retrying. A retry may adjust arguments, paths, command steps, or the implementation based on new evidence; do not repeat the same failed action without a reason. If an operation's outcome is uncertain, inspect for partial effects before retrying to avoid duplicate changes. Do not retry denied actions or route around a denial. Preserve completed work and continue the task after recoverable failures; report a concrete blocker when recovery is not possible. There is no fixed retry or iteration cap, and each retry must respond to observed evidence.\n\n"
@@ -108,6 +108,24 @@ def _command_timeout(args:dict[str,Any])->int|None:
     if not isinstance(value,int) or isinstance(value,bool) or value<1:
         raise ValueError("timeout_seconds must be a positive integer when specified; omit it to wait for completion or cancellation.")
     return value
+
+def _build_shell_argv(shell_type: str, command: str) -> list[str]:
+    """Build an explicit non-interactive shell invocation without changing approval scope."""
+    import shutil
+    selected = shell_type or "powershell"
+    if selected == "powershell":
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if not executable:
+            raise ValueError("PowerShell is unavailable; install PowerShell or use run_command with argv.")
+        return [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+    if selected == "cmd":
+        if os.name != "nt":
+            raise ValueError("CMD is only available on Windows.")
+        executable = os.environ.get("COMSPEC") or shutil.which("cmd.exe")
+        if not executable:
+            raise ValueError("CMD is unavailable; set COMSPEC or use run_command with argv.")
+        return [executable, "/d", "/s", "/c", command]
+    raise ValueError("shell must be 'powershell' or 'cmd'.")
 
 def _validate_tool_arguments(value: Any, schema: dict, path: str = "$") -> str | None:
     """Validate tool arguments with the schema's declared dialect and no remote fetches."""
@@ -519,7 +537,7 @@ class ToolRegistry:
           self._schema("edit_file", "Replace exact text in one project or explicitly granted external file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
           self._schema("apply_patch", "Apply a unified diff in the active project or an explicitly granted external folder, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
           self._schema("run_command", "Run a non-interactive argv command in the project, subject to the configured host approval mode and persistent permission rules. The command receives end-of-input on stdin; it cannot read the sidecar control channel. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. The exact command ['pwd'] returns the selected project root. Other commands launch directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1}}, ["argv"]),
-          self._schema("run_shell", "Run a non-interactive PowerShell command string in the project, subject to the configured host approval mode and persistent permission rules. The command receives end-of-input on stdin; it cannot read the sidecar control channel. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. Use for Windows workflows needing pipes, redirects, or script wrappers. Commands run with host-user permissions and are not OS-sandboxed; a host decision is required only when the configured policy asks for one.", {"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1}}, ["command"]),
+          self._schema("run_shell", "Run a non-interactive shell command string in the project. Omit shell to use PowerShell (default), or set shell to powershell; set shell to cmd for Windows CMD. The command receives end-of-input on stdin; it cannot read the sidecar control channel. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. Use for workflows needing pipes, redirects, or script wrappers. Commands run with host-user permissions and are not OS-sandboxed; a host decision is required only when the configured policy asks for one.", {"command":{"type":"string"},"shell":{"type":"string","enum":["powershell","cmd"]},"timeout_seconds":{"type":"integer","minimum":1}}, ["command"]),
         ]
         if self.ask_user_callback is not None:
             self.schemas.append(self._schema("ask_user", "Pause this run to ask the user for missing requirements or a meaningful choice. Use only when the answer affects the work; do not use this for file/command approval, which has its own approval dialog. Offer optional choices and accept a freeform response.", {"question":{"type":"string","minLength":1},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","minLength":1},"description":{"type":"string"}},"required":["label"],"additionalProperties":False}},"title":{"type":"string"}}, ["question"]))
@@ -1014,11 +1032,9 @@ class ToolRegistry:
         import subprocess,psutil
         if shell:
             command=args.get("command")
-            if not isinstance(command,str) or not command.strip():return "command must be a non-empty PowerShell command string."
-            import shutil
-            executable=shutil.which("pwsh") or shutil.which("powershell")
-            if not executable:return "PowerShell is unavailable; install PowerShell or use run_command with argv."
-            argv=[executable,"-NoLogo","-NoProfile","-NonInteractive","-Command",command]
+            if not isinstance(command,str) or not command.strip():return "command must be a non-empty shell command string."
+            try:argv=_build_shell_argv(args.get("shell","powershell"),command)
+            except ValueError as exc:return f"Command error: {exc}"
         else:
             argv=args.get("argv")
             if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv): return "argv must be a non-empty string list."

@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-02 Windows shell selection for project workflows
+
+- `run_shell` now accepts an explicit `shell` choice: PowerShell remains the default and CMD uses the Windows `COMSPEC` command processor with `/d /s /c`; requests for CMD on non-Windows hosts and unknown shell names return clear errors. The selected shell is part of the structured tool arguments shown in activity and approvals.
+- Both shells stay non-interactive, run in the captured workspace, stream stdout/stderr, receive end-of-input on stdin, inherit the existing approval/permission policy, retain request cancellation and optional explicit timeout behavior, and remain host-user execution rather than OS containment.
+- Focused evidence: tool schema and shell argv tests **4 passed**; `tests/test_tool_validation.py` **20 passed**; selected command/continuation tests **5 passed**; updated prompt-contract tests **10 passed**; Python compilation and `git diff --check` passed. App pin/build checks and packaged CMD execution remain pending; no model was started and no inference settings changed.
+
 ## 2026-11-02 automatic task progress visibility and plan-loop balance
 
 - Automatic runs now publish one generic, host-owned in-progress checklist item before the first model request, so the Live Work Sheet is not empty while the model reasons. It does not infer discussion versus implementation from prompt wording. A model-authored plan replaces it and remains freely expandable; the generic item completes with the task and does not turn an ordinary Auto answer into `plan_only`.
