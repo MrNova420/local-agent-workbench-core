@@ -435,6 +435,20 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
             self.assertEqual(completion["workflowOutcome"], "inspected")
 
+    def test_automatic_no_action_is_persisted_as_observed_outcome(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append, task_intent="auto")
+            engine.runtime.stream = lambda *_args: {"message": {"role": "assistant", "content": "Here is the explanation."}}
+
+            engine.run("What does this project do?")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            checkpoint = engine.state["task_checkpoint"]["current"]
+            self.assertEqual(completion["workflowOutcome"], "no_action")
+            self.assertEqual(checkpoint["workflow_outcome"], "no_action")
+            self.assertFalse(any(event.get("type") == "tool_start" for event in events))
+
     def test_repeated_identical_plan_tool_calls_are_detected_as_no_progress(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
