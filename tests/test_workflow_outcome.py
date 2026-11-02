@@ -85,7 +85,7 @@ def test_plan_tool_result_hands_implementation_to_next_open_step_without_replann
     repeated = registry.run("update_plan", {"items": plan, "task_mode": "implement"})
 
     assert '"next_action": "Implement the website"' in updated
-    assert "continue with this step through the structured project tools" in updated.casefold()
+    assert "continue with this next open step through the appropriate structured project tools" in updated.casefold()
     assert '"plan_changed": true' in updated
     assert '"plan_changed": false' in repeated
     assert '"next_action": "Implement the website"' in repeated
@@ -139,8 +139,11 @@ def test_host_starter_plan_is_visible_and_intent_specific():
     ]
     assert [row["phase"] for row in plan[1:]] == ["inspect", "planning", "implementation", "verification"]
     assert all(row["source"] == "workbench" for row in plan)
-    assert automatic_plan == []
-    assert initial_task_plan("How do I fix this?", "auto") == []
+    assert automatic_plan == [{
+        "title": "Assess the request and track the next useful action",
+        "status": "in_progress", "source": "workbench", "phase": "task_progress",
+    }]
+    assert initial_task_plan("How do I fix this?", "auto") == automatic_plan
 
 
 def test_automatic_implementation_uses_structured_evidence_not_prompt_wording():
@@ -233,9 +236,12 @@ def test_saved_implementation_obligation_counts_as_continuation_state():
         {"implementation_requested": True}, [])
 
 
-def test_saved_user_relevant_decisions_count_as_continuation_progress():
-    assert _continuation_progress_signature({"decisions": []}, []) != _continuation_progress_signature(
+def test_agent_plan_decisions_do_not_count_as_implementation_progress_but_host_decisions_do():
+    baseline = _continuation_progress_signature({"decisions": []}, [])
+    assert baseline == _continuation_progress_signature(
         {"decisions": [{"kind": "agent_plan_decision", "text": "Keep the existing router."}]}, [])
+    assert baseline != _continuation_progress_signature(
+        {"decisions": [{"kind": "permission_rule", "tool": "write_file", "decision": "ask"}]}, [])
 
 
 def test_replanning_without_new_evidence_does_not_count_as_progress():
@@ -249,7 +255,7 @@ def test_replanning_without_new_evidence_does_not_count_as_progress():
         read, [])
 
 
-def test_real_plan_expansion_and_phase_changes_count_as_progress():
+def test_plan_expansion_and_phase_changes_do_not_mask_missing_project_progress():
     original = {"task_mode": "plan", "plan_source": "agent", "plan": [
         {"title": "Inspect project", "phase": "inspect", "status": "pending"},
     ]}
@@ -262,8 +268,8 @@ def test_real_plan_expansion_and_phase_changes_count_as_progress():
     assert _continuation_progress_signature(original, []) == _continuation_progress_signature(
         {**original, "operations": [{"name": "update_plan", "status": "completed",
                                       "arguments_fingerprint": "same", "result_fingerprint": "same"}]}, [])
-    assert _continuation_progress_signature(original, []) != _continuation_progress_signature(expanded, [])
-    assert _continuation_progress_signature(original, []) != _continuation_progress_signature(advanced, [])
+    assert _continuation_progress_signature(original, []) == _continuation_progress_signature(expanded, [])
+    assert _continuation_progress_signature(original, []) == _continuation_progress_signature(advanced, [])
 
 
 def test_plan_access_hides_mutating_and_command_tools_from_the_model_catalog(tmp_path):

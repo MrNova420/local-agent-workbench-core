@@ -702,6 +702,12 @@ class OperationStreamTests(unittest.TestCase):
             checkpoint = engine.state["task_checkpoint"]["current"]
             self.assertEqual(completion["workflowOutcome"], "no_action")
             self.assertEqual(checkpoint["workflow_outcome"], "no_action")
+            plan_events = [event for event in events if event.get("type") == "plan"]
+            self.assertEqual(len(plan_events), 2)
+            self.assertEqual(plan_events[0]["items"][0]["phase"], "task_progress")
+            self.assertEqual(plan_events[0]["items"][0]["status"], "in_progress")
+            self.assertEqual(plan_events[-1]["items"][0]["status"], "completed")
+            self.assertEqual(checkpoint["plan"][0]["status"], "completed")
             self.assertFalse(any(event.get("type") == "tool_start" for event in events))
 
     def test_repeated_identical_plan_tool_calls_are_detected_as_no_progress(self):

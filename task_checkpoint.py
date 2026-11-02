@@ -94,6 +94,9 @@ def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
             ("implementation", "Implement the requested changes under the selected access and approval rules", "pending"),
             ("verification", "Inspect the changes and run relevant approved checks", "pending"),
         ]
+    elif intent == "auto":
+        return [{"title": "Assess the request and track the next useful action",
+                 "status": "in_progress", "source": "workbench", "phase": "task_progress"}]
     else:
         return []
     return [

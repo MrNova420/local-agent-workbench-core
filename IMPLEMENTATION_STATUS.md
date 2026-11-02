@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-02 automatic task progress visibility and plan-loop balance
+
+- Automatic runs now publish one generic, host-owned in-progress checklist item before the first model request, so the Live Work Sheet is not empty while the model reasons. It does not infer discussion versus implementation from prompt wording. A model-authored plan replaces it and remains freely expandable; the generic item completes with the task and does not turn an ordinary Auto answer into `plan_only`.
+- The no-progress detector deliberately does not treat plan text/expansion or agent-authored decision notes alone as project implementation progress. Identical plan-only loops still stop with resumable state; host decisions, user updates, actual operations, and verification remain observable evidence. No step/runtime/token cap was added.
+- Focused evidence: `tests/test_workflow_outcome.py` **23 passed**; `tests/test_operation_stream.py -k "automatic or repeated_identical_plan or pending_plan_expansion"` **7 passed**; `py_compile` and `git diff --check` passed. Full engine/app suites and packaged worksheet acceptance remain queued. Model and inference settings unchanged.
+
 ## 2026-11-02 same-task live steering during model responses
 
 - The engine accepts a separate steering interrupt signal alongside user cancellation. A persisted same-session update interrupts only the active provider request, saves the text/reasoning already received as an explicitly partial assistant message, excludes incomplete tool-call arguments, and resumes the same task with the update at its next safe boundary. Ordinary Cancel still takes precedence and ends the task; completed tools and approval decisions are not interrupted or bypassed.

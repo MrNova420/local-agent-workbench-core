@@ -407,7 +407,7 @@ def _workflow_outcome(access: str, action_denied: bool, project_changed: bool, v
         return "plan_only"
     if project_changed:
         return "changed"
-    if plan:
+    if any(not (isinstance(item, dict) and item.get("phase") == "task_progress") for item in plan):
         return "plan_only"
     if task_intent == "auto" and task_mode == "auto" and not implementation_requested:
         return "no_action"
@@ -1656,6 +1656,8 @@ class AgentEngine:
                 if final and (verification=="command_completed" or (verification=="inspected" and post_change_inspection)):target="completed"
             elif phase=="present" and final:
                 target="completed"
+            elif phase=="task_progress" and final:
+                target="completed"
             if target and item.get("status")!=target:
                 item["status"]=target;changed=True
         if changed:
@@ -1864,6 +1866,15 @@ class AgentEngine:
         checkpoint_state=current_task(checkpoint)
         checkpoint_state.setdefault("goal",prompt)
         checkpoint_state["workspace"]=str(self.workspace.root)
+        registry=self.state["registry"]
+        if self.task_intent=="auto" and not registry.plan:
+            registry.plan=initial_task_plan(prompt,"auto")
+            if registry.plan:
+                registry.plan_source="workbench"
+                record_plan(checkpoint,registry.plan,task_mode=registry.task_mode,plan_source="workbench")
+                self.event({"type":"plan","items":copy.deepcopy(registry.plan),
+                            "acceptanceCriteria":copy.deepcopy(checkpoint_state.get("acceptance_criteria",[])),
+                            "source":"workbench","taskMode":registry.task_mode})
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
