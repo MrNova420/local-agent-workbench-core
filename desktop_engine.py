@@ -447,18 +447,26 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
                    ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         for item in operations if isinstance(item, dict) and item.get("name") != "update_plan"
     }) if isinstance(operations, list) else []
-    plan = task.get("plan", [])
-    plan_state = [
-        {key: copy.deepcopy(item[key]) for key in ("id", "phase", "group", "title", "text", "status", "depends_on") if key in item}
-        for item in plan if isinstance(item, dict)
-    ] if isinstance(plan, list) else []
+    # Planning artifacts are durable and may be expanded or revised at any time,
+    # but changing checklist text is not evidence that implementation advanced.
+    # Count only host decisions (approvals/policy outcomes), not agent-authored
+    # plan notes, when detecting repeated no-progress responses.
+    decisions = task.get("decisions", [])
+    host_decisions = [
+        {key: copy.deepcopy(item[key]) for key in ("kind", "tool", "decision", "mode", "rule") if key in item}
+        for item in decisions if isinstance(item, dict) and item.get("kind") != "agent_plan_decision"
+    ] if isinstance(decisions, list) else []
+    user_updates = task.get("user_updates", [])
+    update_state = [
+        {key: copy.deepcopy(item[key]) for key in ("id", "instruction", "status") if key in item}
+        for item in user_updates if isinstance(item, dict)
+    ] if isinstance(user_updates, list) else []
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
         "plan_source": task.get("plan_source", "workbench"),
         "implementation_requested": bool(task.get("implementation_requested", False)),
-        "plan": plan_state,
-        "acceptance_criteria": task.get("acceptance_criteria", []),
-        "decisions": task.get("decisions", []),
+        "user_updates": update_state,
+        "host_decisions": host_decisions,
         "operations": operation_state,
         "verification": verification_steps,
         "changed_files": task.get("changed_files", []),

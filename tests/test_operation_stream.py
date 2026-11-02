@@ -502,6 +502,37 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
             self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])
 
+    def test_pending_plan_expansion_alone_does_not_keep_automatic_run_planning(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "plan", "function": {"name": "update_plan", "arguments": {
+                        "items": [{"title": "Implement the requested project", "status": "pending"}],
+                        "decisions": ["Consider a second architecture option"]}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "The initial plan is ready."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "expand", "function": {"name": "update_plan", "arguments": {
+                        "add_items": [{"title": "Refine another implementation detail", "status": "pending"}],
+                        "decisions": ["Consider a third architecture option"]}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "I am still refining the plan."}},
+            ]
+            calls = []
+            engine.runtime.stream = lambda *_args: (calls.append(1) or responses.pop(0))
+
+            engine.run("Implement a small project change.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(len(engine.state["registry"].plan), 2)
+            self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
+            self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])
+
     def test_plan_only_request_does_not_force_a_tool_followup(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
