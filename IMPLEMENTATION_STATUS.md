@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-02 case-aware regular-expression project search
+
+- `search_files` keeps case-insensitive literal matching as the default and now accepts `regex`, `case_sensitive`, and `match_timeout_seconds` options. Invalid expressions return a correctable error. A regex timeout preserves any matches already found and returns an explicit incomplete result; the activity layer classifies it as partial. Regex matching uses the `regex` package's per-operation timeout support, and the runtime dependency is included in both engine and packaged-sidecar requirements.
+- Focused evidence: `tests/test_tools.py` **41 passed**, including case behavior, pagination-compatible schema options, invalid patterns, pathological-pattern timeout, and partial status; `tests/test_context.py` plus `tests/test_context_budget.py` **21 passed**; Python compilation and `git diff --check` passed. App pin/build-config check and packaged sidecar installation remain pending; full suites remain queued. No model or inference settings changed.
+
 ## 2026-11-02 Windows shell selection for project workflows
 
 - `run_shell` now accepts an explicit `shell` choice: PowerShell remains the default and CMD uses the Windows `COMSPEC` command processor with `/d /s /c`; requests for CMD on non-Windows hosts and unknown shell names return clear errors. The selected shell is part of the structured tool arguments shown in activity and approvals.

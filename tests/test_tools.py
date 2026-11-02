@@ -64,6 +64,36 @@ class ToolTests(unittest.TestCase):
    self.assertIn('matches.py:3: needle three',page)
    self.assertNotIn('matches.py:1:',page)
    self.assertIn('next offset 3',page.casefold())
+ def test_search_files_advertises_regex_and_case_options(self):
+  with tempfile.TemporaryDirectory() as t:
+   tools=ToolRegistry(Workspace(t),lambda *_:True)
+   schema=next(row['function'] for row in tools.schemas if row['function']['name']=='search_files')
+   self.assertEqual(schema['parameters']['properties']['regex']['type'],'boolean')
+   self.assertEqual(schema['parameters']['properties']['case_sensitive']['type'],'boolean')
+   self.assertEqual(schema['parameters']['properties']['match_timeout_seconds']['type'],'number')
+ def test_regex_search_is_case_insensitive_by_default_and_case_sensitive_on_request(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'names.py').write_text('Alpha\nalpha\nBeta\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   insensitive=tools.run('search_files',{'query':'^alpha$','regex':True,'path':'.','limit':10})
+   sensitive=tools.run('search_files',{'query':'^alpha$','regex':True,'case_sensitive':True,'path':'.','limit':10})
+   self.assertIn('names.py:1: Alpha',insensitive)
+   self.assertIn('names.py:2: alpha',insensitive)
+   self.assertNotIn('names.py:1:',sensitive)
+   self.assertIn('names.py:2: alpha',sensitive)
+ def test_invalid_regex_returns_a_correctable_search_error(self):
+  with tempfile.TemporaryDirectory() as t:
+   result=ToolRegistry(Workspace(t),lambda *_:True).run('search_files',{'query':'[','regex':True})
+   self.assertIn('Invalid regular expression',result)
+ def test_pathological_regex_times_out_and_marks_any_returned_matches_incomplete(self):
+  from desktop_engine import _tool_activity_status
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'stress.py').write_text(('a'*4000)+'!\n',encoding='utf-8')
+   result=ToolRegistry(Workspace(root),lambda *_:True).run(
+    'search_files',{'query':'(a+)+$','regex':True,'path':'.','match_timeout_seconds':0.001})
+   self.assertIn('regular expression timed out',result.casefold())
+   self.assertIn('results may be incomplete',result.casefold())
+   self.assertEqual(_tool_activity_status('search_files',result),'partial')
  def test_glob_patterns_cover_nested_files_and_search_can_scope_by_directory(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t);(root/'src/nested').mkdir(parents=True);(root/'docs').mkdir()

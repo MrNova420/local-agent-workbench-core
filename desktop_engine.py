@@ -521,7 +521,7 @@ class ToolRegistry:
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [
           self._schema("list_files", f"List files in the selected project or an explicitly granted external folder under an optional path and filename/glob pattern, such as src/**/*.tsx. Choose a useful page size with limit and continue at the returned offset. {read_budget_description}", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, []),
-          self._schema("search_files", f"Search text in the selected project or an explicitly granted external folder for a literal substring. Use path/include to narrow the scan; include accepts filename patterns or relative globs such as src/**/*.py. Choose a useful page size with limit and continue at the returned offset. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, ["query"]),
+          self._schema("search_files", f"Search text or regular expressions in the selected project or an explicitly granted external folder. Literal matching remains the default; set regex=true to use a regular expression, and case_sensitive=true for case-sensitive matching (the default is case-insensitive). Use path/include to narrow the scan; include accepts filename patterns or relative globs such as src/**/*.py. Choose a useful page size with limit and continue at the returned offset. Regex evaluation has a per-line timeout that can be adjusted with match_timeout_seconds; a timed-out search returns its partial results with an explicit warning. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"match_timeout_seconds":{"type":"number","exclusiveMinimum":0},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, ["query"]),
           self._schema("read_file", f"Read a complete file from the selected project or an explicitly granted external folder by default; optional 1-based line bounds and start_column let you continue through large files. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("read_task_checkpoint", "Recover saved task continuity details when the compacted prompt reports omissions. Read the current task, plan, decisions, user updates, operation references, changed files, verification, or prior task history in character-offset pages. No project files are changed.", {"section":{"type":"string","enum":["current","plan","decisions","user_updates","operations","changed_files","verification","task_history"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, []),
@@ -756,13 +756,26 @@ class ToolRegistry:
             return result
         if name == "search_files":
             search_root=self.workspace.resolve(args.get("path","."));include=str(args.get("include","*")).strip() or "*"
-            query = str(args.get("query", "")).strip().casefold();hits=[];scanned=0;bytes_read=0;used_bytes=0;capped=False;has_more=False;cancelled=False
+            query = str(args.get("query", "")).strip();hits=[];scanned=0;bytes_read=0;used_bytes=0;capped=False;has_more=False;cancelled=False
             offset=args.get("offset",0);limit=args.get("limit",100)
             if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
             if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
             if not query:return "Search query must not be empty."
+            regex_mode=args.get("regex",False);case_sensitive=args.get("case_sensitive",False)
+            if not isinstance(regex_mode,bool):return "Invalid regex option: expected a boolean."
+            if not isinstance(case_sensitive,bool):return "Invalid case_sensitive option: expected a boolean."
+            match_timeout=args.get("match_timeout_seconds",1.0)
+            if isinstance(match_timeout,bool) or not isinstance(match_timeout,(int,float)) or not math.isfinite(match_timeout) or match_timeout<=0:
+                return "Invalid match_timeout_seconds: expected a positive finite number."
+            expression=None
+            if regex_mode:
+                import regex as timeout_regex
+                try:expression=timeout_regex.compile(query,0 if case_sensitive else timeout_regex.IGNORECASE)
+                except timeout_regex.error as exc:return f"Invalid regular expression: {exc}"
+            else:
+                literal_query=query if case_sensitive else query.casefold()
             import fnmatch
-            last_progress_at=time.monotonic();last_progress_scanned=0
+            last_progress_at=time.monotonic();last_progress_scanned=0;regex_timeout_location=None
             def report_search_progress():
                 nonlocal last_progress_at,last_progress_scanned
                 now=time.monotonic()
@@ -792,7 +805,12 @@ class ToolRegistry:
                                 capped=True;break
                             bytes_read+=line_bytes
                             report_search_progress()
-                            if query in line.casefold():
+                            try:
+                                matched=bool(expression.search(line,timeout=float(match_timeout))) if expression is not None else literal_query in (line if case_sensitive else line.casefold())
+                            except TimeoutError:
+                                regex_timeout_location=(self.workspace.display_path(p),i)
+                                break
+                            if matched:
                                 if offset>0:offset-=1;continue
                                 if len(hits)>=limit:has_more=True;break
                                 path_line=f"{self.workspace.display_path(p)}:{i}: "
@@ -806,8 +824,11 @@ class ToolRegistry:
                                     has_more=True;break
                                 hits.append(record);used_bytes+=record_bytes
                 except (OSError,UnicodeError): continue
-                if capped or has_more or cancelled:break
+                if capped or has_more or cancelled or regex_timeout_location:break
             result="\n".join(hits) or "No matches."
+            if regex_timeout_location:
+                path,line_number=regex_timeout_location
+                result+=f"\n\n[Search incomplete: regular expression timed out at {path}:{line_number}; results may be incomplete. Narrow the pattern or increase match_timeout_seconds.]"
             if cancelled:result="Cancelled: project search stopped by the user; returned matches may be incomplete.\n"+result
             if has_more:result+=f"\n\nMore results are available. Next offset {args.get('offset',0)+len(hits)}; continue with limit {limit}."
             if capped:result+=f"\n\n[Search scan capped at {scanned} files or {bytes_read:,} bytes; results may be incomplete. Narrow the query or project path.]"
