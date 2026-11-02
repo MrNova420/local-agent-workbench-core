@@ -29,20 +29,20 @@ class ToolValidationTests(unittest.TestCase):
         conditional={"type":"object","if":{"required":["mode"]},
                     "then":{"required":["payload"]},"else":{"required":["fallback"]}}
         self.assertIsNone(_validate_tool_arguments({"mode":"write","payload":{}},conditional))
-        self.assertIn("payload is required",_validate_tool_arguments({"mode":"write"},conditional))
-        self.assertIn("fallback is required",_validate_tool_arguments({},conditional))
+        self.assertIn("required",_validate_tool_arguments({"mode":"write"},conditional))
+        self.assertIn("required",_validate_tool_arguments({},conditional))
         dependencies={"type":"object","dependentRequired":{"token":["user"]},
                       "dependentSchemas":{"config":{"properties":{"config":{"required":["enabled"]}}}},
                       "propertyNames":{"pattern":"^[a-z]+$"}}
         self.assertIsNone(_validate_tool_arguments({"token":"x","user":"kayde","config":{"enabled":True}},dependencies))
-        self.assertIn("user is required",_validate_tool_arguments({"token":"x"},dependencies))
-        self.assertIn("enabled is required",_validate_tool_arguments({"config":{}},dependencies))
-        self.assertIn("property name",_validate_tool_arguments({"BadKey":1},dependencies))
+        self.assertIn("dependentRequired",_validate_tool_arguments({"token":"x"},dependencies))
+        self.assertIn("required",_validate_tool_arguments({"config":{}},dependencies))
+        self.assertIn("pattern",_validate_tool_arguments({"BadKey":1},dependencies))
         arrays={"type":"array","prefixItems":[{"type":"string"},{"type":"integer"}],
                 "items":{"type":["boolean","string"]},"contains":{"const":"required"},"minContains":1}
         self.assertIsNone(_validate_tool_arguments(["label",2,True,"required"],arrays))
-        self.assertIn("must be integer",_validate_tool_arguments(["label","two",True,"required"],arrays))
-        self.assertIn("at least 1 item",_validate_tool_arguments(["label",2,True],arrays))
+        self.assertIn("type",_validate_tool_arguments(["label","two",True,"required"],arrays))
+        self.assertIn("contains",_validate_tool_arguments(["label",2,True],arrays))
 
     def test_prior_operation_result_tool_returns_full_result_or_requested_character_slice(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -71,9 +71,9 @@ class ToolValidationTests(unittest.TestCase):
                 "properties":{"items":{"type":"array","items":{"type":"object"}},
                               "limit":{"type":"integer","minimum":1,"maximum":5}}}
         self.assertIsNone(_validate_tool_arguments({"items":[{}],"limit":5},schema))
-        self.assertIn("at most 5",_validate_tool_arguments({"items":[],"limit":6},schema))
-        self.assertIn("must be integer",_validate_tool_arguments({"items":[],"limit":True},schema))
-        self.assertIn("not an accepted argument",_validate_tool_arguments({"items":[],"surprise":1},schema))
+        self.assertIn("maximum",_validate_tool_arguments({"items":[],"limit":6},schema))
+        self.assertIn("type",_validate_tool_arguments({"items":[],"limit":True},schema))
+        self.assertIn("additionalProperties",_validate_tool_arguments({"items":[],"surprise":1},schema))
 
     def test_json_schema_validation_covers_strings_arrays_and_object_schemas(self):
         schema={"type":"object","properties":{
@@ -82,33 +82,58 @@ class ToolValidationTests(unittest.TestCase):
             "metadata":{"type":"object","additionalProperties":{"type":"integer"}},
         },"additionalProperties":False}
         self.assertIsNone(_validate_tool_arguments({"name":"ember","tags":["rye"],"metadata":{"count":2}},schema))
-        self.assertIn("at least 2",_validate_tool_arguments({"name":"x","tags":["rye"]},schema))
+        self.assertIn("minLength",_validate_tool_arguments({"name":"x","tags":["rye"]},schema))
         self.assertIn("pattern",_validate_tool_arguments({"name":"Ember","tags":["rye"]},schema))
-        self.assertIn("unique",_validate_tool_arguments({"name":"ember","tags":["rye","rye"]},schema))
-        self.assertIn("must be integer",_validate_tool_arguments({"name":"ember","tags":["rye"],"metadata":{"count":"2"}},schema))
+        self.assertIn("uniqueItems",_validate_tool_arguments({"name":"ember","tags":["rye","rye"]},schema))
+        self.assertIn("type",_validate_tool_arguments({"name":"ember","tags":["rye"],"metadata":{"count":"2"}},schema))
 
     def test_json_schema_validation_covers_composition_and_rejects_unresolved_refs(self):
         union={"oneOf":[{"type":"string","const":"plan"},{"type":"integer","minimum":1}]}
         self.assertIsNone(_validate_tool_arguments("plan",union))
         self.assertIsNone(_validate_tool_arguments(3,union))
-        self.assertIn("exactly one",_validate_tool_arguments(True,union))
-        self.assertIn("missing JSON Schema definition",_validate_tool_arguments({}, {"$ref":"#/$defs/args"}))
+        self.assertIn("oneOf",_validate_tool_arguments(True,union))
+        self.assertIn("unresolved local JSON Schema",_validate_tool_arguments({}, {"$ref":"#/$defs/args"}))
         self.assertIn("unsupported JSON Schema type",_validate_tool_arguments("x", {"type":"unrecognized"}))
 
     def test_json_schema_validation_resolves_local_definition_references_only(self):
         schema={"type":"object","$defs":{"name":{"type":"string","minLength":3}},
                 "properties":{"name":{"$ref":"#/$defs/name"}},"required":["name"]}
         self.assertIsNone(_validate_tool_arguments({"name":"Ember"},schema))
-        self.assertIn("at least 3",_validate_tool_arguments({"name":"Ry"},schema))
+        self.assertIn("minLength",_validate_tool_arguments({"name":"Ry"},schema))
         self.assertIn("external",_validate_tool_arguments("x", {"$ref":"https://example.com/schema.json"}))
 
     def test_json_schema_uses_json_type_equality_and_fails_closed_on_unknown_keywords(self):
         self.assertIsNone(_validate_tool_arguments(2.0,{"type":"integer"}))
-        self.assertIn("constant",_validate_tool_arguments(True,{"const":1}))
-        self.assertIn("one of",_validate_tool_arguments(True,{"enum":[1]}))
+        self.assertIn("const",_validate_tool_arguments(True,{"const":1}))
+        self.assertIn("enum",_validate_tool_arguments(True,{"enum":[1]}))
         self.assertIsNone(_validate_tool_arguments({"name":"x"},{"type":"object","propertyNames":{"type":"string"}}))
-        self.assertIn("unique",_validate_tool_arguments([1,1.0],{"type":"array","uniqueItems":True}))
+        self.assertIn("uniqueItems",_validate_tool_arguments([1,1.0],{"type":"array","uniqueItems":True}))
         self.assertIn("finite JSON number",_validate_tool_arguments(float("nan"),{"type":"number"}))
+
+    def test_json_schema_2020_unevaluated_and_boolean_schemas_are_supported(self):
+        schema={"type":"object","allOf":[{"properties":{"name":{"type":"string"}}}],
+                "unevaluatedProperties":False,"properties":{"optional":{"type":["string","null"]}}}
+        self.assertIsNone(_validate_tool_arguments({"name":"Ember","optional":None},schema))
+        self.assertIn("unevaluatedProperties",_validate_tool_arguments({"name":"Ember","extra":1},schema))
+        boolean_schema={"type":"object","properties":{"enabled":True,"forbidden":False}}
+        self.assertIsNone(_validate_tool_arguments({"enabled":{"any":"json"}},boolean_schema))
+        self.assertIn("false schema",_validate_tool_arguments({"forbidden":1},boolean_schema))
+
+    def test_unknown_schema_dialect_is_rejected_without_remote_resolution(self):
+        result=_validate_tool_arguments({}, {"$schema":"https://example.test/custom-dialect","type":"object"})
+        self.assertIn("unsupported JSON Schema dialect",result)
+
+    def test_declared_legacy_dialect_and_unknown_required_vocabulary_are_handled(self):
+        draft7={"$schema":"http://json-schema.org/draft-07/schema#",
+                "type":"array","items":[{"type":"string"},{"type":"integer"}],
+                "additionalItems":False}
+        self.assertIsNone(_validate_tool_arguments(["name",3],draft7))
+        self.assertIn("additionalItems",_validate_tool_arguments(["name",3,True],draft7))
+
+        unknown_vocabulary={"$schema":"https://json-schema.org/draft/2020-12/schema",
+                            "$vocabulary":{"https://example.test/vocab/side-effects":True},
+                            "type":"object"}
+        self.assertIn("required vocabulary",_validate_tool_arguments({},unknown_vocabulary))
 
     def test_invalid_file_tool_arguments_never_reach_the_write(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -120,7 +145,7 @@ class ToolValidationTests(unittest.TestCase):
             history=engine.run("Check whether tool validation blocks malformed arguments.")
             self.assertFalse((root/"x.txt").exists())
             result=next(item["content"] for item in history if item.get("role")=="tool")
-            self.assertIn("not an accepted argument",result)
+            self.assertIn("additionalProperties",result)
 
     def test_ollama_second_request_uses_documented_tool_name_result(self):
         class Response:

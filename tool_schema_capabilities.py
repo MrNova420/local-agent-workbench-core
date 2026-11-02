@@ -1,38 +1,81 @@
-"""Capability inspection for the JSON Schema subset used to validate tool calls."""
+"""Dialect-aware JSON Schema capability inspection for untrusted tool schemas."""
 from __future__ import annotations
 
 from typing import Any
 
+from jsonschema import (
+    Draft3Validator, Draft4Validator, Draft6Validator, Draft7Validator,
+    Draft201909Validator, Draft202012Validator, validators,
+)
 
-SUPPORTED_SCHEMA_KEYWORDS = frozenset({
-    "$ref", "$schema", "$id", "$comment", "$defs", "definitions", "title", "description",
-    "default", "examples", "deprecated", "readOnly", "writeOnly", "type", "enum", "const",
-    "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "required", "dependentRequired",
-    "dependentSchemas", "properties", "patternProperties", "propertyNames",
-    "additionalProperties", "additionalItems", "items", "format", "minLength", "maxLength", "pattern",
-    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
-    "maxItems", "uniqueItems", "contains", "minContains", "maxContains", "prefixItems",
-    "minProperties", "maxProperties",
+
+_ANNOTATION_KEYWORDS = frozenset({
+    "$schema", "$id", "$comment", "$anchor", "$dynamicAnchor", "$vocabulary",
+    "$defs", "definitions", "then", "else",
+    "title", "description", "default", "examples", "deprecated", "readOnly",
+    "writeOnly", "minContains", "maxContains", "contentEncoding", "contentMediaType", "contentSchema",
 })
-SUPPORTED_SCHEMA_TYPES = frozenset({"object", "array", "string", "integer", "number", "boolean", "null"})
+
+
+def schema_validator_class(schema: dict[str, Any]):
+    """Return a validator for a declared supported dialect, defaulting to 2020-12.
+
+    An unknown explicit dialect is not treated as a different supported draft.
+    """
+    if not isinstance(schema, dict):
+        return None
+    if "$schema" not in schema:
+        return Draft202012Validator
+    validator = validators.validator_for(schema, default=None)
+    # Only accept dialects implemented and reviewed by this adapter. A
+    # globally registered third-party validator is not automatically trusted.
+    return validator if validator in _VALIDATOR_CLASSES else None
+
+
+_VALIDATOR_CLASSES = (
+    Draft3Validator, Draft4Validator, Draft6Validator, Draft7Validator,
+    Draft201909Validator, Draft202012Validator,
+)
+SUPPORTED_SCHEMA_KEYWORDS = frozenset().union(
+    _ANNOTATION_KEYWORDS, *(set(validator.VALIDATORS) for validator in _VALIDATOR_CLASSES)
+)
 
 
 def unsupported_schema_features(schema: Any, *, max_depth: int = 64, max_nodes: int = 10_000) -> list[str]:
-    """Return a bounded, deterministic list of schema features not validated by the engine.
+    """Find unsupported schema dialects/extensions and unsafe remote references.
 
-    Tool schemas come from MCP servers and are untrusted input. This walk never
-    resolves references or executes patterns, and stops at fixed depth/node limits.
-    JSON Schema ``format`` remains an annotation, as it is under the default
-    specification behavior; this does not assert that a formatted value is valid.
+    Standard assertion keywords are derived from the installed dialect-aware
+    JSON Schema validators. References are limited to the current schema
+    resource; the engine never fetches remote schemas from an MCP server.
     """
+    if not isinstance(schema, dict):
+        return ["input schema is not an object"]
+    validator = schema_validator_class(schema)
+    if validator is None:
+        return [f"$: unsupported JSON Schema dialect {schema.get('$schema')!r}"]
+
+    known_keywords = set(validator.VALIDATORS).union(_ANNOTATION_KEYWORDS)
     issues: set[str] = set()
+
+    declared_vocabularies = schema.get("$vocabulary")
+    if declared_vocabularies is not None:
+        if not isinstance(declared_vocabularies, dict) or any(
+            not isinstance(uri, str) or not isinstance(required, bool)
+            for uri, required in declared_vocabularies.items()
+        ):
+            issues.add("$.$vocabulary: invalid vocabulary declaration")
+        else:
+            dialect_vocabularies = validator.META_SCHEMA.get("$vocabulary", {})
+            for uri, required in declared_vocabularies.items():
+                if required and uri not in dialect_vocabularies:
+                    issues.add(f"$.$vocabulary: required vocabulary {uri!r} is unsupported")
     seen: set[int] = set()
     visited = 0
 
     schema_maps = {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
     schema_singletons = {
-        "additionalProperties", "additionalItems", "not", "if", "then", "else",
-        "propertyNames", "contains",
+        "additionalProperties", "additionalItems", "unevaluatedProperties", "unevaluatedItems",
+        "not", "if", "then", "else", "propertyNames", "contains", "contentSchema",
     }
     schema_arrays = {"allOf", "anyOf", "oneOf", "prefixItems"}
 
@@ -54,37 +97,40 @@ def unsupported_schema_features(schema: Any, *, max_depth: int = 64, max_nodes: 
                 if not isinstance(key, str):
                     issues.add(f"{path}: non-string keyword")
                     continue
-                if key not in SUPPORTED_SCHEMA_KEYWORDS:
+                if key not in known_keywords:
                     issues.add(f"{path}.{key}: unsupported keyword")
                 if key == "type":
                     types = child if isinstance(child, list) else [child]
                     for schema_type in types:
-                        if not isinstance(schema_type, str) or schema_type not in SUPPORTED_SCHEMA_TYPES:
+                        if not isinstance(schema_type, str) or schema_type not in {
+                            "object", "array", "string", "integer", "number", "boolean", "null",
+                        }:
                             issues.add(f"{path}.type: unsupported JSON Schema type {schema_type!r}")
-                elif key == "$ref" and (not isinstance(child, str) or (child != "#" and not child.startswith("#/"))):
-                    issues.add(f"{path}.$ref: external or invalid reference; only local references are supported")
-                # Descend only where JSON Schema defines a value as a schema.
-                # `properties` and `$defs` keys are user-selected names (such
-                # as `path` or `content`), not schema keywords. Annotation and
-                # example values can also be arbitrary JSON and must not be
-                # interpreted as nested schemas.
+                elif key in {"$ref", "$dynamicRef"} and (
+                    not isinstance(child, str) or not child.startswith("#")
+                ):
+                    issues.add(f"{path}.{key}: external or invalid reference; remote resolution is disabled")
+
+                # Only descend where the selected JSON Schema dialect defines
+                # a value as a schema. Property names and annotation data are
+                # user-selected JSON, not schema keywords.
                 if key in schema_maps and isinstance(child, dict):
-                    for name, nested_schema in child.items():
-                        if isinstance(nested_schema, (dict, list)):
-                            visit(nested_schema, f"{path}.{key}.{name}", depth + 1)
+                    for name, nested in child.items():
+                        if isinstance(nested, (dict, list)):
+                            visit(nested, f"{path}.{key}.{name}", depth + 1)
                 elif key in schema_singletons and isinstance(child, (dict, list)):
                     visit(child, f"{path}.{key}", depth + 1)
                 elif key == "items":
                     if isinstance(child, dict):
                         visit(child, f"{path}.{key}", depth + 1)
                     elif isinstance(child, list):
-                        for index, nested_schema in enumerate(child):
-                            if isinstance(nested_schema, (dict, list)):
-                                visit(nested_schema, f"{path}.{key}[{index}]", depth + 1)
+                        for index, nested in enumerate(child):
+                            if isinstance(nested, (dict, list)):
+                                visit(nested, f"{path}.{key}[{index}]", depth + 1)
                 elif key in schema_arrays and isinstance(child, list):
-                    for index, nested_schema in enumerate(child):
-                        if isinstance(nested_schema, (dict, list)):
-                            visit(nested_schema, f"{path}.{key}[{index}]", depth + 1)
+                    for index, nested in enumerate(child):
+                        if isinstance(nested, (dict, list)):
+                            visit(nested, f"{path}.{key}[{index}]", depth + 1)
         elif isinstance(value, list):
             identity = id(value)
             if identity in seen:
@@ -98,7 +144,5 @@ def unsupported_schema_features(schema: Any, *, max_depth: int = 64, max_nodes: 
                 if isinstance(child, (dict, list)):
                     visit(child, f"{path}[{index}]", depth + 1)
 
-    if not isinstance(schema, dict):
-        return ["input schema is not an object"]
     visit(schema, "$", 0)
     return sorted(issues)

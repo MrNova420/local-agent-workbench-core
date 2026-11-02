@@ -32,14 +32,14 @@ class MCPTests(unittest.TestCase):
   async def scenario():
    m=MCPManager(Path('unused.json'));m.servers={'demo':{'command':'fake'}}
    unsupported=SimpleNamespace(name='schedule',description='create a schedule',inputSchema={
-    'type':'object','properties':{'when':{'type':'string','unevaluatedProperties':False}}})
+       'type':'object','properties':{'when':{'type':'string','x-customConstraint':True}}})
    class SchemaSession(FakeSession):
     async def list_tools(self):return SimpleNamespace(tools=[unsupported])
    with patch('mcp.ClientSession',SchemaSession),patch('mcp.StdioServerParameters',lambda **kw:kw),patch('mcp.client.stdio.stdio_client',FakeManager):
     tools=await m.discover()
    name='mcp__demo__schedule'
    self.assertIn(name,m.schema_warnings)
-   self.assertIn('unevaluatedProperties',tools[0]['function']['description'])
+   self.assertIn('x-customConstraint',tools[0]['function']['description'])
    self.assertEqual(tools[0]['function']['parameters'],unsupported.inputSchema)
    await m.close()
   try:import mcp
