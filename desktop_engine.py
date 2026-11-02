@@ -473,6 +473,12 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
     }
     return json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
+
+def _provider_response_was_truncated(result: dict[str, Any]) -> bool:
+    """Recognize provider output-cap termination without changing the selected cap."""
+    reason = result.get("done_reason") or result.get("finish_reason")
+    return isinstance(reason, str) and reason.strip().casefold() in {"length", "max_tokens", "max_output_tokens"}
+
 def _needs_implementation_continuation(implementation_requested:bool,access:str,action_denied:bool,
                                        project_change_observed:bool,review_required:bool,plan_remaining:bool,
                                        command_effects_inspected:bool=False)->bool:
@@ -1809,7 +1815,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;last_continuation_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        start=time.monotonic();request_index=0;last_continuation_signature=None;last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
         implementation_requested=(
             True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
             bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
@@ -1870,6 +1876,35 @@ class AgentEngine:
                     # Persist it and continue this same task before reporting done.
                     if self.steering_handler and self.steering_handler(msgs, True):
                         self.event({"type":"steering_applied","elapsed":time.monotonic()-start})
+                        continue
+                    if _provider_response_was_truncated(result):
+                        response_signature=json.dumps({"content":msg.get("content",""),"thinking":msg.get("thinking","")},ensure_ascii=False,sort_keys=True,separators=(",",":"),default=str)
+                        if response_signature==last_truncated_response_signature:
+                            blocker=("The provider ended with the same partial response again after reaching the selected output-token limit. "
+                                     "The configured output setting was preserved; review the saved response and continue from the checkpoint if needed.")
+                            record_blocker(checkpoint,blocker)
+                            saved_plan=checkpoint_state.get("plan",[])
+                            implementation_requested=_implementation_evidence(
+                                self.task_intent,self.state["registry"].task_mode,self.state["registry"].plan_source,
+                                saved_plan if isinstance(saved_plan,list) else [],completed_project_change,
+                                command_side_effects_possible,mutation_attempted) or implementation_requested
+                            record_implementation_requested(checkpoint,implementation_requested)
+                            verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
+                                command_side_effects_possible,last_inspection_action_index>last_effect_action_index)
+                            verification["status"]="response_truncated"
+                            verification["incomplete_reason"]=blocker
+                            finish_task(checkpoint,"failed",verification,blocker=blocker,outcome="response_truncated")
+                            self.event({"type":"error","error":blocker,"workflowOutcome":"response_truncated",
+                                        "providerDoneReason":result.get("done_reason") or result.get("finish_reason"),
+                                        "verification":verification,"elapsed":time.monotonic()-start})
+                            return msgs
+                        last_truncated_response_signature=response_signature
+                        current_continuation_guidance=(
+                            "The provider ended the previous response at the selected output-token limit. Continue this same task from the saved checkpoint, current plan, conversation, and completed tool results. "
+                            "Do not repeat completed operations or restart planning. If implementation work remains, take the next safe structured tool action; otherwise continue the user-visible answer from where it stopped. "
+                            "The selected output-token setting is unchanged. If a large file needs more output, write it with complete validated tool calls or ordered append operations; never execute partial tool arguments.")
+                        self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,
+                                    "reason":"provider response reached the selected output-token limit"})
                         continue
                     missing_final_response = not _assistant_has_final_content(msg)
                     post_change_inspection=last_inspection_action_index>last_effect_action_index

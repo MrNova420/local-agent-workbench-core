@@ -9,6 +9,71 @@ from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace, _n
 
 
 class OperationStreamTests(unittest.TestCase):
+    def test_output_limit_response_continues_in_the_same_task_then_completes(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            requests = []
+            responses = [
+                {"message": {"role": "assistant", "content": "The project has three sections."}, "done_reason": "length"},
+                {"message": {"role": "assistant", "content": " I will summarize each one."}, "done_reason": "stop"},
+            ]
+            engine = AgentEngine(root, access="edit", task_intent="discuss", event=events.append)
+
+            def stream(_state, messages, *_args):
+                requests.append(copy.deepcopy(messages))
+                return responses.pop(0)
+
+            engine.runtime.stream = stream
+            engine.run("Summarize the project")
+
+            self.assertEqual(len(requests), 2)
+            self.assertIn("selected output-token limit", requests[1][0]["content"])
+            self.assertEqual(next(event["workflowOutcome"] for event in events if event["type"] == "complete"), "discussion")
+
+    def test_repeated_identical_output_limit_response_ends_as_explicitly_incomplete(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            requests = []
+            responses = [
+                {"message": {"role": "assistant", "content": "The result is only partially written"}, "done_reason": "length"},
+                {"message": {"role": "assistant", "content": "The result is only partially written"}, "done_reason": "length"},
+            ]
+            engine = AgentEngine(root, access="edit", task_intent="discuss", event=events.append)
+
+            def stream(_state, messages, *_args):
+                requests.append(copy.deepcopy(messages))
+                return responses.pop(0)
+
+            engine.runtime.stream = stream
+            engine.run("Summarize the project")
+
+            self.assertEqual(len(requests), 2)
+            terminal = next(event for event in events if event["type"] == "error")
+            self.assertEqual(terminal["workflowOutcome"], "response_truncated")
+            self.assertIn("output-token limit", terminal["error"])
+
+    def test_truncated_final_reply_preserves_implementation_evidence_without_replaying_write(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            responses = [
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "write-once", "function": {"name": "write_file", "arguments": {"path": "index.html", "content": "<main>Done</main>"}}}
+                ]}, "done_reason": "tool_calls"},
+                {"message": {"role": "assistant", "content": "The page is implemented."}, "done_reason": "length"},
+                {"message": {"role": "assistant", "content": "The page is implemented."}, "done_reason": "length"},
+            ]
+            engine = AgentEngine(root, access="edit", task_intent="implement", event=events.append)
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Create the page")
+
+            self.assertEqual(Path(root, "index.html").read_text(encoding="utf-8"), "<main>Done</main>")
+            self.assertEqual(len([event for event in events if event.get("type") == "tool_done"]), 1)
+            terminal = next(event for event in events if event["type"] == "error")
+            self.assertEqual(terminal["workflowOutcome"], "response_truncated")
+            self.assertEqual(terminal["verification"]["contract"]["implementation_requested"], True)
+            self.assertEqual(terminal["verification"]["contract"]["project_change"], "observed")
+
     def test_steering_during_final_response_is_inserted_before_same_task_continues(self):
         with tempfile.TemporaryDirectory() as root:
             requests = []
