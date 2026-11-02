@@ -370,7 +370,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
                 continue
             if plan:
                 compacted = False
-                active_item = next((item for item in reversed(plan)
+                active_item = next((item for item in plan
                                     if isinstance(item, dict) and plan_item_is_open(item)), None)
                 if active_item is not None:
                     action = active_item.get("title") or active_item.get("text")

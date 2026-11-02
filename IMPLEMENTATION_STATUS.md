@@ -4,6 +4,7 @@
 
 - `record_operation` no longer overwrites a concrete plan-derived `next_action` with a generic reminder after every tool result. This keeps compaction and same-task continuation pointed at the saved open step. Unplanned tasks still receive a concise operation-review fallback.
 - Regression tests passed: `tests/test_task_checkpoint.py` **25 passed**. Full engine suite, packaged app, and long-run model continuation remain pending.
+- Under checkpoint budget pressure, the compacted `active_plan_action` now selects the first open step in plan order rather than the last, avoiding a jump ahead. The large-plan regression asserts the first workstream survives while the canonical plan remains unchanged.
 
 ## 2026-11-02 per-request reasoning budget for llama.cpp
 

@@ -1,4 +1,5 @@
 import copy
+import json
 
 from desktop_engine import ContextManager
 from task_checkpoint import begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, record_user_update, render_checkpoint
@@ -132,9 +133,11 @@ def test_inference_checkpoint_compacts_large_expandable_plan_without_mutating_sa
     original = copy.deepcopy(checkpoint["current"]["plan"])
 
     rendered = render_checkpoint(checkpoint, token_budget=700)
+    compacted_payload = json.loads(rendered.partition("\n")[2].partition("\nUse read_task_checkpoint")[0])
 
     assert ContextManager.estimate(rendered) <= 700
     assert checkpoint["current"]["plan"] == original
+    assert compacted_payload["active_plan_action"].startswith("Workstream 0:")
     omissions = checkpoint_omissions(rendered)
     assert omissions.get("plan_items", 0) > 0 or omissions.get("plan_details", 0) > 0
     assert "read_task_checkpoint" in rendered
