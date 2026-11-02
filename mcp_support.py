@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures import CancelledError as FutureCancelled, TimeoutError as FutureTimeout
 import json
 import os
 import threading
@@ -94,6 +94,10 @@ class MCPManager:
                 if cancel_event is not None and cancel_event.is_set():
                     future.cancel()
                     raise MCPRequestCancelled("MCP operation cancelled")
+            except FutureCancelled as exc:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise MCPRequestCancelled("MCP operation cancelled") from exc
+                raise RuntimeError("MCP operation was cancelled unexpectedly; reconnect before retrying.") from exc
 
     @property
     def needs_discovery(self) -> bool:

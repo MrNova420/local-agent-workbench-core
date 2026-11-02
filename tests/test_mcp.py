@@ -155,6 +155,12 @@ class MCPTests(unittest.TestCase):
     m.run(awaitable)
   self.assertIsNone(awaitable.cr_frame)
 
+ def test_unexpected_async_cancellation_is_reported_as_recoverable_mcp_failure(self):
+  m=MCPManager(Path('unused.json'))
+  async def cancelled():raise asyncio.CancelledError()
+  with self.assertRaisesRegex(RuntimeError,'MCP operation was cancelled unexpectedly'):
+   m.run(cancelled())
+
  def test_discovery_cancellation_closes_transport_when_session_exit_is_cancelled(self):
   async def scenario():
    m=MCPManager(Path('unused.json'));m.servers={'demo':{'command':'fake'}}
