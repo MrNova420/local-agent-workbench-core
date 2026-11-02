@@ -314,3 +314,8 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 
 - The streaming adapter no longer treats EOF as successful completion unless Ollama supplied its terminal `done: true` record. A truncated stream raises a provider error with the `streaming_response` phase; text and reasoning already emitted remain in the desktop transcript and run checkpoint for recovery. This prevents partial reasoning from being mistaken for a complete answer and fed back into the continuation loop as a completed response.
 - Added a regression for EOF after partial reasoning. The test is queued and unrun; no live request, selected setting, timeout, or model process was changed.
+
+## 2026-11-01 authoritative plan tool results
+
+- `update_plan` now returns the full authoritative current checklist, task mode, acceptance criteria, and durable decisions after each accepted revision. The model can verify current state instead of blindly repeating an update when the generic “Plan updated.” result provides no state. Planning remains expandable with no pass or item cap.
+- Focused task-checkpoint and operation-stream suites: 48 passed.

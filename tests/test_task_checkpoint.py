@@ -255,16 +255,20 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
     assert schema["properties"]["acceptance_criteria"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["decisions"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["add_items"]["type"] == "array"
-    registry.run("update_plan", {"items": [{"title": "Build", "status": "pending"}],
-                                "acceptance_criteria": ["The requested page renders."],
-                                "decisions": ["Use the existing router to preserve deep links."],
-                                "task_mode": "implement"})
+    result = registry.run("update_plan", {"items": [{"title": "Build", "status": "pending"}],
+                                          "acceptance_criteria": ["The requested page renders."],
+                                          "decisions": ["Use the existing router to preserve deep links."],
+                                          "task_mode": "implement"})
     assert registry.plan == [{"title": "Build", "status": "pending"}]
     assert events[-1]["acceptanceCriteria"] == ["The requested page renders."]
     assert events[-1]["decisions"] == ["Use the existing router to preserve deep links."]
     assert events[-1]["taskMode"] == "implement"
     assert checkpoint["current"]["task_mode"] == "implement"
     assert checkpoint["current"]["decisions"][0]["text"] == "Use the existing router to preserve deep links."
+    assert '"title": "Build"' in result
+    assert '"acceptance_criteria": [' in result and '"The requested page renders."' in result
+    assert '"task_mode": "implement"' in result
+    assert '"Use the existing router to preserve deep links."' in result
 
     explicit_plan_events = []
     explicit_plan_checkpoint = {"current": {"task_mode": "plan", "plan": []}}
@@ -296,7 +300,9 @@ def test_agent_can_expand_plan_without_replacing_existing_independent_workstream
         {"title": "Review keyboard flow", "status": "pending", "group": "Accessibility"},
     ]})
 
-    assert result == "Plan updated."
+    assert "Current plan" in result
+    assert '"title": "Build the API"' in result
+    assert '"title": "Add route tests"' in result
     assert [item["title"] for item in registry.plan] == [
         "Build the API", "Add the page", "Add route tests", "Review keyboard flow",
     ]

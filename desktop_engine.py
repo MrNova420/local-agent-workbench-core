@@ -661,7 +661,16 @@ class ToolRegistry:
             if isinstance(decisions,list):event["decisions"]=decisions
             if self.task_checkpoint is not None:
                 record_plan(self.task_checkpoint,self.plan,criteria if isinstance(criteria,list) else None,decisions,self.task_mode,plan_source="agent")
-            self.event(event);return "Plan updated."
+            self.event(event)
+            saved_task=current_task(self.task_checkpoint) if self.task_checkpoint is not None else {}
+            saved_criteria=saved_task.get("acceptance_criteria",criteria if isinstance(criteria,list) else [])
+            saved_decisions=saved_task.get("decisions",[])
+            if not isinstance(saved_decisions,list):saved_decisions=[]
+            decisions_text=[row.get("text","") for row in saved_decisions if isinstance(row,dict) and isinstance(row.get("text"),str)]
+            current_state={"task_mode":saved_task.get("task_mode",self.task_mode),"items":self.plan,
+                           "acceptance_criteria":saved_criteria if isinstance(saved_criteria,list) else [],
+                           "decisions":decisions_text}
+            return "Plan updated. Current plan and saved task state:\n"+json.dumps(current_state,ensure_ascii=False,indent=2)
         if name == "skill":
             if not self.skills_enabled:return "Skills are disabled for this run. Enable them in Run configuration before requesting a skill."
             knowledge=ProjectKnowledge(self.workspace.root);skills=self.skill_rows
