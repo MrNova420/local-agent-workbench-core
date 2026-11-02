@@ -22,6 +22,8 @@ def test_implementation_pacing_prefers_early_tool_work_without_a_scope_or_iterat
         assert "Do not repeat a plan or reread a checkpoint section" in prompt
         assert "This is a pacing preference, not a cap" in prompt
         assert "context, output, or runtime" in prompt
+        assert "revise the plan when new evidence or user direction changes scope or priorities" in prompt.casefold()
+        assert "do not keep reworking a plan for speculative improvements" in prompt.casefold()
 
 
 def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_limit():
