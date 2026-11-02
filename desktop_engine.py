@@ -1797,7 +1797,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;last_continuation_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        start=time.monotonic();request_index=0;last_continuation_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
         implementation_requested=(
             True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
             bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
@@ -2133,6 +2133,48 @@ class AgentEngine:
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             pending_fn=pending.get("function") or {};msgs.append({"role":"tool","tool_name":pending_fn.get("name","unknown_tool"),"content":"Cancelled before this tool action ran."})
                         raise RequestCancelled()
+                plan_only_batch=bool(calls) and all(
+                    ((call.get("function") or {}).get("name") == "update_plan") for call in calls
+                )
+                if (plan_only_batch and implementation_requested and not action_denied
+                        and self.workspace.access != "plan"):
+                    progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps)
+                    if plan_only_signature != progress_signature:
+                        plan_only_signature=progress_signature
+                        plan_only_guidance_signature=None
+                    elif plan_only_guidance_signature != progress_signature:
+                        next_action=str(checkpoint_state.get("next_action") or checkpoint_state.get("goal") or
+                                       "the next unfinished implementation step").strip()
+                        current_continuation_guidance=(
+                            f"The implementation plan is saved and may remain expandable, but pending plan edits alone "
+                            f"do not advance the project. Start the next open step now: {next_action}. Use a project "
+                            "inspection or implementation tool as appropriate; do not issue another plan-only update "
+                            "unless new project evidence or user direction changes the plan."
+                        )
+                        plan_only_guidance_signature=progress_signature
+                        self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,
+                                    "reason":"repeated plan-only tool calls without project or verification progress"})
+                    else:
+                        blocker=("The model repeated plan-only tool calls after the implementation handoff without "
+                                 "new project, host-decision, user-update, or verification evidence. The saved plan "
+                                 "and operation history are available to continue from the next project action.")
+                        verification=_verification_report(verification_steps,implementation_requested,
+                            completed_project_change,command_side_effects_possible,False)
+                        verification["status"]="implementation_incomplete"
+                        verification["incomplete_reason"]=blocker
+                        finish_task(checkpoint,"stopped",verification,blocker=blocker,
+                                    outcome="implementation_incomplete")
+                        self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,
+                                    "implementationRequested":implementation_requested,
+                                    "projectChanged":completed_project_change,"actionDenied":action_denied,
+                                    "verification":verification,"workflowOutcome":"implementation_incomplete"})
+                        return msgs
+                elif calls:
+                    # Any non-plan tool call is fresh observable work. A prior
+                    # plan-only nudge is no longer relevant after project evidence.
+                    plan_only_signature=None
+                    plan_only_guidance_signature=None
+                    current_continuation_guidance=None
         except RequestCancelled as exc:
             partial=exc.partial_message
             if isinstance(partial,dict) and any(partial.get(key) for key in ("content","thinking")):

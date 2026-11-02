@@ -533,6 +533,76 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
             self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])
 
+    def test_repeated_plan_only_tool_calls_return_to_implementation_then_stop_if_unchanged(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            plan_call = lambda call_id, title: {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": call_id, "function": {"name": "update_plan", "arguments": {
+                    "add_items": [{"title": title, "status": "pending"}]}}
+                }
+            ]}}
+            responses = [
+                plan_call("plan-1", "Implement the requested project"),
+                plan_call("plan-2", "Consider another architecture option"),
+                plan_call("plan-3", "Consider one more architecture option"),
+            ]
+            calls = []
+            request_snapshots = []
+            def stream(_state, request_messages, *_args):
+                calls.append(1)
+                request_snapshots.append(copy.deepcopy(request_messages))
+                return responses.pop(0)
+            engine.runtime.stream = stream
+
+            engine.run("Implement a small project change.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(len(calls), 3)
+            self.assertIn("Start the next open step now", request_snapshots[2][0]["content"])
+            self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
+            self.assertTrue(engine.state["registry"].plan)
+
+    def test_plan_expansion_followed_by_project_work_continues_normally(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append)
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "plan", "function": {"name": "update_plan", "arguments": {
+                        "items": [{"title": "Create and inspect app.py", "status": "pending"}]}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "expand", "function": {"name": "update_plan", "arguments": {
+                        "add_items": [{"title": "Check the app entry point", "status": "pending"}]}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "write", "function": {"name": "write_file", "arguments": {
+                        "path": "app.py", "content": "print('ready')\\n"}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect", "function": {"name": "read_file", "arguments": {"path": "app.py"}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "finish-plan", "function": {"name": "update_plan", "arguments": {
+                        "items": [{"title": "Create and inspect app.py", "status": "completed"},
+                                  {"title": "Check the app entry point", "status": "completed"}]}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "The implementation is written and inspected."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Implement a small project file.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
+            self.assertEqual(completion["workflowOutcome"], "inspected")
+
     def test_plan_only_request_does_not_force_a_tool_followup(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
