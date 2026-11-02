@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-02 same-task steering boundary (verification queued)
+
+- Engine commit `39ff5495256e12f5f7e43232f269e5ace8d1ff88` adds an optional host steering callback. The agent loop polls it only before a provider request and at the safe boundary before completing a tool-free response, after the current response and complete structured tool exchange have been resolved.
+- `record_user_update` stores stable update IDs and delivery state idempotently in the active task checkpoint, preserving the task ID and prior plan/progress. Provider-bound message serialization removes internal turn/steering metadata while saved history retains it.
+- Added queued regressions for safe-boundary delivery after final prose, checkpoint update idempotence/identity conflicts, and provider serialization. No tests or live model request were run; the paired app source/sidecar integrates the host callback in its pinned source revision.
+
 ## 2026-11-01 Ollama system-message ordering fix
 
 - A visible request using the selected Ornith GGUF reached Ollama with the configured 65,536 context, 8,192 output allowance, model-default reasoning, and a ~15,628-token input estimate, then failed with HTTP 500 before its first token.
