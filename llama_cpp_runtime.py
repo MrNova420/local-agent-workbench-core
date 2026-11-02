@@ -57,6 +57,10 @@ class LlamaCppServer:
         caps = props.get("chat_template_caps")
         levels = caps.get("reasoning_effort_levels") if isinstance(caps, dict) else None
         values = list(dict.fromkeys(value for value in levels if isinstance(value, str) and value.strip())) if isinstance(levels, list) else []
+        # llama.cpp's explicit reasoning-off control is available alongside
+        # template-probed effort levels; do not advertise it for unknown templates.
+        if values:
+            values.insert(0, False)
         support = "levels" if values else "unknown"
         return {"support": support, "default": None, "values": values}
 

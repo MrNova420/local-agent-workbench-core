@@ -154,7 +154,7 @@ def test_runtime_status_reports_only_chat_template_reasoning_levels(tmp_path):
         status = server.status()
     assert status["effective_context"] == 32768
     assert status["reasoning_capability"] == {
-        "support": "levels", "default": None, "values": ["low", "medium", "high"],
+        "support": "levels", "default": None, "values": [False, "low", "medium", "high"],
     }
 
 

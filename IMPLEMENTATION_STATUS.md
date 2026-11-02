@@ -377,4 +377,5 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - llama.cpp status now reads `/props` once per status request and derives reasoning-effort choices only from `chat_template_caps.reasoning_effort_levels`. Missing capability metadata stays `unknown`; no generic effort list or guessed model default is exposed.
 - This keeps reasoning mode/effort separate from the optional per-request `thinking_budget_tokens` control. Budget remains unlimited by default and does not change `max_tokens` or impose a deadline.
 - Focused runtime tests: **13 passed**, including exact reported levels and unknown/omitted levels. The app-side worker tests for unloaded and loaded GGUF capability reporting: **2 passed**. Broader suites, packaged UI, runtime-template compatibility, and live enforcement remain pending.
+- When the loaded template reports effort levels, the model capability contract also exposes the llama.cpp reasoning-off control. Unknown templates do not receive a fabricated toggle. This supports Default/Off/exact-level selection without confusing qualitative effort with a numeric token budget.
 
