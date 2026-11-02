@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from cancellable_http import interrupt_connection, open_http_stream
-from desktop_engine import RequestCancelled
+from desktop_engine import InferenceStreamError, RequestCancelled
 
 
 class LlamaCppServer:
@@ -195,7 +195,7 @@ class LlamaCppRuntime:
         with self.lock:
             connection = self.connection
             response = self.response
-        interrupt_connection(connection, response)
+        threading.Thread(target=interrupt_connection, args=(connection, response), daemon=True).start()
 
     def stream(self, state: dict[str, Any], messages: list[dict[str, Any]], cancel: threading.Event,
                emit: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
@@ -342,7 +342,8 @@ class LlamaCppRuntime:
             if cancel.is_set():
                 partial = {key: result["message"][key] for key in ("content", "thinking") if result["message"].get(key)}
                 raise RequestCancelled("Cancelled", {"role": "assistant", **partial} if partial else None) from exc
-            raise
+            partial = {key: result["message"][key] for key in ("content", "thinking") if result["message"].get(key)}
+            raise InferenceStreamError(str(exc), {"role": "assistant", **partial} if partial else None) from exc
         finally:
             with self.lock:
                 connection = self.connection

@@ -10,7 +10,7 @@ from project_knowledge import ProjectKnowledge
 from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
-from cancellable_http import cancel_windows_synchronous_io, interrupt_connection, open_http_stream
+from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import begin_task, checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
 from permission_policy import _paths, external_directory_decision, permission_decision, permission_rules_for_workspace, validate_permission_rules
@@ -1422,16 +1422,15 @@ class ContextManager:
 
 class OllamaRuntime:
     def __init__(self,base_url:str="http://127.0.0.1:11434"):
-        self.base_url=base_url.rstrip("/");self.response=None;self.connection=None;self.request_native_thread_id=None;self.lock=threading.Lock();self.cancelled_waiting_headers=False
+        self.base_url=base_url.rstrip("/");self.response=None;self.connection=None;self.lock=threading.Lock();self.cancelled_waiting_headers=False
     def cancel(self):
         with self.lock:
-            connection=self.connection;response=self.response;request_native_thread_id=self.request_native_thread_id
+            connection=self.connection;response=self.response
             if connection is not None and response is None:self.cancelled_waiting_headers=True
         # The cancel control must return immediately even if the HTTP reader
         # owns a buffered-response lock. Socket shutdown wakes that reader; its
         # own finally block performs definitive response/connection cleanup.
         def interrupt():
-            cancel_windows_synchronous_io(request_native_thread_id)
             interrupt_connection(connection,response)
         threading.Thread(target=interrupt,daemon=True).start()
     def get(self,path:str,payload:dict|None=None,timeout:int=5)->dict:
@@ -1470,7 +1469,6 @@ class OllamaRuntime:
         try:
             with self.lock:
                 self.cancelled_waiting_headers=False
-                self.request_native_thread_id=threading.get_native_id()
             def register(connection,response):
                 with self.lock:self.connection=connection;self.response=response
             def dispatched():
@@ -1554,7 +1552,7 @@ class OllamaRuntime:
             partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
             raise InferenceStreamError(str(exc),{"role":"assistant",**partial} if partial else None) from exc
         finally:
-            with self.lock:connection=self.connection;active_response=self.response;self.connection=None;self.response=None;self.request_native_thread_id=None
+            with self.lock:connection=self.connection;active_response=self.response;self.connection=None;self.response=None
             interrupt_connection(connection,active_response)
 
 class AgentEngine:

@@ -1,10 +1,13 @@
 import json
 import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock
 from unittest.mock import patch
 
 import pytest
 
+from desktop_engine import InferenceStreamError, RequestCancelled
 from llama_cpp_runtime import LlamaCppRuntime, LlamaCppServer
 
 
@@ -195,6 +198,81 @@ def test_reasoning_phase_transitions_to_generation_only_when_user_facing_text_ar
         runtime.stream(state, [], threading.Event(), events.append)
 
     assert [event["phase"] for event in events if event["type"] == "phase"] == ["reasoning", "generating"]
+
+
+def test_llama_stream_failure_preserves_only_received_assistant_text():
+    class BrokenSSE:
+        def __init__(self):
+            self.lines = iter([b'data: {"choices":[{"delta":{"reasoning_content":"thinking","content":"partial"}}]}\n'])
+        def readline(self):
+            line = next(self.lines, None)
+            if line:
+                return line
+            raise ConnectionResetError("server disconnected")
+        def close(self): pass
+    server = Mock()
+    server.status.return_value = {"running": True, "context": 4096}
+    server.base_url = "http://127.0.0.1:11436"
+    runtime = LlamaCppRuntime(server)
+    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 4096, "max_tokens": 32,
+             "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
+    with patch("llama_cpp_runtime.open_http_stream", return_value=BrokenSSE()):
+        with pytest.raises(InferenceStreamError) as raised:
+            runtime.stream(state, [], threading.Event(), lambda _: None)
+    assert raised.value.partial_message == {"role": "assistant", "thinking": "thinking", "content": "partial"}
+
+
+def test_llama_cancel_interrupts_delayed_response_headers():
+    received = threading.Event()
+    release = threading.Event()
+    errors = []
+    class DelayedHeaders(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            received.set()
+            release.wait(5)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except OSError:
+                pass
+        def log_message(self, *_args): pass
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), DelayedHeaders)
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+    provider = Mock()
+    provider.status.return_value = {"running": True, "context": 4096}
+    provider.base_url = f"http://127.0.0.1:{httpd.server_port}"
+    runtime = LlamaCppRuntime(provider)
+    state = {"model": "gguf::x.gguf", "temperature": 0.1, "context": 4096, "max_tokens": 32,
+             "registry": type("R", (), {"schemas": []})(), "mcp_tools": []}
+    cancel = threading.Event()
+    dispatched = threading.Event()
+    def emit(event):
+        if event.get("type") == "request_dispatched":
+            dispatched.set()
+    def run():
+        try:
+            runtime.stream(state, [], cancel, emit)
+        except Exception as exc:
+            errors.append(exc)
+    thread = threading.Thread(target=run)
+    thread.start()
+    request_received = received.wait(2)
+    request_dispatched = dispatched.wait(2)
+    cancel.set()
+    runtime.cancel()
+    thread.join(2)
+    cancelled_before_release = not thread.is_alive()
+    release.set()
+    httpd.shutdown()
+    httpd.server_close()
+    server_thread.join(2)
+    assert request_received and request_dispatched
+    assert cancelled_before_release, "llama.cpp Cancel left the request blocked awaiting headers until the server was released"
+    assert len(errors) == 1 and isinstance(errors[0], RequestCancelled)
 
 
 def test_server_refuses_existing_external_endpoint_and_never_claims_ownership(tmp_path):
