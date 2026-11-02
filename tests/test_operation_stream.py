@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from desktop_engine import AgentEngine, CONTEXT_MAX, ToolRegistry, Workspace, _needs_implementation_continuation, _tool_activity_status
+from desktop_engine import AgentEngine, CONTEXT_MAX, RequestCancelled, ToolRegistry, Workspace, _needs_implementation_continuation, _tool_activity_status
 
 
 class OperationStreamTests(unittest.TestCase):
@@ -214,6 +214,56 @@ class OperationStreamTests(unittest.TestCase):
                 self.assertEqual(registry.run("append_file", {"path": "large.txt", "content": "after"}), "Appended large.txt")
             self.assertEqual(len(attempts), 2)
             self.assertEqual(path.read_text(encoding="utf-8"), "beforeafter")
+
+    def test_atomic_file_replace_survives_a_sharing_lock_longer_than_short_retry_burst(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "large.txt")
+            path.write_text("before", encoding="utf-8")
+            registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
+            real_replace = os.replace
+            attempts = []
+            clock = [0.0]
+
+            def replace_after_extended_lock(source, destination):
+                attempts.append(1)
+                if len(attempts) <= 9:
+                    raise PermissionError("temporary Windows sharing violation")
+                return real_replace(source, destination)
+
+            def advance_clock(delay):
+                clock[0] += delay
+
+            with patch("desktop_engine.os.replace", side_effect=replace_after_extended_lock), \
+                 patch("desktop_engine.time.monotonic", side_effect=lambda: clock[0]), \
+                 patch("desktop_engine.time.sleep", side_effect=advance_clock):
+                result = registry.run("append_file", {"path": "large.txt", "content": "after"})
+
+            self.assertEqual(result, "Appended large.txt")
+            self.assertEqual(len(attempts), 10)
+            self.assertGreaterEqual(clock[0], 2.0)
+            self.assertEqual(path.read_text(encoding="utf-8"), "beforeafter")
+
+    def test_atomic_file_replace_stops_waiting_when_request_is_cancelled(self):
+        import threading
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "large.txt")
+            path.write_text("before", encoding="utf-8")
+            cancel_event = threading.Event()
+
+            def cancel_during_wait(_delay):
+                cancel_event.set()
+
+            with patch("desktop_engine.os.replace", side_effect=PermissionError("sharing lock")), \
+                 patch("desktop_engine.time.sleep", side_effect=cancel_during_wait):
+                with self.assertRaisesRegex(RequestCancelled, "Cancelled while waiting"):
+                    ToolRegistry._atomic_append(path, b"after", cancel_event)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "before")
+            self.assertEqual(list(Path(root).glob("*.tmp")), [])
 
     def test_append_file_requires_an_existing_project_file_and_respects_access(self):
         with tempfile.TemporaryDirectory() as root:

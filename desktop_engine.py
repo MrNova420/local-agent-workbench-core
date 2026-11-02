@@ -902,14 +902,14 @@ class ToolRegistry:
             if name == "write_file":
                 content=args["content"]
                 if not isinstance(content,str):return "Invalid content: expected text."
-                self._atomic_write(path,content.encode("utf-8"))
+                self._atomic_write(path,content.encode("utf-8"),self.cancel_event)
                 return "Wrote " + args["path"]
             if name == "append_file":
                 content=args["content"]
                 if not isinstance(content,str):return "Invalid content: expected text."
                 if not path.is_file():return f"Cannot append to {args['path']}: the project file does not exist. Create it with write_file first."
                 if not content:return "No change: append content is empty."
-                self._atomic_append(path,content.encode("utf-8"))
+                self._atomic_append(path,content.encode("utf-8"),self.cancel_event)
                 return "Appended " + args["path"]
             old_text=args.get("old_text");new_text=args.get("new_text");replace_all=args.get("replace_all",False)
             if not isinstance(old_text,str) or not old_text:return "Invalid old_text: provide a non-empty exact string to replace."
@@ -922,7 +922,7 @@ class ToolRegistry:
             if matches==0:return f"Edit target not found in {args['path']}; file was not changed."
             if matches>1 and not replace_all:return f"Edit target is ambiguous in {args['path']} ({matches} matches); include more surrounding text or set replace_all to true. File was not changed."
             updated=original.replace(old_text,new_text) if replace_all else original.replace(old_text,new_text,1)
-            self._atomic_write(path,updated.encode("utf-8"))
+            self._atomic_write(path,updated.encode("utf-8"),self.cancel_event)
             return "Edited " + args["path"]
         if name == "read_file":
             p=self.workspace.resolve(args["path"])
@@ -968,19 +968,19 @@ class ToolRegistry:
             return self._command(args,shell=name=="run_shell")
         return f"Unknown tool: {name}"
     @staticmethod
-    def _atomic_write(path:Path,data:bytes)->None:
+    def _atomic_write(path:Path,data:bytes,cancel_event:threading.Event|None=None)->None:
         path.parent.mkdir(parents=True,exist_ok=True)
         temp_path=None
         try:
             with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
                 temp_path=Path(handle.name);handle.write(data);handle.flush();os.fsync(handle.fileno())
-            ToolRegistry._replace_with_retry(temp_path,path)
+            ToolRegistry._replace_with_retry(temp_path,path,cancel_event)
         finally:
             if temp_path is not None:
                 try:temp_path.unlink(missing_ok=True)
                 except OSError:pass
     @staticmethod
-    def _atomic_append(path:Path,data:bytes)->None:
+    def _atomic_append(path:Path,data:bytes,cancel_event:threading.Event|None=None)->None:
         before=path.stat()
         temp_path=None
         try:
@@ -995,23 +995,27 @@ class ToolRegistry:
                 if (before.st_size,before.st_mtime_ns,getattr(before,"st_ino",None)) != (after.st_size,after.st_mtime_ns,getattr(after,"st_ino",None)):
                     raise RuntimeError(f"{path.name} changed while preparing the append; reread it before retrying.")
                 handle.write(data);handle.flush();os.fsync(handle.fileno())
-            ToolRegistry._replace_with_retry(temp_path,path)
+            ToolRegistry._replace_with_retry(temp_path,path,cancel_event)
         finally:
             if temp_path is not None:
                 try:temp_path.unlink(missing_ok=True)
                 except OSError:pass
     @staticmethod
-    def _replace_with_retry(source:Path,destination:Path)->None:
-        """Retry transient Windows sharing violations without hiding permanent failures."""
+    def _replace_with_retry(source:Path,destination:Path,cancel_event:threading.Event|None=None)->None:
+        """Retry transient Windows sharing locks for up to 30 seconds or until request cancellation."""
         delay=0.05
-        for attempt in range(7):
+        deadline=time.monotonic()+30.0
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RequestCancelled("Cancelled while waiting for a workspace file to become available.")
             try:
                 os.replace(source,destination)
                 return
             except PermissionError:
-                if attempt==6:raise
-                time.sleep(delay)
-                delay=min(delay*2,0.4)
+                remaining=deadline-time.monotonic()
+                if remaining<=0:raise
+                time.sleep(min(delay,remaining))
+                delay=min(delay*2,0.75)
     def _patch(self, patch: str) -> str:
         import os,re,tempfile
         lines=patch.splitlines(keepends=True);i=0;plans=[];seen=set()
@@ -2085,7 +2089,7 @@ class AgentEngine:
                                     if not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
                                 else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
-                            except RequestCancelled:out="Cancelled while waiting for approval."
+                            except RequestCancelled:out="Cancelled before the workspace file replacement completed."
                             except MCPRequestCancelled:
                                 out="Uncertain: MCP action was cancelled after dispatch; the server may have applied it. Inspect before retrying."
                             except MCPRequestUncertain as exc:out=f"Uncertain: {exc}"
