@@ -344,12 +344,29 @@ def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str,
 def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]],
                                      assistant_message: dict[str, Any] | None = None) -> str:
     """Compare observable progress, not elapsed time or a fixed continuation count."""
+    result_driven_reads = {
+        "list_files", "search_files", "read_file", "read_operation_result",
+        "read_task_checkpoint", "read_conversation_history", "git_status", "git_diff", "git_log",
+    }
     operations = task.get("operations", [])
-    operation_state = sorted({
-        json.dumps({key: item.get(key) for key in ("name", "status", "affected_files", "arguments_fingerprint", "result_fingerprint") if key in item},
-                   ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-        for item in operations if isinstance(item, dict) and item.get("name") != "update_plan"
-    }) if isinstance(operations, list) else []
+    operation_state = []
+    if isinstance(operations, list):
+        for item in operations:
+            if not isinstance(item, dict) or item.get("name") == "update_plan":
+                continue
+            name = item.get("name")
+            fields = ["name", "status", "affected_files", "result_fingerprint"]
+            # For successful/failed reads, a new result is evidence; a changed
+            # search query that returns the same bytes is not. Keep affected
+            # paths so reading a different file with identical content still
+            # counts. Older records without result hashes retain argument
+            # identity as a conservative fallback.
+            if name not in result_driven_reads or not item.get("result_fingerprint"):
+                fields.append("arguments_fingerprint")
+            operation_state.append(json.dumps(
+                {key: item.get(key) for key in fields if key in item},
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str))
+        operation_state = sorted(set(operation_state))
     # Planning artifacts are durable and may be expanded or revised at any time,
     # but changing checklist text is not evidence that implementation advanced.
     # Count only host decisions (approvals/policy outcomes), not agent-authored
@@ -2031,7 +2048,7 @@ class AgentEngine:
                                 batch_name=parsed_batch[batch_index][2]
                                 completed_at=time.time();status=_tool_activity_status(batch_name,str(out))
                                 operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":parsed_batch[batch_index][1].get("id",f"call-{batch_index}"),"name":batch_name,"result":str(out),"status":status,"affectedFiles":[],"startedAt":operation_started,"completedAt":completed_at}
-                                self.operation_results[operation_id]=str(out);record_operation(checkpoint,operation_event);self.event(operation_event)
+                                self.operation_results[operation_id]=str(out);record_operation(checkpoint,operation_event,parsed_batch[batch_index][3]);self.event(operation_event)
                                 prepared_batch[batch_index]={"operation_id":operation_id,"started":operation_started,"output":str(out),"budget":output_budget,"completed_event":True}
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
@@ -2054,7 +2071,7 @@ class AgentEngine:
                         self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","result":out,"status":"cancelled","affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()}
                         self.operation_results[operation_id]=out
-                        record_operation(checkpoint,operation_event)
+                        record_operation(checkpoint,operation_event,args)
                         self.event(operation_event)
                     elif args_error:
                         status="failed"
@@ -2063,7 +2080,7 @@ class AgentEngine:
                         self.event({"type":"tool_start","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","arguments":args,"status":"running","startedAt":operation_started})
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name or "unknown_tool","result":out,"status":"failed","affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()}
                         self.operation_results[operation_id]=out
-                        record_operation(checkpoint,operation_event)
+                        record_operation(checkpoint,operation_event,args)
                         self.event(operation_event)
                     else:
                         prepared=prepared_batch.get(index)
@@ -2137,7 +2154,7 @@ class AgentEngine:
                         operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":call.get("id",f"call-{index}"),"name":name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":time.time()}
                         self.operation_results[operation_id]=str(out)
                         if not (prepared and prepared.get("completed_event")):
-                            record_operation(checkpoint,operation_event)
+                            record_operation(checkpoint,operation_event,args)
                             self.event(operation_event)
                         self._advance_workbench_plan(name,status)
                         if status == "uncertain":
@@ -2184,7 +2201,7 @@ class AgentEngine:
                                            "name":pending_name,"result":pending_result,"status":"blocked","affectedFiles":[],
                                            "startedAt":pending_started,"completedAt":time.time()}
                             self.operation_results[pending_operation_id]=pending_result
-                            record_operation(checkpoint,skipped_event)
+                            record_operation(checkpoint,skipped_event,pending_fn.get("arguments",{}))
                             self.event(skipped_event)
                             msgs.append({"role":"tool","tool_name":pending_name,"content":pending_result})
                         finish_task(checkpoint,"failed",blocker=reason,outcome="blocked")

@@ -182,7 +182,7 @@ def record_blocker(checkpoint: dict[str, Any], reason: str) -> None:
     task["updated_at"] = time.time()
 
 
-def record_operation(checkpoint: dict[str, Any], event: dict[str, Any]) -> None:
+def record_operation(checkpoint: dict[str, Any], event: dict[str, Any], arguments: Any = None) -> None:
     checkpoint = _current(checkpoint)
     operation_id = str(event.get("operationId", ""))
     rows = checkpoint.setdefault("operations", [])
@@ -198,8 +198,9 @@ def record_operation(checkpoint: dict[str, Any], event: dict[str, Any]) -> None:
         result_characters=len(str(event.get("result", ""))),
         updated_at=event.get("completedAt", time.time()),
     )
-    if "arguments" in event:
-        encoded_arguments = json.dumps(event["arguments"], ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    operation_arguments = arguments if arguments is not None else event.get("arguments")
+    if operation_arguments is not None:
+        encoded_arguments = json.dumps(operation_arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         row["arguments_fingerprint"] = hashlib.sha256(encoded_arguments.encode("utf-8")).hexdigest()
     if "result" in event:
         row["result_fingerprint"] = hashlib.sha256(str(event["result"]).encode("utf-8")).hexdigest()

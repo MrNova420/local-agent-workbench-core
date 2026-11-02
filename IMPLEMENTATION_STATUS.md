@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-02 Continuation progress uses observed read results and argument fingerprints
+
+- Read-only search/read/checkpoint/history/Git operations count as new continuation progress when their observed result changes; changing only a query while receiving the same empty result no longer disguises a no-progress loop. Distinct file paths remain distinguishable even when contents match. Other operations retain their argument-based identity.
+- The engine now passes tool arguments separately to checkpoint recording, which stores only a SHA-256 fingerprint. Raw arguments are not copied into the progress record. Existing older rows without a result fingerprint retain the argument-fingerprint fallback.
+- Focused `tests/test_workflow_outcome.py`, `tests/test_operation_stream.py`, and `tests/test_task_checkpoint.py`: **100 passed**. `py_compile` and `git diff --check` passed. Full suites, packaged app, and live model acceptance remain queued.
+
 ## 2026-11-02 continuation recognizes distinct model responses
 
 - An implementation continuation no longer treats two different assistant responses as identical merely because plan, operation, and verification state did not change. The no-progress signature for a tool-free implementation response now includes a local SHA-256 fingerprint of emitted content/reasoning; it stores no duplicate response text in that signature. New responses may continue the same task toward a structured action; any repeated response/state fingerprint, including a cycle separated by other reasoning, becomes an explicit `implementation_incomplete` outcome. Plan-only tool batches retain their separate no-progress behavior. No attempt, runtime, context, output, or reasoning cap was added.

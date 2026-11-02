@@ -268,6 +268,30 @@ def test_replanning_without_new_evidence_does_not_count_as_progress():
         read, [])
 
 
+def test_identical_read_results_do_not_count_as_new_progress_from_changed_arguments():
+    first = {"task_mode": "implement", "operations": [{"name": "search_files", "status": "completed",
+        "affected_files": [], "arguments_fingerprint": "pattern-a", "result_fingerprint": "no-matches"}]}
+    same_result = {"task_mode": "implement", "operations": [{"name": "search_files", "status": "completed",
+        "affected_files": [], "arguments_fingerprint": "pattern-b", "result_fingerprint": "no-matches"}]}
+    new_result = {"task_mode": "implement", "operations": [{"name": "search_files", "status": "completed",
+        "affected_files": [], "arguments_fingerprint": "pattern-c", "result_fingerprint": "found-match"}]}
+    assert _continuation_progress_signature(first, []) == _continuation_progress_signature(same_result, [])
+    assert _continuation_progress_signature(first, []) != _continuation_progress_signature(new_result, [])
+    first_file = {"task_mode": "implement", "operations": [{"name": "read_file", "status": "completed",
+        "affected_files": ["src/one.py"], "arguments_fingerprint": "path-a", "result_fingerprint": "same-contents"}]}
+    second_file = {"task_mode": "implement", "operations": [{"name": "read_file", "status": "completed",
+        "affected_files": ["src/two.py"], "arguments_fingerprint": "path-b", "result_fingerprint": "same-contents"}]}
+    assert _continuation_progress_signature(first_file, []) != _continuation_progress_signature(second_file, [])
+
+
+def test_distinct_command_arguments_remain_visible_when_results_match():
+    first = {"task_mode": "implement", "operations": [{"name": "run_shell", "status": "completed",
+        "affected_files": [], "arguments_fingerprint": "command-a", "result_fingerprint": "exit-zero"}]}
+    second = {"task_mode": "implement", "operations": [{"name": "run_shell", "status": "completed",
+        "affected_files": [], "arguments_fingerprint": "command-b", "result_fingerprint": "exit-zero"}]}
+    assert _continuation_progress_signature(first, []) != _continuation_progress_signature(second, [])
+
+
 def test_plan_expansion_and_phase_changes_do_not_mask_missing_project_progress():
     original = {"task_mode": "plan", "plan_source": "agent", "plan": [
         {"title": "Inspect project", "phase": "inspect", "status": "pending"},

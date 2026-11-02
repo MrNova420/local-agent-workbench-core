@@ -739,6 +739,9 @@ class OperationStreamTests(unittest.TestCase):
             self.assertIn("next open step", continuation_system)
             self.assertIn("Do not re-plan unless new evidence changes the work", continuation_system)
             self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
+            saved_write = next(row for row in engine.state["task_checkpoint"]["current"]["operations"]
+                               if row.get("name") == "write_file")
+            self.assertTrue(saved_write.get("arguments_fingerprint"))
             self.assertEqual(completion["workflowOutcome"], "inspected")
             self.assertFalse(any(event.get("type") == "implementation_incomplete" for event in events))
 
@@ -861,6 +864,30 @@ class OperationStreamTests(unittest.TestCase):
 
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(len(calls), 3)
+            self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
+
+    def test_repeated_empty_searches_with_different_queries_do_not_fake_progress(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", event=events.append, task_intent="implement")
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "search-one", "function": {"name": "search_files", "arguments": {"query": "first-pattern"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "No source lines match; I will check another pattern."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "search-two", "function": {"name": "search_files", "arguments": {"query": "second-pattern"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "No source lines match; I will check another pattern."}},
+                {"message": {"role": "assistant", "content": "A different search still found no source lines."}},
+            ]
+            calls = []
+            engine.runtime.stream = lambda *_args: (calls.append(1) or responses.pop(0))
+
+            engine.run("Implement the requested source change.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(len(calls), 4)
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
 
     def test_pending_plan_expansion_alone_does_not_keep_automatic_run_planning(self):
