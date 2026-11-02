@@ -32,7 +32,13 @@ def validate_permission_rules(value: Any) -> list[dict[str, Any]]:
             normalized_glob = path_glob.replace("\\", "/").strip() if isinstance(path_glob, str) else ""
             posix_glob = PurePosixPath(normalized_glob)
             windows_glob = PureWindowsPath(normalized_glob)
-            if (not normalized_glob or posix_glob.is_absolute() or windows_glob.is_absolute()
+            external_scope = tool == "external_directory"
+            if external_scope:
+                if not normalized_glob or not windows_glob.is_absolute() or not windows_glob.drive or ".." in windows_glob.parts:
+                    raise ValueError(f"Permission rule {index + 1} external_directory path_glob must be an absolute path pattern.")
+                if not normalized_glob.endswith("/**"):
+                    raise ValueError(f"Permission rule {index + 1} external_directory pattern must end in /** to scope a directory.")
+            elif (not normalized_glob or posix_glob.is_absolute() or windows_glob.is_absolute()
                     or windows_glob.drive or ".." in posix_glob.parts):
                 raise ValueError(f"Permission rule {index + 1} path_glob must be a project-relative pattern.")
             if tool in {"run_command", "run_shell"}:
@@ -107,7 +113,15 @@ def permission_decision(tool: str, args: dict[str, Any], rules: list[dict[str, A
             continue
         if "path_glob" in rule:
             pattern = str(rule["path_glob"]).replace("\\", "/").casefold()
-            path_matches = [fnmatch.fnmatchcase(path, pattern) for path in path_values]
+            external_root = pattern[:-3].rstrip("/") if pattern.endswith("/**") else ""
+            if external_root.endswith(":"):
+                external_root += "/"
+            if tool == "external_directory" and external_root:
+                base=external_root.rstrip("/")
+                if base.endswith(":"):base+="/"
+                path_matches=[path.rstrip("/")==base.rstrip("/") or path.startswith(base.rstrip("/") + "/") for path in path_values]
+            else:
+                path_matches=[fnmatch.fnmatchcase(path,pattern) for path in path_values]
             # An allow rule must cover every target of a multi-file operation.
             # Ask/deny rules can match when any target falls within the scope.
             # Inverting the allow predicate here would let a scoped allow grant
@@ -125,3 +139,8 @@ def permission_decision(tool: str, args: dict[str, Any], rules: list[dict[str, A
         if decision in matches:
             return decision
     return None
+
+
+def external_directory_decision(path: str, rules: list[dict[str, Any]] | None) -> str | None:
+    """Resolve the explicit directory scope for an absolute external file target."""
+    return permission_decision("external_directory", {"path": path}, rules)

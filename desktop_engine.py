@@ -13,7 +13,7 @@ from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
 from task_checkpoint import begin_task, checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
 from tool_schema_capabilities import SUPPORTED_SCHEMA_KEYWORDS, unsupported_schema_features
-from permission_policy import permission_decision, validate_permission_rules
+from permission_policy import _paths, external_directory_decision, permission_decision, validate_permission_rules
 from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
@@ -46,7 +46,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Implementation pacing: plan only enough to identify the next safe, useful action and the checks needed for completion, then start doing the work through project tools. For a clear implementation request, do not spend the whole response deriving an exhaustive design before the first useful operation; move from adequate scoping into the first relevant inspection or change, then refine from evidence. After publishing or revising an implementation plan, take its next open step through an appropriate structured tool on the next response unless approval, missing information, or a genuine dependency blocks it. Do not repeat a plan or reread a checkpoint section when the latest tool result already gives the state you need. Expand or revise the plan when new evidence, dependencies, user direction, or a real blocker warrants it; keep all required work and acceptance checks. Do not wait to fully design every file before making the first inspected, approved change, and do not replace project edits with a long source draft in chat. This is a pacing preference, not a cap on reasoning, planning, scope, tool calls, iterations, context, output, or runtime.\n\n"
         "Tool and approval protocol: perform project operations by calling the structured tools provided to you. Do not narrate an intended tool call and then stop. "
         "When the host provides ask_user, use it only when a missing requirement or user choice would materially change the implementation; keep working from reasonable defaults otherwise. It is for task clarification, never for permission to run a file change or command. "
-        "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. "
+        "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. Structured file tools stay inside the selected project unless a matching external_directory rule grants a concrete folder; an external_directory ask rule requires approval for each outside-project path action. Shell commands and MCP retain their separately described host capabilities. "
         "Do not ask for approval in chat text; call the requested tool and the workbench will show its approval dialog when the action requires approval. "
         "When the request's tool set is context-adaptive, use load_tools to page through the available tool catalog and select any missing capability by exact name; selected schemas are added to the next model request. Deferred tools remain available through this mechanism and are not permission grants. "
         "Do not claim that an action ran unless its tool result confirms it. Put file contents in structured file-tool arguments, not in a chat message. For files too large for one response, create them with write_file and add ordered chunks using append_file; inspect the finished file. "
@@ -516,14 +516,38 @@ def _verification_report(steps: list[dict[str, Any]], implementation_requested: 
     }
 
 class Workspace:
-    def __init__(self, root: Path | str, access: str = "ask"):
+    def __init__(self, root: Path | str, access: str = "ask", external_directories: list[Path | str] | None = None):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir(): raise ValueError("Project path must be a directory")
         if access not in {"plan", "copy", "ask", "edit"}: raise ValueError("Access must be plan, copy, ask, or edit")
         self.access = access
+        self.external_directories: list[Path] = []
+        for value in external_directories or []:
+            candidate = Path(value)
+            is_junction=getattr(os.path,"isjunction",lambda p:False)
+            if candidate.is_symlink() or is_junction(candidate):
+                raise ValueError("External directory grants cannot target symbolic links or junctions")
+            resolved=candidate.resolve(strict=True)
+            if not resolved.is_dir():raise ValueError("External directory grants must point to existing folders")
+            if resolved != self.root and self.root not in resolved.parents:
+                self.external_directories.append(resolved)
     def resolve(self, rel: str) -> Path:
         relative=Path(rel)
-        if not rel or relative.is_absolute(): raise ValueError("Use a project-relative path")
+        if not rel: raise ValueError("Use a project-relative path or an explicitly granted external path")
+        if relative.is_absolute():
+            roots=[self.root,*self.external_directories]
+            lexical=Path(os.path.abspath(relative))
+            containing=next((root for root in roots if lexical==root or root in lexical.parents),None)
+            if containing is None:raise ValueError("Path is outside the selected project and no matching external directory is granted")
+            path=containing
+            remainder=lexical.relative_to(containing)
+            is_junction=getattr(os.path,"isjunction",lambda p:False)
+            for part in remainder.parts:
+                path=path/part
+                if path.is_symlink() or is_junction(path):raise ValueError("Symbolic links are not allowed")
+            resolved=path.resolve()
+            if resolved != containing and containing not in resolved.parents:raise ValueError("Path escapes its granted directory")
+            return resolved
         if ".." in relative.parts: raise ValueError("Path escapes the selected project")
         path=self.root
         for part in relative.parts:
@@ -534,6 +558,9 @@ class Workspace:
         path=path.resolve()
         if path != self.root and self.root not in path.parents: raise ValueError("Path escapes the selected project")
         return path
+    def display_path(self, path: Path) -> str:
+        try:return path.relative_to(self.root).as_posix()
+        except ValueError:return str(path)
 
 class ToolRegistry:
     """Explicit project tools; approved shell commands run as the host user without OS sandboxing."""
@@ -548,6 +575,23 @@ class ToolRegistry:
         self.operation_result_lookup=operation_result_lookup
         self.ask_user_callback=ask_user
         self.permission_rules=validate_permission_rules(permission_rules or [])
+        external_targets=[]
+        for rule in self.permission_rules:
+            if rule.get("tool")!="external_directory" or rule.get("decision")=="deny":continue
+            pattern=str(rule.get("path_glob","" )).replace("\\","/")
+            directory=pattern[:-3]
+            if directory.endswith(":"):directory+="/"
+            else:directory=directory.rstrip("/")
+            if directory:external_targets.append(directory)
+        self.workspace.external_directories=[]
+        for directory in external_targets:
+            candidate=Path(directory)
+            is_junction=getattr(os.path,"isjunction",lambda p:False)
+            if candidate.is_symlink() or is_junction(candidate) or not candidate.is_dir():continue
+            try:resolved=candidate.resolve(strict=True)
+            except (OSError,RuntimeError):continue
+            if resolved != self.workspace.root and self.workspace.root not in resolved.parents and resolved not in self.workspace.external_directories:
+                self.workspace.external_directories.append(resolved)
         self.task_checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else None
         saved_task_mode=current_task(self.task_checkpoint).get("task_mode") if self.task_checkpoint is not None else None
         self.task_mode=saved_task_mode if saved_task_mode in {"discussion", "plan_only", "plan", "implement"} else "auto"
@@ -560,9 +604,9 @@ class ToolRegistry:
         read_budget_description="Return the complete requested result when it fits the remaining request context. If the current request or a batch cannot fit it, return a clearly marked continuation cursor; do not silently omit material."
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [
-          self._schema("list_files", f"List project files under an optional path and filename/glob pattern, such as src/**/*.tsx. Choose a useful page size with limit and continue at the returned offset. {read_budget_description}", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, []),
-          self._schema("search_files", f"Search project text for a literal substring. Use path/include to narrow the scan; include accepts filename patterns or project-relative globs such as src/**/*.py. Choose a useful page size with limit and continue at the returned offset. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, ["query"]),
-          self._schema("read_file", f"Read the complete project file by default; optional 1-based line bounds and start_column let you continue through large files. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
+          self._schema("list_files", f"List files in the selected project or an explicitly granted external folder under an optional path and filename/glob pattern, such as src/**/*.tsx. Choose a useful page size with limit and continue at the returned offset. {read_budget_description}", {"path":{"type":"string"},"pattern":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, []),
+          self._schema("search_files", f"Search text in the selected project or an explicitly granted external folder for a literal substring. Use path/include to narrow the scan; include accepts filename patterns or relative globs such as src/**/*.py. Choose a useful page size with limit and continue at the returned offset. Large matching lines point to read_file for complete content. {read_budget_description}", {"query":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}}, ["query"]),
+          self._schema("read_file", f"Read a complete file from the selected project or an explicitly granted external folder by default; optional 1-based line bounds and start_column let you continue through large files. {read_budget_description} An incomplete result gives the next line and column to continue from.", {"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_column":{"type":"integer","minimum":1}}, ["path"]),
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("read_task_checkpoint", "Recover saved task continuity details when the compacted prompt reports omissions. Read the current task, plan, decisions, user updates, operation references, changed files, verification, or prior task history in character-offset pages. No project files are changed.", {"section":{"type":"string","enum":["current","plan","decisions","user_updates","operations","changed_files","verification","task_history"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, []),
           self._schema("read_conversation_history", "Recover earlier saved user/assistant/tool transcript omitted from the current context, including emitted assistant reasoning. The system prompt is excluded. Use character-offset pages and an optional role filter; no project files are changed.", {"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1},"role":{"type":"string","enum":["user","assistant","tool"]}}, []),
@@ -572,10 +616,10 @@ class ToolRegistry:
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
           self._schema("git_log", "Show recent commit subjects for this project when it is the Git repository root", {"limit":{"type":"integer","minimum":1,"maximum":100}}, []),
           self._schema("load_tools", "Discover the complete built-in and configured MCP tool catalog, or select tools by exact name to include their full schemas in the next model request. Optionally choose a page size with limit; otherwise the host fits as many catalog entries as the current response budget allows. Continue from next_offset. Selection does not execute tools or grant permissions; access and approval rules still apply.", {"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},"names":{"type":"array","items":{"type":"string"}}}, []),
-          self._schema("write_file", "Create or replace a UTF-8 file in the active workspace, subject to its access mode. For content larger than one model response, write an initial chunk and use append_file for ordered additional chunks.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
-          self._schema("append_file", "Append UTF-8 text to an existing project file without resending its existing contents. Use ordered chunks for files larger than one model response; inspect the completed file. This appends only and cannot insert or overwrite. Subject to active access and approval settings.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
-          self._schema("edit_file", "Replace exact text in one project file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
-          self._schema("apply_patch", "Apply a unified diff in the active workspace, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
+          self._schema("write_file", "Create or replace a UTF-8 file in the active project or an explicitly granted external folder, subject to its access mode. For content larger than one model response, write an initial chunk and use append_file for ordered additional chunks.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
+          self._schema("append_file", "Append UTF-8 text to an existing project or explicitly granted external file without resending its existing contents. Use ordered chunks for files larger than one model response; inspect the completed file. This appends only and cannot insert or overwrite. Subject to active access and approval settings.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
+          self._schema("edit_file", "Replace exact text in one project or explicitly granted external file. Requires exactly one match unless replace_all is true; refuses missing or ambiguous matches. Subject to the active access mode.", {"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}}, ["path","old_text","new_text"]),
+          self._schema("apply_patch", "Apply a unified diff in the active project or an explicitly granted external folder, subject to its access mode", {"patch":{"type":"string"}}, ["patch"]),
           self._schema("run_command", "Run an argv command in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. The exact command ['pwd'] returns the selected project root. Other commands launch directly without a shell.", {"argv":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1}}, ["argv"]),
           self._schema("run_shell", "Run a PowerShell command string in the project; requires approval. Omit timeout_seconds to wait until completion or user cancellation; set it only when the task calls for an explicit timeout. Use for Windows workflows needing pipes, redirects, or script wrappers. Commands run with host-user permissions and are not OS-sandboxed; the user reviews the exact command before it runs.", {"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1}}, ["command"]),
         ]
@@ -596,6 +640,22 @@ class ToolRegistry:
             if permission_decision(name,args,self.permission_rules)=="deny":
                 return "Denied by user: a persistent deny permission rule blocks this tool."
             return self.ask_user_callback(args)
+        for target in _paths(name,args):
+            candidate=Path(target)
+            if not candidate.is_absolute():continue
+            try:resolved_candidate=candidate.resolve(strict=False)
+            except (OSError,RuntimeError):resolved_candidate=candidate
+            if resolved_candidate==self.workspace.root or self.workspace.root in resolved_candidate.parents:continue
+            external_policy=external_directory_decision(target,self.permission_rules)
+            if external_policy=="deny":return "Denied: an external_directory deny rule blocks this path."
+            if external_policy is None:return "Blocked: this path is outside the selected project. Add an explicit external_directory rule for its parent folder before using structured file tools."
+            if name in {"write_file","append_file","edit_file","apply_patch"} and self.workspace.access=="copy":
+                return "Blocked: external folder writes are not staged for copy review. Switch this task to Ask or Edit access before changing files outside the copied project."
+            if not any(resolved_candidate==root or root in resolved_candidate.parents for root in self.workspace.external_directories):
+                return "Blocked: the saved external folder scope is unavailable or resolves through a symbolic link. Recheck the selected folder in Tool permissions."
+            approval_path=args.get("path") if isinstance(args.get("path"),str) else target
+            if external_policy=="ask" and not self.approval("external_directory",{"path":approval_path,"tool":name}):
+                return "Denied by user: external directory access was not approved."
         policy=permission_decision(name,args,self.permission_rules)
         policy_approved=False
         if policy in {"allow","ask"}:
@@ -751,7 +811,7 @@ class ToolRegistry:
                 else:is_match=fnmatch.fnmatchcase(p.name.casefold(),pattern.casefold())
                 if is_match:
                     if matched<offset:matched+=1;continue
-                    item=p.relative_to(self.workspace.root).as_posix()
+                    item=self.workspace.display_path(p)
                     item_bytes=len(item.encode("utf8"))+(1 if matches else 0)
                     if len(matches)<limit and (active_output_budget is None or used_bytes+item_bytes<=active_output_budget or not matches):
                         matches.append(item);used_bytes+=item_bytes
@@ -800,7 +860,7 @@ class ToolRegistry:
                             if query in line.casefold():
                                 if offset>0:offset-=1;continue
                                 if len(hits)>=limit:has_more=True;break
-                                path_line=f"{p.relative_to(self.workspace.root).as_posix()}:{i}: "
+                                path_line=f"{self.workspace.display_path(p)}:{i}: "
                                 content=line.rstrip("\r\n")
                                 budget=active_output_budget
                                 if budget is not None and len((path_line+content).encode("utf8"))>budget:

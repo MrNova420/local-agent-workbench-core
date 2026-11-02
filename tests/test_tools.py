@@ -53,6 +53,24 @@ class ToolTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)/'project';root.mkdir();ws=Workspace(root)
    with self.assertRaises(ValueError):ws.resolve('../outside.txt')
+ def test_workspace_allows_external_file_only_under_explicitly_granted_directory(self):
+  with tempfile.TemporaryDirectory() as t:
+   base=Path(t);project=base/'project';external=base/'shared';project.mkdir();external.mkdir()
+   (external/'shared.py').write_text('shared',encoding='utf-8')
+   workspace=Workspace(project,external_directories=[external])
+   self.assertEqual(workspace.resolve(str(external/'shared.py')).read_text(encoding='utf-8'),'shared')
+   with self.assertRaises(ValueError):workspace.resolve(str(base/'ungranted.txt'))
+ def test_external_folder_supports_list_search_and_read_with_absolute_results(self):
+  with tempfile.TemporaryDirectory() as t:
+   base=Path(t);project=base/'project';external=base/'shared';project.mkdir();(external/'nested').mkdir(parents=True)
+   target=external/'nested'/'shared.py';target.write_text('external needle\n',encoding='utf-8')
+   rules=[{'tool':'external_directory','decision':'allow','path_glob':str(external).replace('\\','/')+'/**'}]
+   tools=ToolRegistry(Workspace(project,external_directories=[external]),lambda *_:True,permission_rules=rules)
+   listing=tools.run('list_files',{'path':str(external),'pattern':'*.py'})
+   search=tools.run('search_files',{'path':str(external),'query':'needle','include':'*.py'})
+   self.assertEqual(listing,str(target))
+   self.assertIn(f'{target}:1: external needle',search)
+   self.assertEqual(tools.run('read_file',{'path':str(target)}),'external needle\n')
  def test_plan_mode_blocks_edits_even_after_approval(self):
   with tempfile.TemporaryDirectory() as t:
    tools=ToolRegistry(Workspace(t,'plan'),lambda *_:True)
