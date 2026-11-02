@@ -13,14 +13,16 @@ class OperationStreamTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             events = []
             requests = []
+            settings = []
             responses = [
                 {"message": {"role": "assistant", "content": "The project has three sections."}, "done_reason": "length"},
                 {"message": {"role": "assistant", "content": " I will summarize each one."}, "done_reason": "stop"},
             ]
-            engine = AgentEngine(root, access="edit", task_intent="discuss", event=events.append)
+            engine = AgentEngine(root, context=65536, max_tokens=8192, access="edit", task_intent="discuss", event=events.append)
 
-            def stream(_state, messages, *_args):
+            def stream(state, messages, *_args):
                 requests.append(copy.deepcopy(messages))
+                settings.append((state["context"], state["max_tokens"], state["temperature"]))
                 return responses.pop(0)
 
             engine.runtime.stream = stream
@@ -28,6 +30,8 @@ class OperationStreamTests(unittest.TestCase):
 
             self.assertEqual(len(requests), 2)
             self.assertIn("selected output-token limit", requests[1][0]["content"])
+            self.assertEqual(settings, [settings[0], settings[0]])
+            self.assertEqual(settings[0][:2], (65536, 8192))
             self.assertEqual(next(event["workflowOutcome"] for event in events if event["type"] == "complete"), "discussion")
 
     def test_repeated_identical_output_limit_response_ends_as_explicitly_incomplete(self):
