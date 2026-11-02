@@ -324,7 +324,7 @@ def test_agent_can_expand_plan_without_replacing_existing_independent_workstream
         {"title": "Review keyboard flow", "status": "pending", "group": "Accessibility"},
     ]})
 
-    assert "Current plan" in result
+    assert result.startswith("Authoritative plan and implementation handoff:\n")
     assert '"title": "Build the API"' in result
     assert '"title": "Add route tests"' in result
     assert [item["title"] for item in registry.plan] == [
