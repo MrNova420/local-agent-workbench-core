@@ -28,6 +28,7 @@ class MCPManager:
         self.clients: dict[str, tuple[Any, Any]] = {}
         self.tools: dict[str, tuple[str, str]] = {}
         self.errors: dict[str, str] = {}
+        self.retryable_servers: set[str] = set()
         self.schema_warnings: dict[str, list[str]] = {}
         self.discovered = False
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -86,7 +87,20 @@ class MCPManager:
                     future.cancel()
                     raise MCPRequestCancelled("MCP operation cancelled")
 
+    @property
+    def needs_discovery(self) -> bool:
+        """Retry discovery after an unavailable server or a broken call pipe."""
+        return not self.discovered or bool(self.retryable_servers)
+
     async def discover(self):
+        # Discovery runs at task setup. Tear down stale clients first so a
+        # failed server cannot leave old tools advertised on a later task.
+        self.discovered = False
+        if self.clients:
+            await self.close()
+        else:
+            self.tools.clear()
+        self.retryable_servers.clear()
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
@@ -174,6 +188,7 @@ class MCPManager:
                     })
             except BaseException as exc:
                 self.errors[name] = f"{type(exc).__name__}: {exc}"
+                self.retryable_servers.add(name)
                 self.clients.pop(name, None)
                 if session_entered:
                     try:
@@ -195,10 +210,14 @@ class MCPManager:
         try:
             result = await self.clients[server][0].call_tool(tool, args)
         except asyncio.CancelledError as exc:
+            self.errors[server] = "MCP call was cancelled after dispatch; reconnect before the next task."
+            self.retryable_servers.add(server)
             raise MCPRequestUncertain(
                 "MCP call was interrupted after dispatch; the server may have applied it. Inspect before retrying."
             ) from exc
         except Exception as exc:
+            self.errors[server] = f"{type(exc).__name__}: MCP pipe failed after dispatch; reconnect before the next task."
+            self.retryable_servers.add(server)
             raise MCPRequestUncertain(
                 f"MCP call failed after dispatch ({type(exc).__name__}); server-side effects may have occurred. Inspect before retrying."
             ) from exc
@@ -210,6 +229,7 @@ class MCPManager:
     async def close(self):
         clients, self.clients = list(self.clients.values()), {}
         self.tools.clear()
+        self.discovered = False
         for session, manager in clients:
             try:
                 await session.__aexit__(None, None, None)

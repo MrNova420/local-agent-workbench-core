@@ -76,4 +76,53 @@ class MCPTests(unittest.TestCase):
    self.assertEqual(await m.discover(),[])
    self.assertIn('HTTPS',m.errors['remote'])
   asyncio.run(scenario())
+ def test_failed_discovery_is_retryable_and_refresh_closes_stale_clients(self):
+  async def scenario():
+   m=MCPManager(Path('unused.json'));m.servers={'demo':{'command':'fake'}}
+   attempts={'initialize':0};sessions=[]
+   class FlakySession(FakeSession):
+    def __init__(self,*a):super().__init__(*a);sessions.append(self)
+    async def initialize(self):
+     attempts['initialize']+=1
+     if attempts['initialize']==1:raise ConnectionError('server starting')
+   with patch('mcp.ClientSession',FlakySession),patch('mcp.StdioServerParameters',lambda **kw:kw),patch('mcp.client.stdio.stdio_client',FakeManager):
+    self.assertEqual(await m.discover(),[])
+    self.assertTrue(m.needs_discovery)
+    tools=await m.discover()
+    self.assertEqual([tool['function']['name'] for tool in tools],['mcp__demo__echo'])
+    self.assertFalse(m.needs_discovery)
+    self.assertTrue(sessions[0].closed)
+    self.assertIn('demo',m.clients)
+    m.servers={'other':{'command':'fake'}}
+    tools=await m.discover()
+    self.assertEqual([tool['function']['name'] for tool in tools],['mcp__other__echo'])
+    self.assertTrue(sessions[1].closed)
+    self.assertEqual(set(m.tools),{'mcp__other__echo'})
+    await m.close()
+  try:import mcp
+  except ImportError:self.skipTest('MCP SDK not installed; retry lifecycle requires the optional SDK interfaces')
+  asyncio.run(scenario())
+
+ def test_failed_dispatched_mcp_call_marks_server_for_next_task_reconnect(self):
+  async def scenario():
+   m=MCPManager(Path('unused.json'));m.tools={'mcp__demo__echo':('demo','echo')}
+   class BrokenSession:
+    async def call_tool(self,*_):raise ConnectionError('pipe closed')
+   m.clients={'demo':(BrokenSession(),object())};m.discovered=True
+   with self.assertRaisesRegex(Exception,'server-side effects may have occurred'):
+    await m.call('mcp__demo__echo',{})
+   self.assertTrue(m.needs_discovery)
+   self.assertIn('demo',m.errors)
+  asyncio.run(scenario())
+
+ def test_invalid_mcp_configuration_does_not_retry_connecting_on_every_task(self):
+  async def scenario():
+   m=MCPManager(Path('unused.json'));m.servers={'bad':{'transport':'unknown'}}
+   self.assertEqual(await m.discover(),[])
+   self.assertIn('Unsupported MCP transport',m.errors['bad'])
+   self.assertFalse(m.needs_discovery)
+  try:import mcp
+  except ImportError:self.skipTest('MCP SDK not installed; configuration retry state requires its optional interface')
+  asyncio.run(scenario())
+
 if __name__=='__main__':unittest.main()
