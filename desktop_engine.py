@@ -1774,7 +1774,13 @@ class AgentEngine:
                 candidate=page+[row]
                 preview={"total_matches":len(rows),"offset":offset,"next_offset":offset+len(candidate),
                          "selected_for_next_request":sorted(self._selected_tool_names),"schemas":candidate}
-                if page and len(json.dumps(preview,ensure_ascii=False).encode("utf8"))>max(256,response_byte_budget):break
+                serialized_size=len(json.dumps(preview,ensure_ascii=False).encode("utf8"))
+                if serialized_size>max(0,response_byte_budget):
+                    if page:break
+                    name=(row.get("function") or {}).get("name","unknown")
+                    return (f"Tool schema '{name}' needs {serialized_size:,} response bytes, but only "
+                            f"{max(0,response_byte_budget):,} remain. No schema was returned; narrow the "
+                            "catalog search or adjust the selected request settings yourself.")
                 page=candidate
         next_offset=offset+len(page)
         result={"total_matches":len(rows),"offset":offset,"next_offset":next_offset if next_offset<len(rows) else None,

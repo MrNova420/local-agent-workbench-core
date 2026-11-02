@@ -396,3 +396,8 @@ See [the source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) for fi
 - Regression was first run red (the 12-schema explicit page exceeded the 1,500-byte budget), then green after the fix. Focused page-selection tests: **2 passed**. `git diff --check` and Python compilation passed.
 - This is engine source evidence only. Broader schema/context suites, paired sidecar/package tests, visible UI acceptance, and live Flint work remain queued.
 
+# 2026-11-02 tool-catalog single-schema overflow handling
+
+- If the first matching tool schema alone exceeds the remaining response budget, `load_tools` now returns a direct, actionable size message instead of emitting an oversized page that can trigger another context failure. The message does not alter model context/output settings; it recommends narrowing discovery or changing settings explicitly.
+- Focused page selection, explicit-size budget, and single-schema overflow cases: **3 passed**. Python compilation and `git diff --check` passed. Broader context/schema and paired app/package verification remain queued.
+

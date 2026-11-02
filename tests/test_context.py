@@ -196,6 +196,18 @@ class ContextTests(unittest.TestCase):
             self.assertLess(len(page['schemas']),12)
             self.assertIsNotNone(page['next_offset'])
             self.assertLessEqual(len(json.dumps(page,ensure_ascii=False).encode('utf8')),1500)
+    def test_tool_catalog_explains_when_one_schema_cannot_fit_the_response_budget(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from desktop_engine import AgentEngine
+        with TemporaryDirectory() as directory:
+            engine=AgentEngine(Path(directory),context=4096,max_tokens=512)
+            engine.mcp_tools=[engine.state['registry']._schema('mcp__large__one','Large schema',{'value':{'type':'string'}},['value'])]
+            engine.state['mcp_tools']=engine.mcp_tools
+            base=[{'role':'system','content':'system'},{'role':'user','content':'discover tools'}]
+            result=engine._load_tools({'query':'mcp__large__'},base,response_byte_budget=32)
+            self.assertIn('response bytes, but only 32 remain',result)
+            self.assertIn('mcp__large__one',result)
     def test_budget_refuses_to_silently_lower_context(self):
         manager=ContextManager(context=4096,reserve=1024);huge=[{'role':'system','content':'s'},{'role':'user','content':'x'*50000}]
         with self.assertRaisesRegex(ValueError,'context was not reduced'):manager.compact(huge)
