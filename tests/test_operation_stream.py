@@ -1,6 +1,7 @@
 import os
 import copy
 import sys
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -105,6 +106,61 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(len(requests), 2)
             self.assertTrue(any(row.get("steering_id") == "steer-1" for row in requests[1]))
             self.assertEqual(result[-1]["content"], "I incorporated the user's update.")
+
+    def test_steering_during_action_approval_waits_for_decision_and_does_not_bypass_denial(self):
+        with tempfile.TemporaryDirectory() as root:
+            approval_waiting = threading.Event()
+            release_denial = threading.Event()
+            steering_delivered = threading.Event()
+            pending = []
+            requests = []
+            events = []
+            approval_calls = []
+            responses = [
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "write-needs-approval", "function": {"name": "write_file", "arguments": {"path": "index.html", "content": "<main>Must not be written</main>"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The write was denied; I preserved the project and noted the style update."}},
+            ]
+
+            def approve(name, arguments):
+                approval_calls.append((name, arguments))
+                approval_waiting.set()
+                if not release_denial.wait(3):
+                    raise AssertionError("approval decision was not released")
+                return False
+
+            def steer(messages, _finishing):
+                if not pending:
+                    return False
+                update = pending.pop(0)
+                messages.append({"role": "user", "content": update["instruction"],
+                                 "turn_id": "turn-approval", "steering_id": update["id"]})
+                steering_delivered.set()
+                return True
+
+            engine = AgentEngine(root, access="ask", approve=approve, event=events.append,
+                                 steering_handler=steer, task_intent="implement")
+            engine.runtime.stream = lambda _state, messages, *_args: (requests.append(copy.deepcopy(messages)) or responses.pop(0))
+            worker = threading.Thread(target=lambda: engine.run("Implement the requested page."))
+            worker.start()
+            self.assertTrue(approval_waiting.wait(2), "model did not reach the approval boundary")
+            self.assertFalse(Path(root, "index.html").exists())
+            self.assertFalse(steering_delivered.is_set(), "steering must wait for the active approval decision")
+            pending.append({"id": "steer-during-approval", "instruction": "Use the existing project style"})
+            release_denial.set()
+            worker.join(3)
+
+            self.assertFalse(worker.is_alive(), "steered task did not finish")
+            self.assertFalse(Path(root, "index.html").exists())
+            self.assertEqual(len(requests), 2)
+            second = requests[1]
+            tool_index = next(index for index, message in enumerate(second) if message.get("role") == "tool")
+            steer_index = next(index for index, message in enumerate(second) if message.get("steering_id") == "steer-during-approval")
+            self.assertIn("Denied by user", second[tool_index]["content"])
+            self.assertGreater(steer_index, tool_index)
+            self.assertEqual([name for name, _arguments in approval_calls], ["write_file"])
+            self.assertTrue(steering_delivered.is_set())
 
     def test_continuation_uses_verified_work_state_not_model_wording(self):
         self.assertTrue(_needs_implementation_continuation(True, "edit", False, False, False, False))
