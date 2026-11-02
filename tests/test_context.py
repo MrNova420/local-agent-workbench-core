@@ -140,6 +140,12 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(events[0]['checkpointCompacted'])
         self.assertGreater(events[0]['checkpointOmissions']['operations'],0)
         self.assertTrue(any('Continue this project' in str(message.get('content','')) for message in compacted))
+        compacted_system=next(message['content'] for message in compacted if message.get('role')=='system')
+        self.assertIn('Keep building the full project',compacted_system)
+        self.assertIn('Finish implementation',compacted_system,
+                      'the active plan step must survive checkpoint budgeting')
+        self.assertEqual(len(checkpoint['current']['operations']),200,
+                         'inference compaction must not mutate the canonical checkpoint')
         self.assertEqual(manager.context,4096)
     def test_request_skills_fit_available_budget_and_full_catalog_stays_callable(self):
         from tempfile import TemporaryDirectory

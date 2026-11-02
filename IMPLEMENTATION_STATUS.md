@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-02 low-context checkpoint retention regression
+
+- Strengthened the oversized-checkpoint compaction regression to prove that, under context pressure, the current goal and open implementation-plan step remain in the inference summary, while the canonical 200-operation checkpoint is unchanged. The selected context is asserted unchanged as well.
+- Focused test `tests/test_context.py::ContextTests::test_compaction_budget_summarizes_oversized_checkpoint_without_changing_context`: **1 passed**. The full engine suite remains queued.
+
 ## 2026-11-02 Continuation progress uses observed read results and argument fingerprints
 
 - Read-only search/read/checkpoint/history/Git operations count as new continuation progress when their observed result changes; changing only a query while receiving the same empty result no longer disguises a no-progress loop. Distinct file paths remain distinguishable even when contents match. Other operations retain their argument-based identity.
