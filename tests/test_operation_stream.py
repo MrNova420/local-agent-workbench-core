@@ -603,6 +603,94 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
             self.assertEqual(completion["workflowOutcome"], "inspected")
 
+    def test_repeated_plan_tool_calls_in_read_only_implement_mode_end_blocked(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="plan", event=events.append, task_intent="implement")
+            plan_call = lambda call_id, title: {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": call_id, "function": {"name": "update_plan", "arguments": {
+                    "add_items": [{"title": title, "status": "pending"}]}}
+                }
+            ]}}
+            responses = [
+                plan_call("plan-1", "Implement the requested project"),
+                plan_call("plan-2", "Refine the implementation plan"),
+                plan_call("plan-3", "Refine the plan again"),
+            ]
+            requests = []
+            def stream(_state, messages, *_args):
+                requests.append(copy.deepcopy(messages))
+                return responses.pop(0)
+            engine.runtime.stream = stream
+
+            engine.run("Implement a small project change.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "blocked")
+            self.assertIn("read-only", requests[2][0]["content"].casefold())
+
+    def test_denied_project_action_cannot_loop_through_plan_tool_calls(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="ask", approve=lambda *_args: False,
+                                 event=events.append, task_intent="implement")
+            write = {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "write", "function": {"name": "write_file", "arguments": {
+                    "path": "app.py", "content": "print('ready')"}}
+                }
+            ]}}
+            plan_call = lambda call_id, title: {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": call_id, "function": {"name": "update_plan", "arguments": {
+                    "add_items": [{"title": title, "status": "pending"}]}}
+                }
+            ]}}
+            responses = [write, plan_call("plan-1", "Revisit the plan"),
+                         plan_call("plan-2", "Expand the plan"), plan_call("plan-3", "Expand again")]
+            requests = []
+            def stream(_state, messages, *_args):
+                requests.append(copy.deepcopy(messages))
+                return responses.pop(0)
+            engine.runtime.stream = stream
+
+            engine.run("Implement the requested project file.")
+
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(len(requests), 4)
+            self.assertTrue(completion["actionDenied"])
+            self.assertEqual(completion["workflowOutcome"], "blocked")
+            self.assertIn("denied", requests[3][0]["content"].casefold())
+
+    def test_explicit_plan_mode_repeated_plan_calls_end_with_saved_plan_and_missing_reply(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="plan", event=events.append, task_intent="plan")
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "plan-1", "function": {"name": "update_plan", "arguments": {
+                        "items": [{"title": "Inspect and describe the project", "status": "pending"}]}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "plan-2", "function": {"name": "update_plan", "arguments": {
+                        "add_items": [{"title": "Add more planning detail", "status": "pending"}]}}
+                    }
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "plan-3", "function": {"name": "update_plan", "arguments": {
+                        "add_items": [{"title": "Add still more detail", "status": "pending"}]}}
+                    }
+                ]}},
+            ]
+            calls = []
+            engine.runtime.stream = lambda *_args: (calls.append(1) or responses.pop(0))
+
+            engine.run("Make a plan for this project, without editing files.")
+
+            error = next(event for event in events if event.get("type") == "error")
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(error["workflowOutcome"], "response_missing")
+            self.assertTrue(engine.state["registry"].plan)
+
     def test_plan_only_request_does_not_force_a_tool_followup(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
@@ -699,7 +787,7 @@ class OperationStreamTests(unittest.TestCase):
             engine.state["registry"].run = lambda *_args, **_kwargs: "completed"
             responses = [
                 {"message": {"role": "assistant", "content": "", "tool_calls": [
-                    {"id": f"call-{index}", "function": {"name": "update_plan", "arguments": {"items": []}}}
+                    {"id": f"call-{index}", "function": {"name": "read_file", "arguments": {"path": f"file-{index}.txt"}}}
                 ]}}
                 for index in range(34)
             ]

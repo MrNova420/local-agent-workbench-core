@@ -2148,38 +2148,71 @@ class AgentEngine:
                 plan_only_batch=bool(calls) and all(
                     ((call.get("function") or {}).get("name") == "update_plan") for call in calls
                 )
-                if (plan_only_batch and implementation_requested and not action_denied
-                        and self.workspace.access != "plan"):
+                if plan_only_batch:
                     progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps)
                     if plan_only_signature != progress_signature:
                         plan_only_signature=progress_signature
                         plan_only_guidance_signature=None
                     elif plan_only_guidance_signature != progress_signature:
-                        next_action=str(checkpoint_state.get("next_action") or checkpoint_state.get("goal") or
-                                       "the next unfinished implementation step").strip()
-                        current_continuation_guidance=(
-                            f"The implementation plan is saved and may remain expandable, but pending plan edits alone "
-                            f"do not advance the project. Start the next open step now: {next_action}. Use a project "
-                            "inspection or implementation tool as appropriate; do not issue another plan-only update "
-                            "unless new project evidence or user direction changes the plan."
-                        )
+                        if action_denied:
+                            current_continuation_guidance=(
+                                "A project action was denied. Respect that decision and do not retry or route around it. "
+                                "Stop issuing plan-only updates and give the user a concise blocked status with the saved "
+                                "plan and safe alternatives."
+                            )
+                        elif self.workspace.access == "plan" and implementation_requested:
+                            current_continuation_guidance=(
+                                "The selected project access is read-only. Do not attempt a file change or command. Stop "
+                                "issuing plan-only updates and present the saved plan and the read-only blocker to the user."
+                            )
+                        elif implementation_requested:
+                            next_action=str(checkpoint_state.get("next_action") or checkpoint_state.get("goal") or
+                                           "the next unfinished implementation step").strip()
+                            current_continuation_guidance=(
+                                f"The implementation plan is saved and may remain expandable, but pending plan edits alone "
+                                f"do not advance the project. Start the next open step now: {next_action}. Use a project "
+                                "inspection or implementation tool as appropriate; do not issue another plan-only update "
+                                "unless new project evidence or user direction changes the plan."
+                            )
+                        else:
+                            current_continuation_guidance=(
+                                "The current plan is saved. Stop issuing plan-only updates without new evidence and give "
+                                "the user a concise response from the saved plan. Use a permitted inspection only if it is "
+                                "needed to answer the request."
+                            )
                         plan_only_guidance_signature=progress_signature
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,
                                     "reason":"repeated plan-only tool calls without project or verification progress"})
                     else:
-                        blocker=("The model repeated plan-only tool calls after the implementation handoff without "
-                                 "new project, host-decision, user-update, or verification evidence. The saved plan "
-                                 "and operation history are available to continue from the next project action.")
+                        blocked=bool(action_denied or (self.workspace.access == "plan" and implementation_requested))
+                        incomplete=bool(implementation_requested and not blocked)
+                        outcome="blocked" if blocked else "implementation_incomplete" if incomplete else "response_missing"
+                        blocker=(
+                            "A project action was denied; the decision was preserved and dependent work was not retried."
+                            if action_denied else
+                            "The selected project access is read-only, so requested implementation cannot proceed."
+                            if blocked else
+                            "The model repeated plan-only tool calls after the implementation handoff without new "
+                            "project, host-decision, user-update, or verification evidence. The saved plan and operation "
+                            "history are available to continue from the next project action."
+                            if incomplete else
+                            "The model repeated plan-only tool calls without producing a user-visible response. The saved "
+                            "plan and activity remain available for recovery."
+                        )
                         verification=_verification_report(verification_steps,implementation_requested,
                             completed_project_change,command_side_effects_possible,False)
-                        verification["status"]="implementation_incomplete"
+                        verification["status"]=outcome
                         verification["incomplete_reason"]=blocker
-                        finish_task(checkpoint,"stopped",verification,blocker=blocker,
-                                    outcome="implementation_incomplete")
-                        self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,
-                                    "implementationRequested":implementation_requested,
-                                    "projectChanged":completed_project_change,"actionDenied":action_denied,
-                                    "verification":verification,"workflowOutcome":"implementation_incomplete"})
+                        terminal_status="stopped" if blocked or incomplete else "failed"
+                        finish_task(checkpoint,terminal_status,verification,blocker=blocker,outcome=outcome)
+                        terminal_event={"elapsed":time.monotonic()-start,"usage":result,
+                                        "implementationRequested":implementation_requested,
+                                        "projectChanged":completed_project_change,"actionDenied":action_denied,
+                                        "verification":verification,"workflowOutcome":outcome}
+                        if outcome == "response_missing":
+                            self.event({"type":"error","error":blocker,**terminal_event})
+                        else:
+                            self.event({"type":"complete",**terminal_event})
                         return msgs
                 elif calls:
                     # Any non-plan tool call is fresh observable work. A prior
