@@ -171,8 +171,9 @@ class ContextTests(unittest.TestCase):
                         {'role':'user','content':'Continue the active project task.'}]
                     original_messages=json.dumps(messages,ensure_ascii=False)
                     original_checkpoint=json.dumps(checkpoint,ensure_ascii=False)
+                    output_tokens=context//8
                     manager=ContextManager(context=context,reserve=min(1024,max(256,context//8)))
-                    compacted=manager.compact(messages,output_tokens=512,checkpoint=checkpoint)
+                    compacted=manager.compact(messages,output_tokens=output_tokens,checkpoint=checkpoint)
                     system='\n'.join(str(row.get('content','')) for row in compacted if row.get('role')=='system')
                     self.assertIn('Continue the requested project without losing work',system)
                     self.assertIn('Implement the approved project changes',system)
@@ -183,6 +184,8 @@ class ContextTests(unittest.TestCase):
                     self.assertEqual(json.dumps(messages,ensure_ascii=False),original_messages)
                     self.assertEqual(json.dumps(checkpoint,ensure_ascii=False),original_checkpoint)
                     self.assertEqual(manager.context,context)
+                    self.assertEqual(output_tokens,context//8,
+                                     'the fixture varies output reservation with the configured context; it does not impose a product cap')
 
                     registry=ToolRegistry(Workspace(Path(root)),lambda *_:True,task_checkpoint=checkpoint)
                     registry.conversation_messages=messages

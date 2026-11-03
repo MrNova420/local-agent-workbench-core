@@ -4,7 +4,7 @@
 
 - Context omission notices now explicitly direct the model to `read_conversation_history` for omitted user/assistant text and emitted reasoning, `read_task_checkpoint` for decisions/plans/progress, and `read_operation_result` for full tool outputs. The full persisted transcript/checkpoint remains canonical; these details are retrieved in pages rather than silently resending a potentially huge reasoning history on every request.
 - Added an integration regression across configured context fixtures from 4,096 through 1,048,576 tokens. It uses emitted reasoning larger than 50K characters (and proportionally larger at higher contexts), a 60K-character saved decision, and an open plan. It verifies the active goal/plan and current request stay in context, omitted reasoning is recoverable through the history tool, saved decisions through the checkpoint tool, and canonical messages/checkpoint/context are unchanged.
-- Focused matrix: **1 passed across 5 context cases**. Full engine suite after the change: **346 passed**, one upstream pending-deprecation warning, **37.76s**. No runtime settings were changed and no model was loaded by the suite.
+- Focused matrix: **1 passed across 5 context cases**, with output-token reservations varying proportionally to selected context up through 131,072 in the 1M context fixture. Full engine suite after the change: **346 passed**, one upstream pending-deprecation warning, **37.31s**. No runtime settings were changed and no model was loaded by the suite.
 
 ## 2026-11-02 low-context checkpoint retention regression
 
