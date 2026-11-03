@@ -998,9 +998,8 @@ class ToolRegistry:
                 except OSError as exc:raise UncertainFileOperationError(f"Append outcome for {path.name} is uncertain after closing the file; inspect before retrying.") from exc
     @staticmethod
     def _replace_with_retry(source:Path,destination:Path,cancel_event:threading.Event|None=None)->None:
-        """Retry transient Windows sharing locks for up to 30 seconds or until request cancellation."""
+        """Wait for transient Windows sharing locks to release, until success or explicit cancellation."""
         delay=0.05
-        deadline=time.monotonic()+30.0
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise RequestCancelled("Cancelled while waiting for a workspace file to become available.")
@@ -1008,9 +1007,7 @@ class ToolRegistry:
                 os.replace(source,destination)
                 return
             except PermissionError:
-                remaining=deadline-time.monotonic()
-                if remaining<=0:raise
-                time.sleep(min(delay,remaining))
+                time.sleep(delay)
                 delay=min(delay*2,0.75)
     def _patch(self, patch: str) -> str:
         import os,re,tempfile

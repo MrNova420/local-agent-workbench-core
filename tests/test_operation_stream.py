@@ -350,6 +350,35 @@ class OperationStreamTests(unittest.TestCase):
             self.assertGreaterEqual(clock[0], 2.0)
             self.assertEqual(path.read_text(encoding="utf-8"), "after")
 
+    def test_atomic_file_replace_keeps_waiting_past_legacy_deadline_until_lock_releases(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "large.txt")
+            path.write_text("before", encoding="utf-8")
+            registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
+            real_replace = os.replace
+            attempts = []
+            clock = [0.0]
+
+            def replace_after_long_lock(source, destination):
+                attempts.append(1)
+                if clock[0] < 35.0:
+                    raise PermissionError("workspace file remains open")
+                return real_replace(source, destination)
+
+            def advance_clock(delay):
+                clock[0] += delay
+
+            with patch("desktop_engine.os.replace", side_effect=replace_after_long_lock), \
+                 patch("desktop_engine.time.monotonic", side_effect=lambda: clock[0]), \
+                 patch("desktop_engine.time.sleep", side_effect=advance_clock):
+                result = registry.run("write_file", {"path": "large.txt", "content": "after"})
+
+            self.assertEqual(result, "Wrote large.txt")
+            self.assertGreaterEqual(clock[0], 35.0)
+            self.assertEqual(path.read_text(encoding="utf-8"), "after")
+
     def test_append_cancellation_rolls_back_a_partial_chunk(self):
         import threading
         from unittest.mock import patch
