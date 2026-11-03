@@ -1,6 +1,8 @@
 import json
+import tempfile
 import unittest
-from desktop_engine import ContextManager, CONTEXT_MAX, MODEL, tool_result_for_context
+from pathlib import Path
+from desktop_engine import ContextManager, CONTEXT_MAX, MODEL, ToolRegistry, Workspace, tool_result_for_context
 
 class ContextTests(unittest.TestCase):
     def test_oversized_tool_results_keep_full_saved_result_retrievable_with_utf8_safe_cursor(self):
@@ -147,6 +149,54 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(len(checkpoint['current']['operations']),200,
                          'inference compaction must not mutate the canonical checkpoint')
         self.assertEqual(manager.context,4096)
+
+    def test_large_reasoning_and_checkpoint_remain_recoverable_across_context_range(self):
+        # These are test inputs spanning common context sizes through 1M; none
+        # changes or constrains the user's selected runtime context/output.
+        with tempfile.TemporaryDirectory() as root:
+            for context in (4096,8192,65536,262144,1048576):
+                with self.subTest(context=context):
+                    reasoning='emitted reasoning '+('R' * max(60_000,context*3))
+                    decision='saved design decision '+('D' * 60_000)
+                    checkpoint={'current':{'task_id':f'task-{context}','goal':'Continue the requested project without losing work',
+                        'status':'active','plan':[{'title':'Inspect current work','status':'completed'},
+                            {'title':'Implement the approved project changes','status':'in_progress'}],
+                        'decisions':[{'kind':'design','text':decision}],
+                        'user_updates':[{'turn_id':'update-1','instruction':'Preserve the approved scope and continue implementation.'}],
+                        'operations':[{'operation_id':'write-1','name':'write_file','status':'completed','result_ref':'write-1'}],
+                        'next_action':'Implement the next open plan step.'}}
+                    messages=[{'role':'system','content':'System instructions'},
+                        {'role':'user','content':'Earlier task details'},
+                        {'role':'assistant','content':'I analyzed the project.', 'thinking':reasoning},
+                        {'role':'user','content':'Continue the active project task.'}]
+                    original_messages=json.dumps(messages,ensure_ascii=False)
+                    original_checkpoint=json.dumps(checkpoint,ensure_ascii=False)
+                    manager=ContextManager(context=context,reserve=min(1024,max(256,context//8)))
+                    compacted=manager.compact(messages,output_tokens=512,checkpoint=checkpoint)
+                    system='\n'.join(str(row.get('content','')) for row in compacted if row.get('role')=='system')
+                    self.assertIn('Continue the requested project without losing work',system)
+                    self.assertIn('Implement the approved project changes',system)
+                    self.assertTrue(any(row.get('role')=='user' and row.get('content')=='Continue the active project task.' for row in compacted))
+                    self.assertNotIn(reasoning, json.dumps(compacted,ensure_ascii=False),
+                                     'older emitted reasoning should be retrieved on demand, not silently resent wholesale')
+                    self.assertIn('read_conversation_history',json.dumps(compacted,ensure_ascii=False))
+                    self.assertEqual(json.dumps(messages,ensure_ascii=False),original_messages)
+                    self.assertEqual(json.dumps(checkpoint,ensure_ascii=False),original_checkpoint)
+                    self.assertEqual(manager.context,context)
+
+                    registry=ToolRegistry(Workspace(Path(root)),lambda *_:True,task_checkpoint=checkpoint)
+                    registry.conversation_messages=messages
+                    history=[row for row in messages[1:] if row.get('role')=='assistant']
+                    history_json=json.dumps(history,ensure_ascii=False,indent=2)
+                    reasoning_offset=history_json.index(reasoning[:80])
+                    recovered_reasoning=registry.run('read_conversation_history',
+                        {'offset':reasoning_offset,'length':80,'role':'assistant'})
+                    self.assertIn(reasoning[:80],recovered_reasoning)
+                    decision_json=json.dumps(checkpoint['current']['decisions'],ensure_ascii=False,indent=2)
+                    decision_offset=decision_json.index(decision[:80])
+                    recovered_decision=registry.run('read_task_checkpoint',
+                        {'section':'decisions','offset':decision_offset,'length':80})
+                    self.assertIn(decision[:80],recovered_decision)
     def test_request_skills_fit_available_budget_and_full_catalog_stays_callable(self):
         from tempfile import TemporaryDirectory
         from pathlib import Path

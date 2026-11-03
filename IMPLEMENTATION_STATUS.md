@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-02 compaction recovery for long emitted reasoning and saved decisions
+
+- Context omission notices now explicitly direct the model to `read_conversation_history` for omitted user/assistant text and emitted reasoning, `read_task_checkpoint` for decisions/plans/progress, and `read_operation_result` for full tool outputs. The full persisted transcript/checkpoint remains canonical; these details are retrieved in pages rather than silently resending a potentially huge reasoning history on every request.
+- Added an integration regression across configured context fixtures from 4,096 through 1,048,576 tokens. It uses emitted reasoning larger than 50K characters (and proportionally larger at higher contexts), a 60K-character saved decision, and an open plan. It verifies the active goal/plan and current request stay in context, omitted reasoning is recoverable through the history tool, saved decisions through the checkpoint tool, and canonical messages/checkpoint/context are unchanged.
+- Focused matrix: **1 passed across 5 context cases**. Full engine suite is running after this change; no runtime settings or model were changed.
+
 ## 2026-11-02 low-context checkpoint retention regression
 
 - Strengthened the oversized-checkpoint compaction regression to prove that, under context pressure, the current goal and open implementation-plan step remain in the inference summary, while the canonical 200-operation checkpoint is unchanged. The selected context is asserted unchanged as well.

@@ -1363,7 +1363,7 @@ class ContextManager:
             dropped=len(turns)-len(candidate)
             notice=[]
             if dropped:
-                notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript and tool results remain saved; use the task checkpoint and saved operation references to continue. Do not claim omitted material was reviewed unless the checkpoint or a tool result confirms it.]"}]
+                notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript, including emitted assistant reasoning, and tool results remain saved; use read_conversation_history for omitted user/assistant content and reasoning, read_task_checkpoint for saved decisions/plans/progress, and saved operation references for tool results. Do not claim omitted material was reviewed unless the checkpoint or a retrieval tool confirms it.]"}]
             proposed=base+notice+[m for group in candidate for m in group]
             if request_size(proposed)>budget:
                 if not kept:
@@ -1374,12 +1374,12 @@ class ContextManager:
                             for block in reversed(blocks[1:]):
                                 trial=[block]+retained
                                 missing=len(blocks)-1-len(trial)
-                                within_notice=([{"role":"user","content":f"[Active task compaction: {missing} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript and outputs remain saved. Use operation IDs in the task checkpoint with read_operation_result to recover output; inspect the workspace before repeating any action.]"}] if missing else [])
+                                within_notice=([{"role":"user","content":f"[Active task compaction: {missing} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript, including emitted assistant reasoning, and outputs remain saved. Use read_conversation_history for omitted user/assistant content and reasoning; use operation IDs in the task checkpoint with read_operation_result for full tool output; inspect the workspace before repeating any action.]"}] if missing else [])
                                 candidate_turn=blocks[0]+within_notice+[message for group in trial for message in group]
                                 if request_size(base+notice+candidate_turn)>budget:break
                                 retained=trial
                             omitted_groups=len(blocks)-1-len(retained)
-                            within_notice=([{"role":"user","content":f"[Active task compaction: {omitted_groups} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript and outputs remain saved. Use operation IDs in the task checkpoint with read_operation_result to recover output; inspect the workspace before repeating any action.]"}] if omitted_groups else [])
+                            within_notice=([{"role":"user","content":f"[Active task compaction: {omitted_groups} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript, including emitted assistant reasoning, and outputs remain saved. Use read_conversation_history for omitted user/assistant content and reasoning; use operation IDs in the task checkpoint with read_operation_result for full tool output; inspect the workspace before repeating any action.]"}] if omitted_groups else [])
                             compact_turn=blocks[0]+within_notice+[message for group in retained for message in group]
                             if request_size(base+notice+compact_turn)<=budget:
                                 turn=compact_turn
@@ -1396,13 +1396,13 @@ class ContextManager:
         dropped=len(turns)-len(kept)
         notice=[]
         if dropped:
-            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript and tool results remain saved; use the task checkpoint and saved operation references to continue. Do not claim omitted material was reviewed unless the checkpoint or a tool result confirms it.]"}]
+            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript, including emitted assistant reasoning, and tool results remain saved; use read_conversation_history for omitted user/assistant content and reasoning, read_task_checkpoint for saved decisions/plans/progress, and saved operation references for tool results. Do not claim omitted material was reviewed unless the checkpoint or a retrieval tool confirms it.]"}]
         compacted=base+notice+[m for group in kept for m in group]
         # If the notice itself pushes the request over budget, discard complete older turns,
         # never individual assistant/tool messages or fragments of user text.
         while request_size(compacted)>budget and len(kept)>1:
             kept=kept[1:];dropped=len(turns)-len(kept)
-            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript and tool results remain saved; use the task checkpoint and saved operation references to continue. Do not claim omitted material was reviewed unless the checkpoint or a tool result confirms it.]"}]
+            notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript, including emitted assistant reasoning, and tool results remain saved; use read_conversation_history for omitted user/assistant content and reasoning, read_task_checkpoint for saved decisions/plans/progress, and saved operation references for tool results. Do not claim omitted material was reviewed unless the checkpoint or a retrieval tool confirms it.]"}]
             compacted=base+notice+[m for group in kept for m in group]
         if request_size(compacted)>budget:
             raise ValueError(f"Current turn and context notice exceed the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
