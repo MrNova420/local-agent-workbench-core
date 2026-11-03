@@ -1240,10 +1240,10 @@ def _split_turn_for_compaction(turn:list[dict])->list[list[dict]]:
     return groups
 
 class ContextManager:
-    def __init__(self, context: int=CONTEXT_MAX, reserve:int=512,scan_file_limit:int|None=None,scan_bytes_limit:int|None=None): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
+    def __init__(self, context: int=CONTEXT_MAX, reserve:int=0,scan_file_limit:int|None=None,scan_bytes_limit:int|None=None): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
     @property
     def input_budget(self): return max(1024,self.context-self.reserve)
-    def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens+1024))
+    def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens))
     @staticmethod
     def estimate(text:str)->int:
         # UTF-8 bytes are not tokens. Two bytes per token is deliberately
@@ -1308,7 +1308,7 @@ class ContextManager:
         tools=tools or [];budget=self.budget(output_tokens)
         def request_size(rows):return self.estimate(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))
         tool_size=self.estimate(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
-        if tool_size+max(self.reserve,output_tokens+1024)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
+        if tool_size+max(self.reserve,output_tokens)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
         # Ollama chat templates (including the selected Ornith GGUF template)
         # require every system instruction to be in the first message. Keep
         # saved history intact, but normalize provider-bound context into one

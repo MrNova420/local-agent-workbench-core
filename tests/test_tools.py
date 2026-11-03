@@ -196,7 +196,7 @@ class ToolTests(unittest.TestCase):
     engine=AgentEngine(Path(t),context=65536,max_tokens=8192)
     self.assertEqual(engine.state['context'],65536)
     self.assertEqual(engine.state['max_tokens'],8192)
-    self.assertEqual(engine.state['registry'].read_output_byte_budget,112640)
+   self.assertEqual(engine.state['registry'].read_output_byte_budget,114688)
 
  def test_file_listing_pages_within_context_budget(self):
    import re

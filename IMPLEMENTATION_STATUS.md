@@ -1,5 +1,12 @@
 # Implementation and verification status
 
+## 2026-11-02 remove hidden request-budget cushion
+
+- The production context budget now reserves the user's selected maximum output exactly and defaults to no additional fixed reserve. An explicitly supplied reserve is still honored. This removes the former hidden 1,024-token cushion (and 512-token default reserve) that reduced usable input without changing either saved setting.
+- File, search, result, and tool-catalog pagination still size each response from the remaining request budget and keep complete results available through continuation cursors. These are budget-aware transfers, not fixed project-size or output ceilings.
+- Token counting is still an explicitly labeled conservative UTF-8 estimate until the provider returns `prompt_eval_count`; it is not an exact model tokenizer. Model-specific calibration from observed provider counts remains an open reliability improvement and is not claimed as implemented here.
+- Regression coverage proves 4,096 context / 128 output leaves 3,968 estimated input tokens and 65,536 / 8,192 leaves 57,344, with both selected values preserved. Full engine suite: **347 passed**, five subtests passed, one upstream `python-multipart` pending-deprecation warning, **37.08s**.
+
 ## 2026-11-02 compaction recovery for long emitted reasoning and saved decisions
 
 - Context omission notices now explicitly direct the model to `read_conversation_history` for omitted user/assistant text and emitted reasoning, `read_task_checkpoint` for decisions/plans/progress, and `read_operation_result` for full tool outputs. The full persisted transcript/checkpoint remains canonical; these details are retrieved in pages rather than silently resending a potentially huge reasoning history on every request.
