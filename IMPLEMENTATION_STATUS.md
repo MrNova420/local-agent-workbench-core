@@ -3,7 +3,12 @@
 ## 2026-11-02 low-context checkpoint retention regression
 
 - Strengthened the oversized-checkpoint compaction regression to prove that, under context pressure, the current goal and open implementation-plan step remain in the inference summary, while the canonical 200-operation checkpoint is unchanged. The selected context is asserted unchanged as well.
-- Focused test `tests/test_context.py::ContextTests::test_compaction_budget_summarizes_oversized_checkpoint_without_changing_context`: **1 passed**. The full engine suite remains queued.
+- Focused test `tests/test_context.py::ContextTests::test_compaction_budget_summarizes_oversized_checkpoint_without_changing_context`: **1 passed**. The full engine suite later passed: **345 passed** with one upstream `python-multipart` pending-deprecation warning.
+
+## 2026-11-02 full engine suite and Windows contract assertions
+
+- Updated two stale test expectations to match current contracts: provider HTTP failures are surfaced as `InferenceStreamError` with the selected context preserved in the captured request; approved Windows commands include `CREATE_SUSPENDED` before Job Object assignment as well as `CREATE_NO_WINDOW`.
+- Focused failures: **6 passed**. Full engine suite: `python -m pytest -q` → **345 passed**, one upstream pending-deprecation warning, **37.30s**. No model was loaded by this suite.
 
 ## 2026-11-02 Continuation progress uses observed read results and argument fingerprints
 

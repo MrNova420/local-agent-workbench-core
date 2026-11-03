@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import tempfile
@@ -61,7 +62,7 @@ class TelemetryWindowsTests(unittest.TestCase):
 
         self.assertEqual(
             popen.call_args.kwargs.get("creationflags"),
-            getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            getattr(subprocess, "CREATE_NO_WINDOW", 0) | (0x00000004 if os.name == "nt" else 0),
         )
 
     @patch(
