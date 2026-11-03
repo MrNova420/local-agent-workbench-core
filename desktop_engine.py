@@ -24,6 +24,7 @@ CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 PROJECT_LIST_SCAN_LIMIT = None
+_APPEND_LOCK = threading.Lock()
 _CONTINUATION_GUIDANCE_MARKER = "\n\n[Current Workbench continuation]\n"
 
 def approval_policy_guidance(mode: str) -> str:
@@ -45,6 +46,9 @@ def approval_policy_guidance(mode: str) -> str:
 class RequestCancelled(Exception):
  def __init__(self,message='Cancelled',partial_message:dict|None=None):
   super().__init__(message);self.partial_message=partial_message
+
+class UncertainFileOperationError(RuntimeError):
+ """A failed file operation could not prove its partial effects were rolled back."""
 
 class InferenceStreamError(RuntimeError):
  def __init__(self,message:str,partial_message:dict|None=None):
@@ -202,6 +206,8 @@ def _tool_activity_status(name: str, result: str) -> str:
     """Map known tool outcomes to truthful states without inspecting file contents."""
     text = str(result)
     folded = text.casefold().strip()
+    if name in {"write_file", "append_file", "edit_file", "apply_patch"} and folded.startswith("uncertain:"):
+        return "uncertain"
     if name.startswith("mcp__") and (folded.startswith(("uncertain:", "tool error:")) or "cancelled during mcp action" in folded or "canceled during mcp action" in folded):
         return "uncertain"
     if name in {"run_command", "run_shell"} and "[command cancelled by user]" in folded:
@@ -880,7 +886,7 @@ class ToolRegistry:
                 if not isinstance(content,str):return "Invalid content: expected text."
                 if not path.is_file():return f"Cannot append to {args['path']}: the project file does not exist. Create it with write_file first."
                 if not content:return "No change: append content is empty."
-                self._atomic_append(path,content.encode("utf-8"),self.cancel_event)
+                self._append_with_rollback(path,content.encode("utf-8"),self.cancel_event)
                 return "Appended " + args["path"]
             old_text=args.get("old_text");new_text=args.get("new_text");replace_all=args.get("replace_all",False)
             if not isinstance(old_text,str) or not old_text:return "Invalid old_text: provide a non-empty exact string to replace."
@@ -951,26 +957,45 @@ class ToolRegistry:
                 try:temp_path.unlink(missing_ok=True)
                 except OSError:pass
     @staticmethod
-    def _atomic_append(path:Path,data:bytes,cancel_event:threading.Event|None=None)->None:
-        before=path.stat()
-        temp_path=None
-        try:
-            with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
-                temp_path=Path(handle.name)
-                with path.open("rb") as source:
-                    while True:
-                        chunk=source.read(1024*1024)
-                        if not chunk:break
-                        handle.write(chunk)
-                after=path.stat()
-                if (before.st_size,before.st_mtime_ns,getattr(before,"st_ino",None)) != (after.st_size,after.st_mtime_ns,getattr(after,"st_ino",None)):
-                    raise RuntimeError(f"{path.name} changed while preparing the append; reread it before retrying.")
-                handle.write(data);handle.flush();os.fsync(handle.fileno())
-            ToolRegistry._replace_with_retry(temp_path,path,cancel_event)
-        finally:
-            if temp_path is not None:
-                try:temp_path.unlink(missing_ok=True)
-                except OSError:pass
+    def _append_with_rollback(path:Path,data:bytes,cancel_event:threading.Event|None=None)->None:
+        # Appending a chunk by copying/replacing the whole file turns repeated
+        # model writes into quadratic disk I/O and invalidates readers/watchers.
+        # Serialize in-process appends, verify the target did not change between
+        # inspection and open, then append only the new bytes with rollback for
+        # synchronous failures. A process crash mid-write remains an uncertain
+        # in-flight write and is handled by session recovery for user review.
+        with _APPEND_LOCK:
+            before=path.stat()
+            descriptor=os.open(path,os.O_RDWR|os.O_APPEND|getattr(os,"O_BINARY",0))
+            written=0
+            try:
+                after=os.fstat(descriptor)
+                before_identity=(before.st_size,before.st_mtime_ns,getattr(before,"st_ino",None))
+                after_identity=(after.st_size,after.st_mtime_ns,getattr(after,"st_ino",None))
+                if before_identity!=after_identity:
+                    raise RuntimeError(f"{path.name} changed before the append began; reread it before retrying.")
+                original_size=after.st_size
+                try:
+                    while written<len(data):
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise RequestCancelled("Append cancelled before the complete chunk was written.")
+                        count=os.write(descriptor,data[written:])
+                        if count<=0:raise OSError("The file system accepted zero bytes for an append write.")
+                        written+=count
+                    os.fsync(descriptor)
+                except BaseException:
+                    if written:
+                        try:
+                            os.ftruncate(descriptor,original_size)
+                            os.fsync(descriptor)
+                        except OSError as rollback_error:
+                            raise UncertainFileOperationError(
+                                f"Append to {path.name} failed after writing {written:,} bytes and rollback also failed; inspect the file before retrying."
+                            ) from rollback_error
+                    raise
+            finally:
+                try:os.close(descriptor)
+                except OSError as exc:raise UncertainFileOperationError(f"Append outcome for {path.name} is uncertain after closing the file; inspect before retrying.") from exc
     @staticmethod
     def _replace_with_retry(source:Path,destination:Path,cancel_event:threading.Event|None=None)->None:
         """Retry transient Windows sharing locks for up to 30 seconds or until request cancellation."""
@@ -2115,7 +2140,8 @@ class AgentEngine:
                                     if not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
                                 else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
-                            except RequestCancelled:out="Cancelled before the workspace file replacement completed."
+                            except RequestCancelled:out="Cancelled before the workspace file operation completed."
+                            except UncertainFileOperationError as exc:out=f"Uncertain: {exc}"
                             except MCPRequestCancelled:
                                 out="Uncertain: MCP action was cancelled after dispatch; the server may have applied it. Inspect before retrying."
                             except MCPRequestUncertain as exc:out=f"Uncertain: {exc}"

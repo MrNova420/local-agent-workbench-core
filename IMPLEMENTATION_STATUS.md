@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-02 incremental large-file save path
+
+- `append_file` now appends only the new bytes to the existing file instead of copying and replacing the entire growing file for every model chunk. Windows file descriptors are opened in binary mode, preserving exact UTF-8 bytes and `\n` line endings. Synchronous partial write failures roll back to the original byte length; if rollback cannot be confirmed, the tool reports an uncertain result that must be inspected before retrying. A process interruption during an append remains recoverable as an uncertain in-flight write.
+- Direct disposable-project verification wrote **100,000 lines / 5.9 MB** across **720 chunks** and recovered exact line count, first/last lines, and SHA-256 (`ef81d11a56c049e2787e14b01b966f403b073c33dcb200017c3451f1a05e50f3`) in **6.05 seconds**. A second run with **1,024-character chunks** wrote **100,000 lines / 5.9 MB** across **5,556 chunks** with the same hash in **44.39 seconds**. These were file-engine checks; no model generated the fixture.
+- Regressions cover file identity across appends, byte-exact Unicode/newline preservation, partial-write rollback, cancellation rollback, and continued atomic Windows sharing-lock retries for whole-file `write_file`. Full engine suite: **349 passed**, five subtests passed, one upstream pending-deprecation warning, **36.75s**.
+
 ## 2026-11-02 remove hidden request-budget cushion
 
 - The production context budget now reserves the user's selected maximum output exactly and defaults to no additional fixed reserve. An explicitly supplied reserve is still honored. This removes the former hidden 1,024-token cushion (and 512-token default reserve) that reduced usable input without changing either saved setting.

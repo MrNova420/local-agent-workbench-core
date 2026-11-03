@@ -290,14 +290,14 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual([event["status"] for event in completed], ["failed", "completed"])
             self.assertEqual(result[-1]["content"], "Recovered and continued.")
 
-    def test_append_file_builds_large_unicode_files_in_multiple_atomic_chunks(self):
+    def test_append_file_preserves_large_unicode_files_across_incremental_chunks(self):
         with tempfile.TemporaryDirectory() as root:
             registry = ToolRegistry(Workspace(root, "edit"), lambda *_: True)
             self.assertIn("write_file", {row["function"]["name"] for row in registry.schemas})
             self.assertIn("append_file", {row["function"]["name"] for row in registry.schemas})
             self.assertEqual(registry.run("write_file", {"path": "large.txt", "content": "start\n"}), "Wrote large.txt")
             self.assertEqual(registry.run("append_file", {"path": "large.txt", "content": "雪\n" * 12000}), "Appended large.txt")
-            self.assertEqual(Path(root, "large.txt").read_text(encoding="utf-8"), "start\n" + "雪\n" * 12000)
+            self.assertEqual(Path(root, "large.txt").read_bytes(), ("start\n" + "雪\n" * 12000).encode("utf-8"))
 
     def test_atomic_file_replace_retries_transient_windows_sharing_violation(self):
         from unittest.mock import patch
@@ -316,9 +316,9 @@ class OperationStreamTests(unittest.TestCase):
                 return real_replace(source, destination)
 
             with patch("desktop_engine.os.replace", side_effect=replace_with_one_transient_lock):
-                self.assertEqual(registry.run("append_file", {"path": "large.txt", "content": "after"}), "Appended large.txt")
+                self.assertEqual(registry.run("write_file", {"path": "large.txt", "content": "after"}), "Wrote large.txt")
             self.assertEqual(len(attempts), 2)
-            self.assertEqual(path.read_text(encoding="utf-8"), "beforeafter")
+            self.assertEqual(path.read_text(encoding="utf-8"), "after")
 
     def test_atomic_file_replace_survives_a_sharing_lock_longer_than_short_retry_burst(self):
         from unittest.mock import patch
@@ -343,14 +343,14 @@ class OperationStreamTests(unittest.TestCase):
             with patch("desktop_engine.os.replace", side_effect=replace_after_extended_lock), \
                  patch("desktop_engine.time.monotonic", side_effect=lambda: clock[0]), \
                  patch("desktop_engine.time.sleep", side_effect=advance_clock):
-                result = registry.run("append_file", {"path": "large.txt", "content": "after"})
+                result = registry.run("write_file", {"path": "large.txt", "content": "after"})
 
-            self.assertEqual(result, "Appended large.txt")
+            self.assertEqual(result, "Wrote large.txt")
             self.assertEqual(len(attempts), 10)
             self.assertGreaterEqual(clock[0], 2.0)
-            self.assertEqual(path.read_text(encoding="utf-8"), "beforeafter")
+            self.assertEqual(path.read_text(encoding="utf-8"), "after")
 
-    def test_atomic_file_replace_stops_waiting_when_request_is_cancelled(self):
+    def test_append_cancellation_rolls_back_a_partial_chunk(self):
         import threading
         from unittest.mock import patch
 
@@ -358,14 +358,21 @@ class OperationStreamTests(unittest.TestCase):
             path = Path(root, "large.txt")
             path.write_text("before", encoding="utf-8")
             cancel_event = threading.Event()
+            real_write = os.write
+            writes = 0
 
-            def cancel_during_wait(_delay):
-                cancel_event.set()
+            def cancel_after_partial_chunk(fd, data):
+                nonlocal writes
+                writes += 1
+                if writes == 1:
+                    count = real_write(fd, data[:3])
+                    cancel_event.set()
+                    return count
+                raise AssertionError("cancellation should be observed before another write")
 
-            with patch("desktop_engine.os.replace", side_effect=PermissionError("sharing lock")), \
-                 patch("desktop_engine.time.sleep", side_effect=cancel_during_wait):
-                with self.assertRaisesRegex(RequestCancelled, "Cancelled while waiting"):
-                    ToolRegistry._atomic_append(path, b"after", cancel_event)
+            with patch("desktop_engine.os.write", side_effect=cancel_after_partial_chunk):
+                with self.assertRaisesRegex(RequestCancelled, "Append cancelled"):
+                    ToolRegistry._append_with_rollback(path, b"after", cancel_event)
 
             self.assertEqual(path.read_text(encoding="utf-8"), "before")
             self.assertEqual(list(Path(root).glob("*.tmp")), [])

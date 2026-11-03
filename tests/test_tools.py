@@ -143,6 +143,31 @@ class ToolTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as t:
    tools=ToolRegistry(Workspace(t,'plan'),lambda *_:True)
    self.assertIn('read-only',tools.run('apply_patch',{'patch':'--- a/x\n+++ b/x\n@@\n+hi'}))
+ def test_append_file_preserves_existing_file_identity_for_incremental_large_writes(self):
+  import os
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);target=root/'generated.txt';target.write_text('first chunk\n',encoding='utf-8')
+   original_identity=os.stat(target).st_ino
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True)
+   self.assertEqual(tools.run('append_file',{'path':'generated.txt','content':'second chunk\n'}),'Appended generated.txt')
+   self.assertEqual(os.stat(target).st_ino,original_identity,
+                    'appending a chunk must extend the existing file instead of copying/replacing all prior content')
+   self.assertEqual(target.read_text(encoding='utf-8'),'first chunk\nsecond chunk\n')
+ def test_append_file_rolls_back_a_partially_written_chunk_on_io_failure(self):
+  import os
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);target=root/'generated.txt';target.write_bytes(b'committed prefix\n')
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True)
+   real_write=os.write;calls=0
+   def partial_then_fail(fd,data):
+    nonlocal calls
+    calls+=1
+    if calls==1:return real_write(fd,data[:5])
+    raise OSError('simulated disk write failure')
+   with patch('desktop_engine.os.write',side_effect=partial_then_fail):
+    with self.assertRaises(OSError):tools.run('append_file',{'path':'generated.txt','content':'chunk that must roll back'})
+   self.assertEqual(target.read_bytes(),b'committed prefix\n')
  def test_read_file_is_project_relative(self):
   with tempfile.TemporaryDirectory() as t:
    (Path(t)/'a.py').write_text('ok');tools=ToolRegistry(Workspace(t),lambda *_:True)
