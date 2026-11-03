@@ -21,6 +21,23 @@ class SessionTests(unittest.TestCase):
    self.assertEqual(json.loads(target.read_text(encoding='utf-8'))['marker'],'saved after lock')
    self.assertEqual(len(attempts),10);self.assertGreaterEqual(clock[0],2.0)
    self.assertEqual(list(root.glob('*.tmp')),[])
+ def test_save_keeps_waiting_past_legacy_deadline_until_lock_releases(self):
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)/'sessions';store=SessionStore(root);state=store.create(t,MODEL,CONTEXT_MAX);store.save(state)
+   target=root/(state['session_id']+'.json');real_replace=os.replace;clock=[0.0]
+   def replace_after_long_lock(source,destination):
+    if clock[0]<35.0:raise PermissionError('session snapshot remains open')
+    return real_replace(source,destination)
+   def advance_clock(delay):clock[0]+=delay
+   state['marker']='saved after long lock'
+   with patch('sessions.os.replace',side_effect=replace_after_long_lock), \
+        patch('sessions.time.monotonic',side_effect=lambda:clock[0]), \
+        patch('sessions.time.sleep',side_effect=advance_clock):
+    store.save(state)
+   self.assertEqual(json.loads(target.read_text(encoding='utf-8'))['marker'],'saved after long lock')
+   self.assertGreaterEqual(clock[0],35.0)
+   self.assertEqual(list(root.glob('*.tmp')),[])
  def test_create_save_recover_and_list(self):
   with tempfile.TemporaryDirectory() as t:
    store=SessionStore(Path(t)/'sessions');state=store.create(t,MODEL,CONTEXT_MAX);store.save(state);loaded=store.load(state['session_id'])

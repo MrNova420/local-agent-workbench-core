@@ -68,16 +68,12 @@ class SessionStore:
 
 
 def _replace_with_retry(source:Path,destination:Path)->None:
-    """Retry transient Windows sharing locks for up to 30 seconds."""
+    """Wait for transient Windows sharing locks to release instead of dropping a session save."""
     delay=0.05
-    deadline=time.monotonic()+30.0
     while True:
         try:
             os.replace(source,destination)
             return
         except PermissionError:
-            remaining=deadline-time.monotonic()
-            if remaining<=0:
-                raise
-            time.sleep(min(delay,remaining))
+            time.sleep(delay)
             delay=min(delay*2,0.75)
