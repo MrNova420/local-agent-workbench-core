@@ -320,10 +320,14 @@ class LlamaCppRuntime:
                             slot["function"]["name"] += function["name"]
                         if isinstance(function.get("arguments"), str):
                             slot["function"]["arguments"] += function["arguments"]
+                        argument_text = slot["function"].get("arguments", "")
+                        argument_preview_limit = 768
                         emit({"type": "tool_call_progress", "provider": "llama.cpp",
                               "request_index": request_index, "call_index": index,
                               "tool_name": slot["function"].get("name", ""),
-                              "argument_characters": len(slot["function"].get("arguments", "")),
+                              "argument_characters": len(argument_text),
+                              "argument_preview": argument_text[:argument_preview_limit],
+                              "argument_preview_truncated": len(argument_text) > argument_preview_limit,
                               "at": time.time()})
             if calls:
                 result["message"]["tool_calls"] = [calls[index] for index in sorted(calls)]

@@ -51,8 +51,9 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     progress = next(event for event in events if event["type"] == "tool_call_progress")
     assert progress["tool_name"] == "read_file"
     assert progress["argument_characters"] > 0
+    assert progress["argument_preview"] == '{"path":"a.py"}'
+    assert progress["argument_preview_truncated"] is False
     assert "arguments" not in progress
-    assert "arguments_preview" not in progress
     settings = next(event for event in events if event["type"] == "inference_settings")
     assert settings["requested_context"] == 32768
     assert settings["request_index"] == 4
