@@ -74,7 +74,8 @@ def begin_task(
             current["plan"] = copy.deepcopy(plan)
     current.update(status="active", active_turn_id=turn_id, updated_at=time.time())
     current.pop("next_action", None)
-    return {"task_history": history, "current": current}
+    session_metadata = {key: value for key, value in previous_state.items() if key not in {"task_history", "current"}}
+    return {"task_history": history, "current": current, **session_metadata}
 
 
 def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:

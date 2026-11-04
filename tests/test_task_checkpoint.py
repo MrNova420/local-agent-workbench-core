@@ -55,6 +55,14 @@ def test_checkpoint_keeps_active_task_and_user_followups_across_turns():
     assert "65536" in render_checkpoint(second)
 
 
+def test_new_task_preserves_session_level_provider_token_calibration():
+    calibration = {"ollama|flint-local": {"max_observed_ratio": 0.4, "observation_count": 2}}
+    checkpoint = begin_task({"provider_token_calibrations": calibration}, prompt="Say hello", turn_id="t1",
+                            workspace="C:/p", settings={})
+
+    assert checkpoint["provider_token_calibrations"] == calibration
+
+
 def test_automatic_plan_only_mode_is_persisted_then_reclassified_on_followup():
     checkpoint = begin_task(None, prompt="Prepare a plan only", turn_id="plan-only", workspace="C:/p", settings={})
     record_plan(checkpoint, [{"title": "Implement later", "status": "deferred"}], task_mode="plan_only", plan_source="agent")

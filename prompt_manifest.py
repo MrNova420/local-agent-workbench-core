@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 _RETRIEVED_FILE = re.compile(r"(?m)^--- relevant file: (.+?) \(relevance \d+\) ---$")
 _INSTRUCTION_SOURCE = re.compile(r"(?m)^--- ([^\r\n]+) ---$")
@@ -56,14 +56,14 @@ def _skill_references(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     return references
 
 
-def _instruction_sources(text: str) -> list[dict[str, Any]]:
+def _instruction_sources(text: str, estimate_tokens: Callable[[str], int] = _estimated_tokens) -> list[dict[str, Any]]:
     matches = list(_INSTRUCTION_SOURCE.finditer(text))
     rows = []
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         content = text[match.end():end].strip()
         rows.append({"path": match.group(1), "characters": len(content),
-                     "estimated_tokens": _estimated_tokens(content) if content else 0})
+                     "estimated_tokens": estimate_tokens(content) if content else 0})
     return rows
 
 
@@ -83,9 +83,11 @@ def build_prompt_manifest(
     harness_profile: str,
     task_intent: str,
     access: str,
+    request_token_estimator: Callable[[str], int] | None = None,
 ) -> dict[str, Any]:
     """Describe request inputs and their provenance without retaining prompt text itself."""
     request = {"messages": messages, "tools": tools}
+    estimate_request = request_token_estimator or _estimated_tokens
     message_rows = []
     retrieved_files: set[str] = set()
     for index, message in enumerate(messages):
@@ -98,7 +100,7 @@ def build_prompt_manifest(
             "role": str(message.get("role", "unknown")),
             "source": source,
             "characters": len(content),
-            "estimated_tokens": _estimated_tokens(content),
+            "estimated_tokens": estimate_request(content),
             "tool_name": str(message.get("tool_name", "")) or None,
             "retrieved_files": files,
             "has_tool_calls": bool(message.get("tool_calls")),
@@ -109,10 +111,10 @@ def build_prompt_manifest(
         "configured_context": context,
         "maximum_output_tokens": output_tokens,
         "input_budget": input_budget,
-        "estimated_request_input_tokens": _estimated_tokens(json.dumps(request, ensure_ascii=False, separators=(",", ":"))),
+        "estimated_request_input_tokens": estimate_request(json.dumps(request, ensure_ascii=False, separators=(",", ":"))),
         "message_count": len(messages),
         "messages": message_rows,
-        "project_instruction_sources": _instruction_sources(project_instructions) if project_instructions != "(none found)" else [],
+        "project_instruction_sources": _instruction_sources(project_instructions, estimate_request) if project_instructions != "(none found)" else [],
         "retrieved_project_files": sorted(retrieved_files, key=str.casefold),
         "checkpoint_included": any(row["source"] == "task_checkpoint" for row in message_rows),
         "compaction_notice_count": sum(row["source"] == "compaction_notice" for row in message_rows),

@@ -1786,7 +1786,7 @@ def _split_turn_for_compaction(turn:list[dict])->list[list[dict]]:
     return groups
 
 class ContextManager:
-    def __init__(self, context: int=CONTEXT_MAX, reserve:int=0,scan_file_limit:int|None=None,scan_bytes_limit:int|None=None): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
+    def __init__(self, context: int=CONTEXT_MAX, reserve:int=0,scan_file_limit:int|None=None,scan_bytes_limit:int|None=None): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit;self._provider_calibration_key=None;self._provider_calibration_scale=None;self._provider_calibration_observations=0
     @property
     def input_budget(self): return max(0,self.context-self.reserve)
     def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens))
@@ -1795,6 +1795,51 @@ class ContextManager:
         # UTF-8 bytes are not tokens. Two bytes per token is deliberately
         # conservative for prose and compact JSON tool schemas.
         return max(1,(len(text.encode("utf8",errors="surrogatepass"))+1)//2)
+    @staticmethod
+    def provider_calibration_key(provider:str,model:str)->str:
+        return f"{provider.strip().casefold()}|{model.strip()}"
+    def configure_provider_calibration(self,checkpoint:dict[str,Any],provider:str,model:str)->None:
+        key=self.provider_calibration_key(provider,model)
+        calibrations=checkpoint.get("provider_token_calibrations",{}) if isinstance(checkpoint,dict) else {}
+        calibration=calibrations.get(key) if isinstance(calibrations,dict) else None
+        scale=calibration.get("max_observed_ratio") if isinstance(calibration,dict) else None
+        self._provider_calibration_key=key
+        self._provider_calibration_scale=scale if isinstance(scale,(int,float)) and not isinstance(scale,bool) and math.isfinite(scale) and scale>0 else None
+        observations=calibration.get("observation_count",0) if isinstance(calibration,dict) else 0
+        self._provider_calibration_observations=max(0,int(observations)) if isinstance(observations,(int,float)) and not isinstance(observations,bool) and math.isfinite(observations) else 0
+    @property
+    def request_estimate_method(self)->str:
+        if self._provider_calibration_scale is None:return "conservative UTF-8 byte estimate; provider count replaces this after response"
+        return (f"model-calibrated UTF-8 estimate using the highest ratio from {self._provider_calibration_observations} "
+                "exact Ollama prompt count(s); provider response remains authoritative")
+    def estimate_request(self,text:str)->int:
+        estimate=self.estimate(text)
+        if self._provider_calibration_scale is None:return estimate
+        return max(1,math.ceil(estimate*self._provider_calibration_scale))
+    def observe_provider_prompt(self,checkpoint:dict[str,Any],provider:str,model:str,estimated_tokens:int,actual_tokens:int)->dict[str,Any]|None:
+        if (not isinstance(estimated_tokens,int) or isinstance(estimated_tokens,bool) or estimated_tokens<1
+                or not isinstance(actual_tokens,int) or isinstance(actual_tokens,bool) or actual_tokens<1):return None
+        key=self.provider_calibration_key(provider,model)
+        calibrations=checkpoint.setdefault("provider_token_calibrations",{})
+        if not isinstance(calibrations,dict):
+            calibrations={}
+            checkpoint["provider_token_calibrations"]=calibrations
+        prior=calibrations.get(key)
+        prior=prior if isinstance(prior,dict) else {}
+        observed_ratio=actual_tokens/estimated_tokens
+        previous_ratio=prior.get("max_observed_ratio",0)
+        previous_ratio=previous_ratio if isinstance(previous_ratio,(int,float)) and not isinstance(previous_ratio,bool) and math.isfinite(previous_ratio) and previous_ratio>0 else 0
+        previous_count=prior.get("observation_count",0)
+        previous_count=max(0,int(previous_count)) if isinstance(previous_count,(int,float)) and not isinstance(previous_count,bool) and math.isfinite(previous_count) else 0
+        calibration={"max_observed_ratio":max(previous_ratio,observed_ratio),
+                     "observation_count":previous_count+1,
+                     "last_estimated_tokens":estimated_tokens,"last_provider_tokens":actual_tokens,
+                     "updated_at":time.time()}
+        calibrations[key]=calibration
+        if key==self._provider_calibration_key:
+            self._provider_calibration_scale=calibration["max_observed_ratio"]
+            self._provider_calibration_observations=calibration["observation_count"]
+        return copy.deepcopy(calibration)
     def retrieve(self,root:Path,prompt:str,limit:int|None=None,cancel_event:threading.Event|None=None)->str:
         limit=self.budget() if limit is None else max(0,limit)
         stop_words={"about","after","also","and","are","but","can","could","does","from","have","into","like","make","need","please","that","the","this","want","with","would"}
@@ -1852,8 +1897,8 @@ class ContextManager:
         return result
     def compact(self,messages:list[dict],tools:list[dict]|None=None,output_tokens:int=0,on_compact:Callable[[dict],None]|None=None,checkpoint:dict[str,Any]|None=None)->list[dict]:
         tools=tools or [];budget=self.budget(output_tokens)
-        def request_size(rows):return self.estimate(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))
-        tool_size=self.estimate(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
+        def request_size(rows):return self.estimate_request(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))
+        tool_size=self.estimate_request(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
         if tool_size+max(self.reserve,output_tokens)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
         # Ollama chat templates (including the selected Ornith GGUF template)
         # require every system instruction to be in the first message. Keep
@@ -1995,10 +2040,12 @@ class OllamaRuntime:
         payload={"model":state["model"],"messages":provider_messages,"stream":True,"tools":request_tools,"keep_alive":state.get("keep_alive","30m"),
                  "options":request_options}
         if state.get("reasoning") is not None:payload["think"]=state["reasoning"]
-        estimated_input=ContextManager.estimate(json.dumps({"messages":provider_messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
+        estimated_input=state.get("estimated_input_tokens")
+        if not isinstance(estimated_input,int) or isinstance(estimated_input,bool) or estimated_input<1:
+            estimated_input=ContextManager.estimate(json.dumps({"messages":provider_messages,"tools":payload["tools"]},ensure_ascii=False,separators=(",",":")))
         additional_fields={"think":payload["think"]} if "think" in payload else {}
         if ignored_overrides:additional_fields["ignored_runtime_option_overrides"]=ignored_overrides
-        emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"tool_names":[(item.get("function") or {}).get("name","") for item in payload["tools"]],"deferred_tool_names":state.get("deferred_tool_names",[]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":additional_fields,"estimated_input_tokens":estimated_input,"input_estimate_method":"conservative UTF-8 byte estimate; provider count replaces this after response"})
+        emit({"type":"inference_settings","provider":"ollama","request_api":"/api/chat","request_index":state.get("request_index"),"model":state["model"],"api_model":payload["model"],"stream":payload["stream"],"tool_count":len(payload["tools"]),"tool_names":[(item.get("function") or {}).get("name","") for item in payload["tools"]],"deferred_tool_names":state.get("deferred_tool_names",[]),"requested_context":state["context"],"max_output_tokens":state["max_tokens"],"reasoning_override":state.get("reasoning"),"reasoning_field_sent":"think" in payload,"keep_alive":payload["keep_alive"],"request_options":payload["options"],"additional_fields":additional_fields,"estimated_input_tokens":estimated_input,"input_estimate_method":state.get("input_estimate_method","conservative UTF-8 byte estimate; provider count replaces this after response")})
         req=urllib.request.Request(self.base_url+"/api/chat",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Accept":"application/x-ndjson"},method="POST")
         result={"message":{"role":"assistant","content":""}};calls={};call_ids={};request_started=time.monotonic();first_output=True;user_facing_output=False
         dispatch_time={"value":None};headers_received_flag={"value":False};request_index=state.get("request_index")
@@ -2102,7 +2149,8 @@ class OllamaRuntime:
 
 class AgentEngine:
     def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None,steering_interrupt_event:threading.Event|None=None,approve_repeated_action:Callable[[str,Any],bool]|None=None):
-        self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
+        checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
+        self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.context.configure_provider_calibration(checkpoint,"ollama",model);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.approve_repeated_action=approve_repeated_action or self.approve;self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event();self._approval_lock=threading.RLock()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
@@ -2118,7 +2166,6 @@ class AgentEngine:
                 saved=operation_result_lookup(operation_id)
                 if saved is not None:return saved
             return self.operation_results.get(operation_id)
-        checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
         self._mcp_uncertain_for_task=bool(current_task(checkpoint).get("uncertain_operation"))
         self.permission_workspace_root=Path(permission_workspace_root or root)
         self.permission_rules=permission_rules_for_workspace(validate_permission_rules(permission_rules or []),self.permission_workspace_root)
@@ -2272,7 +2319,7 @@ class AgentEngine:
         tools=[];included=set()
         for name in ordered:
             candidate=tools+[by_name[name]]
-            size=self.context.estimate(json.dumps({"messages":base_messages,"tools":candidate},ensure_ascii=False,separators=(",",":")))
+            size=self.context.estimate_request(json.dumps({"messages":base_messages,"tools":candidate},ensure_ascii=False,separators=(",",":")))
             if size<=budget:
                 tools=candidate;included.add(name)
             elif name in required_names or name in selected_names:
@@ -2297,13 +2344,13 @@ class AgentEngine:
             candidate=selected+[row]
             listing="\n".join(f"- {item['name']}: {item['description']}" for item in candidate)
             update_description(listing)
-            size=self.context.estimate(json.dumps({"messages":base_messages,"tools":tools},ensure_ascii=False,separators=(",",":")))
+            size=self.context.estimate_request(json.dumps({"messages":base_messages,"tools":tools},ensure_ascii=False,separators=(",",":")))
             if size<=self.context.budget(self.state["max_tokens"]):selected=candidate
             else:omitted=True
         if omitted:
             while True:
                 update_description("\n".join(f"- {item['name']}: {item['description']}" for item in selected)+("\n" if selected else "")+"Additional skills are available; call skill with action=list to inspect the full catalog.")
-                size=self.context.estimate(json.dumps({"messages":base_messages,"tools":tools},ensure_ascii=False,separators=(",",":")))
+                size=self.context.estimate_request(json.dumps({"messages":base_messages,"tools":tools},ensure_ascii=False,separators=(",",":")))
                 if size<=self.context.budget(self.state["max_tokens"]) or not selected:break
                 selected.pop()
             if not selected:update_description("")
@@ -2360,7 +2407,7 @@ class AgentEngine:
         """Allocate the actual remaining selected input budget across this tool batch."""
         input_budget=self.context.budget(self.state["max_tokens"])
         candidate=request_messages+[assistant_message,*prior_tool_messages,{"role":"tool","tool_name":tool_name,"content":""}]
-        used=self.context.estimate(json.dumps({"messages":candidate,"tools":tools},ensure_ascii=False,separators=(",",":")))
+        used=self.context.estimate_request(json.dumps({"messages":candidate,"tools":tools},ensure_ascii=False,separators=(",",":")))
         available=max(0,input_budget-used)
         # Reserve a small envelope for a resumable-result pointer, then divide
         # the actual remaining request budget among calls still pending.
@@ -2422,7 +2469,7 @@ class AgentEngine:
         retrieval_prefix=prompt+"\n\nRelevant project files:\n"
         base_request=[system,{"role":"user","content":retrieval_prefix}]
         tools=self._tools_for_request(base_request)
-        remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
+        remaining=max(0,self.context.budget(self.state["max_tokens"])-self.context.estimate_request(json.dumps({"messages":base_request,"tools":tools},ensure_ascii=False,separators=(",",":"))))
         retrieved=self.context.retrieve(self.workspace.root,prompt,limit=remaining,cancel_event=self.cancel_event)
         msgs.append({"role":"user","content":prompt+("\n\nRelevant project files:\n"+retrieved if retrieved else "")})
         self.state["registry"].conversation_messages=msgs
@@ -2486,7 +2533,9 @@ class AgentEngine:
                     skills_enabled=self.state["skills_enabled"],skill_sources=self.state["skill_sources"],
                     available_skills=self.state["registry"].skill_rows,catalog_skill_names=getattr(self,"_catalog_skill_names",[]),
                     project_instructions=self.project_instructions,harness_profile=self.harness_profile,
-                    task_intent=self.task_intent,access=self.workspace.access)
+                    task_intent=self.task_intent,access=self.workspace.access,
+                    request_token_estimator=self.context.estimate_request)
+                manifest["input_estimate_method"]=self.context.request_estimate_method
                 pressure=update_context_checkpoint_pressure(
                     checkpoint,manifest["estimated_request_input_tokens"],manifest["input_budget"])
                 manifest.update({"context_checkpoint_due":bool(pressure.get("due")),
@@ -2512,7 +2561,9 @@ class AgentEngine:
                         skills_enabled=self.state["skills_enabled"],skill_sources=self.state["skill_sources"],
                         available_skills=self.state["registry"].skill_rows,catalog_skill_names=getattr(self,"_catalog_skill_names",[]),
                         project_instructions=self.project_instructions,harness_profile=self.harness_profile,
-                        task_intent=self.task_intent,access=self.workspace.access)
+                        task_intent=self.task_intent,access=self.workspace.access,
+                        request_token_estimator=self.context.estimate_request)
+                    manifest["input_estimate_method"]=self.context.request_estimate_method
                     pressure=update_context_checkpoint_pressure(
                         checkpoint,manifest["estimated_request_input_tokens"],manifest["input_budget"])
                     manifest.update({"context_checkpoint_due":bool(pressure.get("due")),
@@ -2526,6 +2577,8 @@ class AgentEngine:
                             "deferred_tool_names":list(self._deferred_tool_names)})
                 self.event({"type":"phase","phase":"waiting","elapsed":time.monotonic()-start,"context":self.context.context,"budget":self.context.budget(self.state["max_tokens"])})
                 self.state["request_index"] = request_index
+                self.state["estimated_input_tokens"]=manifest["estimated_request_input_tokens"]
+                self.state["input_estimate_method"]=manifest["input_estimate_method"]
                 try:
                     result=self.runtime.stream(self.state,request_messages,self.inference_cancel_signal,self.event)
                 except RequestCancelled as exc:
@@ -2565,6 +2618,9 @@ class AgentEngine:
                     if self.cancel_event.is_set():raise RequestCancelled("Cancelled during provider retry wait")
                     continue
                 provider_retry_attempt=0
+                self.context.observe_provider_prompt(
+                    checkpoint,"ollama",self.model,manifest["estimated_request_input_tokens"],
+                    result.get("prompt_eval_count"))
                 msg=result["message"]
                 calls=msg.get("tool_calls") or []
                 if calls or _assistant_has_final_content(msg) or (isinstance(msg.get("thinking"),str) and msg["thinking"].strip()):

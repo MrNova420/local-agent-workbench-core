@@ -108,6 +108,33 @@ def test_engine_emits_manifest_for_the_actual_tool_catalog_before_waiting(tmp_pa
     assert manifest["workflow"]["effective_access"] == "plan"
 
 
+def test_exact_provider_prompt_count_is_saved_for_the_next_adaptive_estimate(tmp_path):
+    checkpoint = {}
+    events = []
+    engine = AgentEngine(tmp_path, model="flint-local", task_checkpoint=checkpoint,
+                         task_intent="discuss", event=events.append)
+    sent = []
+    def reply(state, messages, *_args):
+        sent.append({"estimated": state.get("estimated_input_tokens"),
+                     "method": state.get("input_estimate_method")})
+        return {"message": {"role": "assistant", "content": "Hello."}, "prompt_eval_count": 7385}
+    engine.runtime.stream = reply
+
+    engine.run("Say hello.")
+    engine.run("Say hello again.")
+
+    calibration = engine.state["task_checkpoint"]["provider_token_calibrations"]["ollama|flint-local"]
+    assert sent[0]["estimated"] > 0
+    manifests = [event for event in events if event.get("type") == "prompt_manifest"]
+    assert manifests[0]["estimated_request_input_tokens"] == sent[0]["estimated"]
+    assert manifests[1]["estimated_request_input_tokens"] == sent[1]["estimated"]
+    assert calibration["last_provider_tokens"] == 7385
+    assert calibration["observation_count"] == 2
+    assert "conservative UTF-8 byte estimate" in sent[0]["method"]
+    assert "exact Ollama prompt count" in sent[1]["method"]
+    assert "exact Ollama prompt count" in engine.context.request_estimate_method
+
+
 def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tmp_path, monkeypatch):
     import desktop_engine
 
