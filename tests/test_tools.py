@@ -504,6 +504,21 @@ class ToolTests(unittest.TestCase):
    content='雪🙂'*300000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
    self.assertEqual(tools.run('write_file',{'path':'large.txt','content':content}),'Wrote large.txt')
    self.assertEqual((Path(t)/'large.txt').read_text(),content)
+ def test_large_file_write_and_append_emit_cumulative_utf8_progress(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);content='雪🙂'*300000;events=[]
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True)
+   self.assertEqual(tools.run('write_file',{'path':'large.txt','content':content},event_callback=events.append),'Wrote large.txt')
+   write_progress=[event['progress'] for event in events if event.get('type')=='tool_progress']
+   expected_bytes=len(content.encode('utf8'))
+   self.assertGreater(len(write_progress),1)
+   self.assertEqual(write_progress[-1]['bytesWritten'],expected_bytes)
+   self.assertTrue(all(a['bytesWritten']<b['bytesWritten'] for a,b in zip(write_progress,write_progress[1:])))
+   events.clear()
+   self.assertEqual(tools.run('append_file',{'path':'large.txt','content':content},event_callback=events.append),'Appended large.txt')
+   append_progress=[event['progress'] for event in events if event.get('type')=='tool_progress']
+   self.assertEqual(append_progress[-1]['phase'],'appending')
+   self.assertEqual(append_progress[-1]['bytesWritten'],expected_bytes)
  def test_cancelled_chunked_file_replacement_preserves_old_file_and_removes_temporary_file(self):
   class CancelAfterFirstChunk:
    def __init__(self):self.checks=0

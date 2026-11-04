@@ -552,3 +552,9 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 - `write_file` and `edit_file` now incrementally encode replacement text into a same-directory temporary file, checking active request cancellation between I/O chunks and before atomic replace. Cancellation removes the temporary file and leaves the prior destination intact; large content no longer needs a second full-size UTF-8 byte buffer.
 - `append_file` incrementally encodes text and rolls back the appended bytes if cancellation arrives before the append is committed. The internal chunk size only controls memory use, cancellation responsiveness, and I/O; it is not a file-size, line-count, model-context, output, or runtime limit.
 - Added queued regressions for cancellation after partial replacement and partial append, asserting preservation of the original file and cleanup/rollback. Tests were intentionally not run as part of the current implementation batch; include them in final grouped engine/sidecar/app verification.
+
+# Live large-file operation progress (2026-11-04)
+
+- `write_file`, `edit_file`, and `append_file` now emit cumulative UTF-8 bytes-written progress as each encoded I/O chunk completes. Normal and parallel-safe file operations attach the progress event to their operation ID, allowing the existing sidecar activity record and chat/worksheet surfaces to display it.
+- Progress delivery is observational: a UI/event callback exception cannot fail or partially apply a filesystem operation. Completion still comes from the saved `tool_done` result; progress is not treated as proof of a completed write.
+- Added queued Unicode multi-chunk write/append progress coverage. No tests or UI acceptance were run; verify event association, rendering, cancellation, and final results in the grouped engine/sidecar/renderer/package acceptance batch.

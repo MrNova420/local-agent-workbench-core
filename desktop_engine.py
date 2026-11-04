@@ -762,7 +762,8 @@ class ToolRegistry:
                 result+="\n\n" if result else ""
                 result+=f"[File listing scan capped at {PROJECT_LIST_SCAN_LIMIT:,} files; results may be incomplete. Narrow the path or pattern.]"
             return result
-    def run(self, name: str, args: dict, *, output_byte_budget: int | None = None) -> str:
+    def run(self, name: str, args: dict, *, output_byte_budget: int | None = None,
+            event_callback: Callable[[dict[str,Any]],None] | None = None) -> str:
         active_output_budget=self.read_output_byte_budget if output_byte_budget is None else max(0,int(output_byte_budget))
         if name == "ask_user":
             if self.ask_user_callback is None:return "Ask-user interaction is unavailable in this runtime."
@@ -1185,14 +1186,14 @@ class ToolRegistry:
             if name == "write_file":
                 content=args["content"]
                 if not isinstance(content,str):return "Invalid content: expected text."
-                self._atomic_write(path,content,self.cancel_event)
+                self._atomic_write(path,content,self.cancel_event,event_callback or self.event)
                 return "Wrote " + args["path"]
             if name == "append_file":
                 content=args["content"]
                 if not isinstance(content,str):return "Invalid content: expected text."
                 if not path.is_file():return f"Cannot append to {args['path']}: the project file does not exist. Create it with write_file first."
                 if not content:return "No change: append content is empty."
-                self._append_with_rollback(path,content,self.cancel_event)
+                self._append_with_rollback(path,content,self.cancel_event,event_callback or self.event)
                 return "Appended " + args["path"]
             old_text=args.get("old_text");new_text=args.get("new_text");replace_all=args.get("replace_all",False)
             if not isinstance(old_text,str) or not old_text:return "Invalid old_text: provide a non-empty exact string to replace."
@@ -1205,7 +1206,7 @@ class ToolRegistry:
             if matches==0:return f"Edit target not found in {args['path']}; file was not changed."
             if matches>1 and not replace_all:return f"Edit target is ambiguous in {args['path']} ({matches} matches); include more surrounding text or set replace_all to true. File was not changed."
             updated=original.replace(old_text,new_text) if replace_all else original.replace(old_text,new_text,1)
-            self._atomic_write(path,updated.encode("utf-8"),self.cancel_event)
+            self._atomic_write(path,updated,self.cancel_event,event_callback or self.event)
             return "Edited " + args["path"]
         if name == "read_file":
             p=self.workspace.resolve(args["path"])
@@ -1338,12 +1339,25 @@ class ToolRegistry:
             chunk=data[offset:offset+_FILE_IO_CHUNK_SIZE]
             yield chunk if isinstance(chunk,bytes) else chunk.encode("utf-8")
     @staticmethod
-    def _atomic_write(path:Path,data:bytes|str,cancel_event:threading.Event|None=None)->None:
+    def _emit_file_progress(callback:Callable[[dict[str,Any]],None]|None,phase:str,bytes_written:int)->None:
+        if callback is None:return
+        try:
+            callback({"type":"tool_progress","progress":{
+                "message":f"{phase} · {bytes_written:,} UTF-8 bytes written",
+                "bytesWritten":bytes_written,"phase":phase.casefold()}})
+        except Exception:
+            # Progress is observational; a renderer or journal failure must not
+            # turn a successful filesystem operation into a partial write.
+            return
+    @staticmethod
+    def _atomic_write(path:Path,data:bytes|str,cancel_event:threading.Event|None=None,
+                      progress_callback:Callable[[dict[str,Any]],None]|None=None)->None:
         path.parent.mkdir(parents=True,exist_ok=True)
         temp_path=None
         try:
             with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
                 temp_path=Path(handle.name)
+                bytes_written=0
                 for chunk in ToolRegistry._encoded_file_chunks(data):
                     if cancel_event is not None and cancel_event.is_set():
                         raise RequestCancelled("File replacement cancelled before it was committed.")
@@ -1354,7 +1368,8 @@ class ToolRegistry:
                         written=handle.write(chunk[offset:offset+_FILE_IO_CHUNK_SIZE])
                         if written is None or written<=0:
                             raise OSError("The file system accepted zero bytes for a replacement write.")
-                        offset+=written
+                        offset+=written;bytes_written+=written
+                        ToolRegistry._emit_file_progress(progress_callback,"Writing",bytes_written)
                 if cancel_event is not None and cancel_event.is_set():
                     raise RequestCancelled("File replacement cancelled before it was committed.")
                 handle.flush();os.fsync(handle.fileno())
@@ -1364,7 +1379,8 @@ class ToolRegistry:
                 try:temp_path.unlink(missing_ok=True)
                 except OSError:pass
     @staticmethod
-    def _append_with_rollback(path:Path,data:bytes|str,cancel_event:threading.Event|None=None)->None:
+    def _append_with_rollback(path:Path,data:bytes|str,cancel_event:threading.Event|None=None,
+                              progress_callback:Callable[[dict[str,Any]],None]|None=None)->None:
         # Appending a chunk by copying/replacing the whole file turns repeated
         # model writes into quadratic disk I/O and invalidates readers/watchers.
         # Serialize in-process appends, verify the target did not change between
@@ -1394,6 +1410,7 @@ class ToolRegistry:
                             count=os.write(descriptor,chunk[chunk_offset:end])
                             if count<=0:raise OSError("The file system accepted zero bytes for an append write.")
                             written+=count;chunk_offset+=count
+                            ToolRegistry._emit_file_progress(progress_callback,"Appending",written)
                     if cancel_event is not None and cancel_event.is_set():
                         raise RequestCancelled("Append cancelled before the complete chunk was committed.")
                     os.fsync(descriptor)
@@ -2616,7 +2633,9 @@ class AgentEngine:
                                 operation_id=uuid.uuid4().hex;operation_started=time.time()
                                 self.event({"type":"tool_start","operationId":operation_id,"toolCallId":batch_call.get("id",f"call-{batch_index}"),"name":batch_name,"arguments":batch_args,"status":"running","startedAt":operation_started})
                                 output_budget=self._tool_output_budget(request_messages,assistant_tool_message,[],tools,checkpoint,batch_name,len(calls))
-                                future=executor.submit(self.state["registry"].run,batch_name,batch_args,output_byte_budget=output_budget)
+                                progress_callback=lambda event,op=operation_id:self.event({**event,"operationId":op})
+                                future=executor.submit(self.state["registry"].run,batch_name,batch_args,
+                                                       output_byte_budget=output_budget,event_callback=progress_callback)
                                 futures[future]=(batch_index,operation_id,operation_started,output_budget)
                             for future in as_completed(futures):
                                 batch_index,operation_id,operation_started,output_budget=futures[future]
@@ -2703,7 +2722,9 @@ class AgentEngine:
                                             out=self.mcp_call(name,args)
                                     elif not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
-                                else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
+                                else:out=self.state["registry"].run(name,args,
+                                    output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index),
+                                    event_callback=registry.event)
                             except RequestCancelled:out="Cancelled before the workspace file operation completed."
                             except UncertainFileOperationError as exc:out=f"Uncertain: {exc}"
                             except MCPRequestCancelled:
