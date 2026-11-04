@@ -563,3 +563,8 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 
 - Removed the unconditional 512-byte fallback floor and the downstream 192-byte excerpt floor. Oversized tool results reserve the actual recovery marker size; a small allowance returns the full operation-ID pointer when it fits, otherwise a clipped saved-result notice, and zero allowance returns an empty excerpt. The complete result remains saved by operation ID in every case.
 - Added queued regressions for a one-token fallback and 0–192 byte excerpts. No inference setting changed and no test was run; include these cases in the grouped context/tool-budget suite.
+
+# Context budget exhaustion reporting (2026-11-04)
+
+- Removed the legacy 1,024-token floor from `ContextManager.input_budget`; the property now reports only configured context minus its reserve, floored at zero when exhausted. It can no longer advertise more context than the selected configuration provides.
+- Added queued below-capacity and reserve-exceeds-context regressions. This does not change model context or output settings; no tests were run.

@@ -64,6 +64,10 @@ class ContextTests(unittest.TestCase):
     def test_target_model_and_full_context_are_defaults(self):
         self.assertEqual(MODEL, 'hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M')
         self.assertEqual(CONTEXT_MAX, 262144)
+
+    def test_input_budget_never_reports_more_than_configured_context(self):
+        self.assertEqual(ContextManager(context=512, reserve=800).input_budget, 0)
+        self.assertEqual(ContextManager(context=2048, reserve=768).input_budget, 1280)
         self.assertEqual(ContextManager().context, 262144)
         self.assertIsNone(ContextManager().scan_file_limit)
         self.assertIsNone(ContextManager().scan_bytes_limit)

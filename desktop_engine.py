@@ -1703,7 +1703,7 @@ def _split_turn_for_compaction(turn:list[dict])->list[list[dict]]:
 class ContextManager:
     def __init__(self, context: int=CONTEXT_MAX, reserve:int=0,scan_file_limit:int|None=None,scan_bytes_limit:int|None=None): self.context,self.reserve=context,reserve;self.scan_file_limit,self.scan_bytes_limit=scan_file_limit,scan_bytes_limit
     @property
-    def input_budget(self): return max(1024,self.context-self.reserve)
+    def input_budget(self): return max(0,self.context-self.reserve)
     def budget(self,output_tokens:int=0)->int:return max(0,self.context-max(self.reserve,output_tokens))
     @staticmethod
     def estimate(text:str)->int:
