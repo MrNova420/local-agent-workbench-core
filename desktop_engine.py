@@ -89,6 +89,38 @@ class _ProjectListCursor:
         return all(before is not None and _project_directory_listing_state(path)==before
                    for path,before in self.directory_states.items())
 
+class _ProjectSearchCursor:
+    """Resume adjacent search pages without reopening already-scanned files."""
+    def __init__(self,base:Path,key:tuple[Any,...]):
+        self.base=base
+        self.key=key
+        self._reset()
+    def _reset(self):
+        self.directory_states:dict[Path,tuple[Any,...]|None]={}
+        self.file_states:dict[Path,tuple[Any,...]|None]={}
+        self.paths=iter_project_files(self.base,directory_observer=self._observe_directory)
+        self.current_path:Path|None=None
+        self.current_offset=0
+        self.current_line=0
+        self.pending:tuple[Path,int,str]|None=None
+        self.matches_seen=0
+        self.next_offset=0
+        self.exhausted=False
+    def _observe_directory(self,path:Path)->None:
+        self.directory_states[path]=_project_directory_listing_state(path)
+    @staticmethod
+    def _file_state(path:Path)->tuple[Any,...]|None:
+        try:
+            if path.is_symlink() or getattr(os.path,"isjunction",lambda value:False)(path):return None
+            value=path.stat()
+            return (value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+        except (OSError,RuntimeError):return None
+    def is_current(self)->bool:
+        return (all(before is not None and _project_directory_listing_state(path)==before
+                    for path,before in self.directory_states.items()) and
+                all(before is not None and self._file_state(path)==before
+                    for path,before in self.file_states.items()))
+
 class _InferenceCancelSignal:
  def __init__(self,cancel_event:threading.Event,steering_event:threading.Event):
   self.cancel_event=cancel_event;self.steering_event=steering_event
@@ -559,6 +591,8 @@ class ToolRegistry:
         self.cancel_event=cancel_event or threading.Event()
         self._list_files_lock=threading.RLock()
         self._list_files_cursor:_ProjectListCursor|None=None
+        self._search_cursor:_ProjectSearchCursor|None=None
+        self._search_cursor_lock=threading.RLock()
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
         self.plan=[]
         self.plan_source="workbench"
@@ -892,6 +926,129 @@ class ToolRegistry:
                 except timeout_regex.error as exc:return f"Invalid regular expression: {exc}"
             else:
                 literal_query=query if case_sensitive else query.casefold()
+            import fnmatch
+            if self.search_file_limit is None and self.search_byte_limit is None:
+                search_key=(os.path.normcase(str(search_root.resolve())),include.casefold(),
+                            query if case_sensitive or regex_mode else query.casefold(),
+                            regex_mode,case_sensitive,float(match_timeout))
+                with self._search_cursor_lock:
+                    cursor=self._search_cursor
+                    if cursor is None or cursor.key!=search_key:
+                        cursor=_ProjectSearchCursor(search_root.resolve(),search_key)
+                    elif offset!=cursor.next_offset or not cursor.is_current():
+                        cursor._reset()
+                    self._search_cursor=cursor
+                    hits=[];used_bytes=0;scanned=0;bytes_read=0;has_more=False;cancelled=False
+                    regex_timeout_location=None;changed_during_search=False
+                    handle=None;open_path=None;last_progress_at=time.monotonic();last_progress_scanned=0
+                    def close_search_handle():
+                        nonlocal handle,open_path
+                        if handle is not None:
+                            handle.close();handle=None;open_path=None
+                    def next_match():
+                        nonlocal handle,open_path,scanned,bytes_read,last_progress_at,last_progress_scanned
+                        while not cursor.exhausted:
+                            if self.cancel_event.is_set():return None
+                            if cursor.current_path is None:
+                                path=next(cursor.paths,None)
+                                if path is None:
+                                    cursor.exhausted=True;return None
+                                scanned+=1
+                                now=time.monotonic()
+                                if scanned-last_progress_scanned>=256 or now-last_progress_at>=1.0:
+                                    self.event({"type":"tool_progress","progress":{"message":f"Searching files · {scanned:,} inspected · {bytes_read:,} bytes read · {len(hits):,} matches on this page",
+                                                "filesScanned":scanned,"bytesRead":bytes_read,"matches":len(hits),"timestamp":time.time()}})
+                                    last_progress_at=now;last_progress_scanned=scanned
+                                if path.suffix.casefold() not in TEXT_EXT:continue
+                                relative=path.relative_to(search_root).as_posix()
+                                if "/" in include:
+                                    included=fnmatch.fnmatchcase(relative.casefold(),include.casefold())
+                                    if include.startswith("**/"):included=included or fnmatch.fnmatchcase(relative.casefold(),include[3:].casefold())
+                                else:included=fnmatch.fnmatchcase(path.name.casefold(),include.casefold())
+                                if not included:continue
+                                before=cursor._file_state(path)
+                                if before is None:continue
+                                cursor.file_states[path]=before
+                                cursor.current_path=path;cursor.current_offset=0;cursor.current_line=0
+                            path=cursor.current_path
+                            try:
+                                if handle is None or open_path!=path:
+                                    close_search_handle();handle=path.open("rb");open_path=path
+                                    if cursor.current_offset:handle.seek(cursor.current_offset)
+                                raw=handle.readline()
+                                if not raw:
+                                    after=cursor._file_state(path);close_search_handle()
+                                    if after!=cursor.file_states.get(path):
+                                        return ("changed",path,cursor.current_line,"")
+                                    cursor.current_path=None;cursor.current_offset=0;cursor.current_line=0
+                                    continue
+                                bytes_read+=len(raw);cursor.current_offset=handle.tell();cursor.current_line+=1
+                                line=raw.decode("utf-8").rstrip("\r\n")
+                            except (OSError,UnicodeError):
+                                close_search_handle();cursor.current_path=None;cursor.current_offset=0;cursor.current_line=0
+                                continue
+                            try:matched=bool(expression.search(line,timeout=float(match_timeout))) if expression is not None else literal_query in (line if case_sensitive else line.casefold())
+                            except TimeoutError:
+                                close_search_handle();return ("timeout",path,cursor.current_line,"")
+                            if matched:return (path,cursor.current_line,line)
+                        return None
+                    try:
+                        while cursor.matches_seen<offset:
+                            found=next_match()
+                            if found is None:break
+                            if found[0] in {"changed","timeout"}:
+                                changed_during_search=found[0]=="changed"
+                                if found[0]=="timeout":regex_timeout_location=(self.workspace.display_path(found[1]),found[2])
+                                break
+                            cursor.matches_seen+=1
+                        if not changed_during_search and regex_timeout_location is None:
+                            while True:
+                                from_pending=cursor.pending is not None
+                                found=cursor.pending if from_pending else next_match()
+                                if from_pending:cursor.pending=None
+                                if found is None:break
+                                if found[0] in {"changed","timeout"}:
+                                    changed_during_search=found[0]=="changed"
+                                    if found[0]=="timeout":regex_timeout_location=(self.workspace.display_path(found[1]),found[2])
+                                    break
+                                path,line_number,content=found
+                                path_line=f"{self.workspace.display_path(path)}:{line_number}: "
+                                budget=active_output_budget
+                                if budget is not None and len((path_line+content).encode("utf8"))>budget:
+                                    content=f"[matching line exceeds the result budget; inspect with read_file at line {line_number}]"
+                                record=path_line+content;record_bytes=len(record.encode("utf8"))+(1 if hits else 0)
+                                if budget is not None and used_bytes+record_bytes>budget and hits:
+                                    cursor.pending=found;has_more=True
+                                    if not from_pending:cursor.matches_seen+=1
+                                    break
+                                hits.append(record);used_bytes+=record_bytes
+                                if not from_pending:cursor.matches_seen+=1
+                                if len(hits)>=limit:
+                                    following=next_match()
+                                    if following is not None:
+                                        if following[0] in {"changed","timeout"}:
+                                            changed_during_search=following[0]=="changed"
+                                            if following[0]=="timeout":regex_timeout_location=(self.workspace.display_path(following[1]),following[2])
+                                        else:
+                                            cursor.pending=following;cursor.matches_seen+=1;has_more=True
+                                    break
+                    finally:
+                        close_search_handle()
+                    if not changed_during_search and regex_timeout_location is None and not self.cancel_event.is_set() and not cursor.is_current():
+                        changed_during_search=True
+                    if cancelled or self.cancel_event.is_set():
+                        self._search_cursor=None;cancelled=True
+                    elif changed_during_search or regex_timeout_location:
+                        self._search_cursor=None
+                    cursor.next_offset=offset+len(hits)
+                    result="\n".join(hits) or "No matches."
+                    if changed_during_search:result+="\n\n[Search became incomplete because a file changed while it was being read. Repeat the search to get a fresh result set.]"
+                    if regex_timeout_location:
+                        path,line_number=regex_timeout_location
+                        result+=f"\n\n[Search incomplete: regular expression timed out at {path}:{line_number}; results may be incomplete. Narrow the pattern or increase match_timeout_seconds.]"
+                    if cancelled:result="Cancelled: project search stopped by the user; returned matches may be incomplete.\n"+result
+                    if has_more:result+=f"\n\nMore results are available. Next offset {offset+len(hits)}; continue with limit {limit}."
+                    return result
             import fnmatch
             last_progress_at=time.monotonic();last_progress_scanned=0;regex_timeout_location=None
             def report_search_progress():

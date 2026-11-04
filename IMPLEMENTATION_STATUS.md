@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-03 resumable search pagination
+
+- Adjacent `search_files` pages in one task now continue from a lazy traversal and saved byte/line position instead of rereading earlier file contents. The one-match lookahead is retained for the next page. Repeated, backward, or changed-query requests restart from the requested offset; changes to visited directory/ignore metadata or scanned-file identity/size/timestamps invalidate the cursor. A file that changes while being read yields an explicit incomplete result. No implicit file, byte, match, output, or duration ceiling was added; optional explicit scan-budget behavior continues on its existing path.
+- TDD regression first failed because page two reopened an already searched file; it now passes and verifies three ordered pages across files. A second regression changes a previously scanned file and confirms the next page restarts against current contents. Focused `tests/test_tools.py`, `tests/test_project_view.py`, and `tests/test_project_walk.py`: **62 passed**. Python compilation and `git diff --check` pass. Full engine/app suites, package, visible project workflow, and Flint acceptance remain separate gates.
+- Tradeoff: cursor validation stores metadata for scanned text files and rechecks it at each page boundary. This avoids retaining file content or open Windows handles, while metadata work and cursor memory grow with the files touched by the query; there is no fixed cap. The cursor lives only in the current `ToolRegistry`/task.
+
 ## 2026-11-04 project browser page cursor
 
 - Added `ProjectFilePageCursor` for the project's own file-browser pages. It retains a lazy walk between adjacent pages, preserves lookahead and empty/stat-race offset behavior, and restarts on backward offsets or changed directory/`.gitignore` metadata. It follows the existing project walker, so ignored folders and links remain excluded and no project-size/page ceiling is introduced.

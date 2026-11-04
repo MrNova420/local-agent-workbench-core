@@ -169,6 +169,53 @@ class ToolTests(unittest.TestCase):
    self.assertIn('matches.py:3: needle three',page)
    self.assertNotIn('matches.py:1:',page)
    self.assertIn('next offset 3',page.casefold())
+ def test_sequential_search_pages_do_not_rescan_prior_files(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);first=root/'a.py';second=root/'b.py'
+   first.write_text('needle first\n',encoding='utf-8')
+   second.write_text('needle second\nneedle third\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   opened=[];real_open=Path.open
+   def record_open(path,*args,**kwargs):
+    opened.append(path.resolve())
+    return real_open(path,*args,**kwargs)
+   with patch.object(Path,'open',record_open):
+    page_one=tools.run('search_files',{'query':'needle','offset':0,'limit':1})
+    first_page_opens=opened.count(first.resolve())
+    page_two=tools.run('search_files',{'query':'needle','offset':1,'limit':1})
+    page_three=tools.run('search_files',{'query':'needle','offset':2,'limit':1})
+   self.assertIn('a.py:1: needle first',page_one)
+   self.assertIn('b.py:1: needle second',page_two)
+   self.assertIn('b.py:2: needle third',page_three)
+   self.assertEqual(opened.count(first.resolve()),first_page_opens)
+ def test_sequential_search_page_restarts_when_a_scanned_file_changes(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);first=root/'a.py';second=root/'b.py'
+   first.write_text('needle one\n',encoding='utf-8')
+   second.write_text('needle two\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   page_one=tools.run('search_files',{'query':'needle','offset':0,'limit':1})
+   first.write_text('needle changed\nneedle added\n',encoding='utf-8')
+   page_two=tools.run('search_files',{'query':'needle','offset':1,'limit':1})
+   self.assertIn('needle one',page_one)
+   self.assertIn('a.py:2: needle added',page_two)
+ def test_search_output_budget_retains_the_unreturned_match_for_the_next_page(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'a.py').write_text('needle one\nneedle two\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   budget=len(f'{tools.workspace.display_path(root / "a.py")}:1: needle one'.encode('utf-8'))
+   first=tools.run('search_files',{'query':'needle','offset':0,'limit':10},output_byte_budget=budget)
+   second=tools.run('search_files',{'query':'needle','offset':1,'limit':10})
+   self.assertIn('needle one',first)
+   self.assertIn('next offset 1',first.casefold())
+   self.assertIn('a.py:2: needle two',second)
+ def test_search_skips_the_rest_of_a_file_after_invalid_utf8(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'a.py').write_bytes(b'needle before\n\xff\nneedle after\n')
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   result=tools.run('search_files',{'query':'needle','limit':10})
+   self.assertIn('needle before',result)
+   self.assertNotIn('needle after',result)
  def test_search_files_advertises_regex_and_case_options(self):
   with tempfile.TemporaryDirectory() as t:
    tools=ToolRegistry(Workspace(t),lambda *_:True)
