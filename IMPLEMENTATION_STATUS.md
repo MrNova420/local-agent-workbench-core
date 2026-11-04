@@ -393,7 +393,7 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 
 ## 2026-11-04 uncertain MCP continuation and prompt-size Unicode handling
 
-- An uncertain MCP result now blocks the rest of that model tool batch, persists every skipped call as not executed, suppresses MCP schemas for the remainder of the same task (including after recovery), and continues the task with safe local tools and a required user-facing status. It never automatically repeats the remote operation.
+- An uncertain MCP result blocks the rest of that model tool batch, persists every skipped call as not executed, and continues the task with safe local work and a required user-facing status. MCP schemas remain available so work is not hard-disabled; while uncertainty remains, every MCP action requires a fresh one-action user approval that overrides auto, task, and session grants. The agent is instructed never to repeat an operation automatically.
 - A final response cannot mark a task completed while an MCP result remains uncertain. The saved task ends as `stopped` with `workflow_outcome=blocked`, and the unresolved operation is included in the compactable checkpoint so later turns retain its identity and result.
 - Prompt-manifest and large-tool-result byte estimates now use surrogate-safe UTF-8 accounting. This preserves imported/session text and prevents a lone surrogate from crashing request preparation or context excerpt sizing.
 - Regression cases cover one remote dispatch, blocked same-batch calls, MCP suppression on the continuation request, honest final status, blocked terminal state, checkpoint retention, and malformed-text size accounting. These tests are authored and queued; no test or runtime verification was run for this change.

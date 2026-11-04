@@ -1955,13 +1955,32 @@ class AgentEngine:
         if ok and self.approval_mode=="per-task":self.approved_task=True
         if ok and self.approval_mode=="per-session":self.approved_session=True
         return ok
+    def _approval_uncertain_mcp(self,name:str,args:Any)->bool:
+        """Require a fresh human decision before any MCP call while an outcome is uncertain."""
+        if permission_decision(name,args,self.permission_rules)=="deny":
+            record_decision(self.state["task_checkpoint"],
+                            {"kind":"uncertain_mcp_retry","tool":name,"decision":"denied","reason":"persistent deny rule"})
+            return False
+        if self.cancel_event.is_set():
+            raise RequestCancelled("Cancelled before uncertain MCP retry approval")
+        approved=self.approve(name,args)
+        if self.cancel_event.is_set():
+            record_decision(self.state["task_checkpoint"],
+                            {"kind":"uncertain_mcp_retry","tool":name,"decision":"cancelled"})
+            raise RequestCancelled("Cancelled while waiting for uncertain MCP retry approval")
+        prior=current_task(self.state["task_checkpoint"]).get("uncertain_operation",{})
+        record_decision(self.state["task_checkpoint"],{
+            "kind":"uncertain_mcp_retry","tool":name,
+            "prior_operation_id":prior.get("operationId") if isinstance(prior,dict) else None,
+            "decision":"approved" if approved else "denied",
+            "approval_scope":"one_action",
+        })
+        return approved
     def cancel(self):self.cancel_event.set();self.runtime.cancel()
     def finish_after_operation(self):self.stop_after_operation.set()
     def _tools_for_request(self,base_messages:list[dict],selected_names:set[str]|None=None)->list[dict]:
-        catalog=copy.deepcopy(self.state["registry"].schemas+([] if self._mcp_uncertain_for_task else self.mcp_tools))
+        catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
         selected_names=set(self._selected_tool_names if selected_names is None else selected_names)
-        if self._mcp_uncertain_for_task:
-            selected_names={name for name in selected_names if not name.startswith("mcp__")}
         by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
         unknown=selected_names-set(by_name)
         if unknown:raise ValueError("Selected tool schema is no longer available in this workspace: "+", ".join(sorted(unknown)))
@@ -2040,7 +2059,7 @@ class AgentEngine:
         if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
         if limit is not None and (not isinstance(limit,int) or isinstance(limit,bool) or limit<1):return "Invalid limit: expected a positive integer."
         if not isinstance(requested,list) or any(not isinstance(name,str) for name in requested):return "Invalid names: expected an array of exact tool names."
-        catalog=copy.deepcopy(self.state["registry"].schemas+([] if self._mcp_uncertain_for_task else self.mcp_tools))
+        catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
         by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
         if requested:
             unknown=[name for name in requested if name not in by_name]
@@ -2537,9 +2556,10 @@ class AgentEngine:
                                              "First call update_plan with progress_checkpoint containing verified_findings, "
                                              "completed_work, pending_work, and next_action. Then continue the same task.")
                                     elif self._mcp_uncertain_for_task:
-                                        out=("Not executed: an earlier MCP operation in this task has an uncertain result. "
-                                             "Inspect local state and report the uncertainty; MCP tools remain paused for this task "
-                                             "to avoid duplicate remote effects.")
+                                        if not self._approval_uncertain_mcp(name,args):
+                                            out="Denied by user: no MCP operation was dispatched."
+                                        else:
+                                            out=self.mcp_call(name,args)
                                     elif not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
                                 else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
@@ -2620,11 +2640,11 @@ class AgentEngine:
                         mcp_uncertain_in_batch=True
                         current_continuation_guidance=(
                             "An MCP operation was dispatched but the server result is uncertain. Its complete call and result "
-                            "are saved in this chat. Do not repeat the MCP action or issue another MCP call in this task; the "
-                            "host has paused MCP schemas to prevent duplicate remote effects. Continue any independent local "
-                            "inspection or project work that is still safe. Then give the user a clear status naming the exact "
-                            "uncertain operation, what local evidence you checked, and what remote effect still needs review. "
-                            "Do not claim it succeeded or failed without evidence."
+                            "are saved in this chat. Do not automatically repeat it. MCP tools remain available, but every MCP "
+                            "action now requires a fresh one-action user approval that overrides auto, task, and session grants. "
+                            "Continue safe independent local work and inspect available evidence. Then give the user a clear "
+                            "status naming the uncertain operation and what remote effect still needs review. Do not claim "
+                            "it succeeded or failed without evidence."
                         )
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             pending_fn=pending.get("function") or {}

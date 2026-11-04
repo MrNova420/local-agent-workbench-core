@@ -66,7 +66,7 @@ class EngineToolBatchTests(unittest.TestCase):
 
             assert len(requests) == 2
             assert len(remote_calls) == 1
-            assert all(not (tool.get("function") or {}).get("name", "").startswith("mcp__")
+            assert any((tool.get("function") or {}).get("name") == "mcp__calendar__create_event"
                        for tool in requests[1]["tools"])
             done = [row for row in events if row.get("type") == "tool_done"]
             assert [row.get("status") for row in done] == ["uncertain", "blocked"]
@@ -84,6 +84,43 @@ class EngineToolBatchTests(unittest.TestCase):
             assert checkpoint["status"] == "stopped"
             assert checkpoint["outcome"] == "blocked"
             assert checkpoint["verification"]["status"] == "blocked"
+
+    def test_mcp_retry_after_uncertainty_requires_fresh_approval_even_in_auto_mode(self):
+        with tempfile.TemporaryDirectory() as root:
+            mcp_tool = {"type": "function", "function": {
+                "name": "mcp__calendar__create_event", "description": "Create an event",
+                "parameters": {"type": "object", "properties": {}}}}
+            remote_calls = []
+            approvals = []
+            def remote_call(*args):
+                remote_calls.append(args)
+                if len(remote_calls) == 1:
+                    raise TimeoutError("response timed out")
+                return "created event-42"
+            def approve(name, args):
+                approvals.append((name, args))
+                return True
+            engine = AgentEngine(root, access="edit", approval_mode="auto", task_intent="discuss",
+                                 mcp_tools=[mcp_tool], mcp_call=remote_call, approve=approve)
+            calls = [{"id": "create", "function": {
+                "name": "mcp__calendar__create_event", "arguments": {"title": "Review"}}}]
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": calls}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": calls}},
+                {"message": {"role": "assistant", "content": "The retry was explicitly approved; inspect the calendar for a possible duplicate."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            history = engine.run("Check whether the event was created")
+
+            assert len(remote_calls) == 2
+            assert approvals == [("mcp__calendar__create_event", {"title": "Review"})]
+            decisions = engine.state["task_checkpoint"]["current"]["decisions"]
+            retry_decision = next(row for row in decisions if row["kind"] == "uncertain_mcp_retry")
+            assert retry_decision["decision"] == "approved"
+            assert retry_decision["approval_scope"] == "one_action"
+            assert engine.state["task_checkpoint"]["current"]["workflow_outcome"] == "blocked"
+            assert "possible duplicate" in next(row for row in reversed(history) if row.get("role") == "assistant")["content"]
 
     def test_finish_after_operation_drains_already_started_read_batch_before_stopping(self):
         with tempfile.TemporaryDirectory() as root:
