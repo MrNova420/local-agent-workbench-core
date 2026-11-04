@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-04 file tools verified above 100,000 lines
+
+- Added an engine regression that writes 100,001 UTF-8 lines, reads them back, appends two ordered lines, and confirms the final 100,003-line file. Existing tests also cover multi-megabyte Unicode writes, cumulative progress, and rollback after cancellation.
+- This verifies the host file-operation path; model generation remains incremental across provider responses through `write_file` plus `append_file`. It does not claim that one response can generate an arbitrarily large file or silently change the configured output budget.
+
 ## 2026-11-04 preserve reusable prompt prefixes across agent continuation (paired verification pending)
 
 - The inference request now keeps the configured system prompt and project instructions stable across turns. Current task checkpoints, continuation guidance, and the context-pressure handoff are request-local user messages; they no longer rewrite the system prefix or canonical saved transcript. This addresses a concrete prompt-cache invalidation source while keeping progress after the conversation and preserving Ollama template compatibility with a single leading system message.

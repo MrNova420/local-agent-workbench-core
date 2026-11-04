@@ -510,6 +510,15 @@ class ToolTests(unittest.TestCase):
    content='雪🙂'*300000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
    self.assertEqual(tools.run('write_file',{'path':'large.txt','content':content}),'Wrote large.txt')
    self.assertEqual((Path(t)/'large.txt').read_text(encoding='utf-8'),content)
+ def test_write_and_append_files_over_100k_lines(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True)
+   content=''.join(f'line {index}\n' for index in range(100_001))
+   self.assertEqual(tools.run('write_file',{'path':'large-lines.txt','content':content}),'Wrote large-lines.txt')
+   target=root/'large-lines.txt'
+   self.assertEqual(len(target.read_text(encoding='utf-8').splitlines()),100_001)
+   self.assertEqual(tools.run('append_file',{'path':'large-lines.txt','content':'line 100001\nline 100002\n'}),'Appended large-lines.txt')
+   self.assertEqual(len(target.read_text(encoding='utf-8').splitlines()),100_003)
  def test_large_file_write_and_append_emit_cumulative_utf8_progress(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t);content='雪🙂'*300000;events=[]
