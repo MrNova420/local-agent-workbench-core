@@ -66,6 +66,9 @@ def test_automatic_guidance_separates_plan_phase_from_plan_only_request():
     prompt = agent_system_prompt("Edit with approval", "", task_intent="auto")
     assert "task_mode=plan_only only when the user explicitly asks" in prompt
     assert "task_mode=plan_only is the explicit no-implementation choice" in prompt
+    assert "Do not call update_plan solely to classify ordinary conversation" in prompt
+    assert "when durable task state needs to be recorded" in prompt
+    assert "Before ending without a structured project operation, record a task-mode decision" not in prompt
     assert "continue into implementation" in prompt
     assert "After publishing or revising an implementation plan, take its next open step" in prompt
     assert "not a cap on reasoning, planning" in prompt
