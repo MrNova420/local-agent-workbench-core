@@ -91,3 +91,30 @@ def test_engine_emits_manifest_for_the_actual_tool_catalog_before_waiting(tmp_pa
     assert manifest["skills"]["catalog_entries_in_request_tool_schema"] == ["python-review"]
     assert "write_file" not in {tool["name"] for tool in manifest["tools"]}
     assert manifest["workflow"]["effective_access"] == "plan"
+
+
+def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tmp_path, monkeypatch):
+    import desktop_engine
+
+    events = []
+    dispatched = []
+    def measured_manifest(messages, tools, **kwargs):
+        return {"request_index": kwargs["request_index"], "estimated_request_input_tokens": 710,
+                "input_budget": 1000, "configured_context": kwargs["context"],
+                "maximum_output_tokens": kwargs["output_tokens"], "messages": []}
+
+    monkeypatch.setattr(desktop_engine, "build_prompt_manifest", measured_manifest)
+    engine = AgentEngine(tmp_path, event=events.append, task_intent="discuss")
+    def finish(state, messages, *_args):
+        dispatched.extend(messages)
+        return {"message": {"role": "assistant", "content": "Review complete."}}
+    engine.runtime.stream = finish
+
+    engine.run("Review the current project without making changes.")
+
+    system_message = next(message for message in dispatched if message.get("role") == "system")
+    assert "[Workbench progress checkpoint requested]" in system_message["content"]
+    manifest = next(event for event in events if event.get("type") == "prompt_manifest")
+    assert manifest["context_checkpoint_due"] is True
+    assert manifest["context_checkpoint_threshold_ratio"] == 0.70
+    assert manifest["context_checkpoint_ratio"] == 0.71

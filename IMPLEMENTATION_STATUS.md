@@ -523,3 +523,8 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 - Long `list_files` and `search_files` operations now emit compact `tool_progress` updates with inspected-file counts, matches, and bytes read where applicable. They retain the existing cancellable traversal, pagination, ignore handling, and optional explicit scan budgets; progress sampling is observational only and adds no scan cap.
 - The paired desktop sidecar integration stores these updates on the existing operation activity row so chat and Activity Trace can show the same operation while it runs and after session recovery. No model output or partial tool arguments are exposed through these progress events.
 - Focused engine file-tool tests pass (**37 passed**). Sidecar recovery/renderer checks are pending the paired app integration; full suites and package/visible acceptance remain deferred.
+# Preemptive request-budget checkpoint gate (2026-11-04)
+
+- The engine now latches a durable progress-checkpoint request when its estimated request input reaches 70% of the actual input budget, and rearms only after compaction drops it below 60%. It does not alter context/output/reasoning settings or interrupt an active generation.
+- Before writes, commands, or MCP dispatch, the host now requires `update_plan.progress_checkpoint` with verified findings, completed work, pending work, and a next action. Read/inspection tools and planning remain available; a saved handoff clears the gate and the same task continues.
+- The request prompt manifest records the checkpoint pressure and the canonical task checkpoint retains the handoff. Engine regression cases are authored but deliberately not run yet; grouped verification remains queued per the current implementation batch.

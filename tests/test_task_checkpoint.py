@@ -404,6 +404,62 @@ def test_conversation_reader_recovers_emitted_reasoning_and_excludes_system_prom
     assert any(row["function"]["name"] == "read_conversation_history" for row in registry.schemas)
 
 
+def test_context_checkpoint_pressure_latches_until_compaction_crosses_reset_band(tmp_path):
+    from task_checkpoint import acknowledge_context_checkpoint, update_context_checkpoint_pressure
+
+    checkpoint = begin_task(None, prompt="Build a project", turn_id="t1", workspace=str(tmp_path), settings={})
+    first = update_context_checkpoint_pressure(checkpoint, 700, 1000)
+    assert first["due"] is True and first["armed"] is True
+    assert first["threshold_ratio"] == 0.70
+
+    acknowledge_context_checkpoint(checkpoint, {
+        "verified_findings": ["The entry point is src/app.ts"],
+        "completed_work": ["Inspected the app"], "pending_work": ["Implement the route"],
+        "next_action": "Add the route and render its page",
+    })
+    still_latched = update_context_checkpoint_pressure(checkpoint, 800, 1000)
+    assert still_latched["due"] is False
+    assert still_latched["acknowledged"] is True
+
+    reset = update_context_checkpoint_pressure(checkpoint, 590, 1000)
+    assert reset["due"] is False and reset["armed"] is False
+    next_cycle = update_context_checkpoint_pressure(checkpoint, 710, 1000)
+    assert next_cycle["due"] is True and next_cycle["acknowledged"] is False
+    assert "context_checkpoint" in render_checkpoint(checkpoint)
+
+
+def test_due_context_checkpoint_blocks_changes_until_saved_progress_handoff(tmp_path):
+    from desktop_engine import ToolRegistry, Workspace
+    from task_checkpoint import update_context_checkpoint_pressure
+
+    checkpoint = begin_task(None, prompt="Create a page", turn_id="t1", workspace=str(tmp_path), settings={})
+    update_context_checkpoint_pressure(checkpoint, 710, 1000)
+    registry = ToolRegistry(Workspace(tmp_path, "edit"), lambda *_args: True, task_checkpoint=checkpoint)
+
+    blocked = registry.run("write_file", {"path": "index.html", "content": "<h1>Ready</h1>"})
+    assert blocked.startswith("Blocked before execution")
+    assert not (tmp_path / "index.html").exists()
+
+    missing_summary = registry.run("update_plan", {"items": [{"title": "Implement", "status": "in_progress"}]})
+    assert missing_summary.startswith("Progress checkpoint required")
+    assert registry.plan == []
+
+    handoff = {
+        "verified_findings": ["The selected project has no existing index.html"],
+        "completed_work": ["Inspected the project root"],
+        "pending_work": ["Create the page", "Open and verify the result"],
+        "next_action": "Create index.html and inspect the saved file",
+    }
+    registry.run("update_plan", {"items": [{"title": "Create and inspect the page", "status": "in_progress"}],
+                                  "progress_checkpoint": handoff})
+    assert checkpoint["current"]["context_checkpoint"]["due"] is False
+    assert checkpoint["current"]["context_checkpoint"]["summary"] == handoff
+
+    written = registry.run("write_file", {"path": "index.html", "content": "<h1>Ready</h1>"})
+    assert "Wrote" in written
+    assert (tmp_path / "index.html").read_text(encoding="utf-8") == "<h1>Ready</h1>"
+
+
 def test_workbench_starter_plan_advances_from_observed_tools_but_agent_plan_is_left_alone(tmp_path):
     from desktop_engine import AgentEngine
 

@@ -15,7 +15,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import begin_task, checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint
+from task_checkpoint import CONTEXT_CHECKPOINT_DUE_RATIO, CONTEXT_CHECKPOINT_RESET_RATIO, acknowledge_context_checkpoint, begin_task, checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint, update_context_checkpoint_pressure
 from tool_schema_capabilities import schema_validator_class, unsupported_schema_features
 from permission_policy import _paths, external_directory_decision, permission_decision, permission_rules_for_workspace, validate_permission_rules
 from windows_process_job import WindowsProcessJob
@@ -640,7 +640,7 @@ class ToolRegistry:
           self._schema("read_operation_result", "Retrieve the complete saved result of a prior tool operation by operation_id from the current session. Use offset and length to inspect a slice when output is too large for the current request context; offsets count characters.", {"operation_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, ["operation_id"]),
           self._schema("read_task_checkpoint", "Recover saved task continuity details when the compacted prompt reports omissions. Read the current task, plan, decisions, user updates, operation references, changed files, verification, or prior task history in character-offset pages. No project files are changed.", {"section":{"type":"string","enum":["current","plan","decisions","user_updates","operations","changed_files","verification","task_history"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}}, []),
           self._schema("read_conversation_history", "Recover earlier saved user/assistant/tool transcript omitted from the current context, including emitted assistant reasoning. The system prompt is excluded. Use character-offset pages and an optional role filter; no project files are changed.", {"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1},"role":{"type":"string","enum":["user","assistant","tool"]}}, []),
-          self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. For Automatic intent, set task_mode to discussion, plan_only, plan, or implement when the task mode is clear. Use plan_only only when the user explicitly asked for a plan without implementation; plan is an intermediate phase for actionable work. This structured state is not a permission grant. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"task_mode":{"type":"string","enum":["discussion","plan_only","plan","implement"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}}}, []),
+          self._schema("update_plan", "Maintain an expandable task plan. Use items to intentionally replace/resequence the full plan, or add_items to append discovered work and independent workstreams without losing existing entries. You may revise the plan repeatedly as evidence or user direction changes. For Automatic intent, set task_mode to discussion, plan_only, plan, or implement when the task mode is clear. Use plan_only only when the user explicitly asked for a plan without implementation; plan is an intermediate phase for actionable work. This structured state is not a permission grant. Acceptance criteria and decisions can be refreshed; use add_acceptance_criteria to extend criteria. Record conclusions and evidence, not private chain-of-thought. When a progress_checkpoint is requested, include verified_findings, completed_work, pending_work, and next_action as a durable handoff before project-changing tools continue.", {"items":{"type":"array","items":{"type":"object"}},"add_items":{"type":"array","items":{"type":"object"}},"task_mode":{"type":"string","enum":["discussion","plan_only","plan","implement"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"add_acceptance_criteria":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}},"progress_checkpoint":{"type":"object","properties":{"verified_findings":{"type":"array","items":{"type":"string"}},"completed_work":{"type":"array","items":{"type":"string"}},"pending_work":{"type":"array","items":{"type":"string"}},"next_action":{"type":"string","minLength":1}},"required":["verified_findings","completed_work","pending_work","next_action"],"additionalProperties":false}}, []),
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
@@ -757,6 +757,14 @@ class ToolRegistry:
             if permission_decision(name,args,self.permission_rules)=="deny":
                 return "Denied by user: a persistent deny permission rule blocks this tool."
             return self.ask_user_callback(args)
+        checkpoint_state=current_task(self.task_checkpoint).get("context_checkpoint",{}) if self.task_checkpoint is not None else {}
+        if isinstance(checkpoint_state,dict) and checkpoint_state.get("due") and name not in {
+            "list_files", "search_files", "read_file", "read_operation_result", "read_task_checkpoint",
+            "read_conversation_history", "git_status", "git_diff", "git_log", "update_plan", "skill", "load_tools",
+        }:
+            return ("Blocked before execution: the active request is near its selected input budget. "
+                    "First call update_plan with progress_checkpoint containing verified_findings, completed_work, "
+                    "pending_work, and next_action. Then continue the same task and perform the requested operation.")
         for target in _paths(name,args):
             candidate=Path(target)
             if not candidate.is_absolute():continue
@@ -835,6 +843,18 @@ class ToolRegistry:
                 return (r.stdout+r.stderr) or "No tracked changes."
             except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
         if name == "update_plan":
+            checkpoint_state=current_task(self.task_checkpoint).get("context_checkpoint",{}) if self.task_checkpoint is not None else {}
+            progress_checkpoint=args.get("progress_checkpoint")
+            if isinstance(checkpoint_state,dict) and checkpoint_state.get("due"):
+                required={"verified_findings","completed_work","pending_work","next_action"}
+                if (not isinstance(progress_checkpoint,dict) or not required.issubset(progress_checkpoint)
+                    or any(not isinstance(progress_checkpoint.get(key),list)
+                           or any(not isinstance(item,str) for item in progress_checkpoint[key])
+                           for key in ("verified_findings","completed_work","pending_work"))
+                    or not isinstance(progress_checkpoint.get("next_action"),str)
+                    or not progress_checkpoint["next_action"].strip()):
+                    return ("Progress checkpoint required before project-changing operations: call update_plan with "
+                            "progress_checkpoint containing verified_findings, completed_work, pending_work, and next_action.")
             replacement=args.get("items");additions=args.get("add_items")
             if not isinstance(replacement,list) and not isinstance(additions,list):return "Invalid plan update: provide items to revise the full plan or add_items to expand the current plan."
             previous_plan=copy.deepcopy(self.plan);previous_mode=self.task_mode
@@ -856,6 +876,7 @@ class ToolRegistry:
             if self.task_intent=="auto" and self.task_mode=="plan" and self.plan:
                 self.task_mode="implement"
             event={"type":"plan","items":self.plan}
+            normalized_checkpoint=None
             if self.task_mode in {"discussion", "plan_only", "plan", "implement"}:
                 event["taskMode"]=self.task_mode
             if isinstance(added_criteria,list):
@@ -868,6 +889,17 @@ class ToolRegistry:
             if isinstance(decisions,list):event["decisions"]=decisions
             if self.task_checkpoint is not None:
                 record_plan(self.task_checkpoint,self.plan,criteria if isinstance(criteria,list) else None,decisions,self.task_mode,plan_source="agent")
+                if isinstance(checkpoint_state,dict) and checkpoint_state.get("due") and isinstance(progress_checkpoint,dict):
+                    normalized_checkpoint={key:[item.strip() for item in progress_checkpoint[key] if item.strip()]
+                                          for key in ("verified_findings","completed_work","pending_work")}
+                    normalized_checkpoint["next_action"]=progress_checkpoint["next_action"].strip()
+                    acknowledge_context_checkpoint(self.task_checkpoint,normalized_checkpoint)
+                    event["progressCheckpoint"]={
+                        "verifiedFindings":normalized_checkpoint["verified_findings"],
+                        "completedWork":normalized_checkpoint["completed_work"],
+                        "pendingWork":normalized_checkpoint["pending_work"],
+                        "nextAction":normalized_checkpoint["next_action"],
+                    }
             self.event(event)
             saved_task=current_task(self.task_checkpoint) if self.task_checkpoint is not None else {}
             saved_criteria=saved_task.get("acceptance_criteria",criteria if isinstance(criteria,list) else [])
@@ -2172,6 +2204,39 @@ class AgentEngine:
                     available_skills=self.state["registry"].skill_rows,catalog_skill_names=getattr(self,"_catalog_skill_names",[]),
                     project_instructions=self.project_instructions,harness_profile=self.harness_profile,
                     task_intent=self.task_intent,access=self.workspace.access)
+                pressure=update_context_checkpoint_pressure(
+                    checkpoint,manifest["estimated_request_input_tokens"],manifest["input_budget"])
+                manifest.update({"context_checkpoint_due":bool(pressure.get("due")),
+                                 "context_checkpoint_threshold_ratio":pressure.get("threshold_ratio",CONTEXT_CHECKPOINT_DUE_RATIO),
+                                 "context_checkpoint_reset_ratio":pressure.get("reset_ratio",CONTEXT_CHECKPOINT_RESET_RATIO),
+                                 "context_checkpoint_ratio":pressure.get("last_ratio"),
+                                 "context_checkpoint_acknowledged":bool(pressure.get("acknowledged"))})
+                if pressure.get("due"):
+                    checkpoint_request=(
+                        "\n\n[Workbench progress checkpoint requested] The current request is at "
+                        f"{pressure.get('last_ratio',0):.0%} of its selected input budget. Before any project-changing "
+                        "tool, call update_plan with progress_checkpoint: concise verified findings, completed work, "
+                        "pending work, and the next action. This saves a continuation handoff; it does not end the task. "
+                        "Then continue implementation normally. Do not restate private chain-of-thought."
+                    )
+                    if request_messages and request_messages[0].get("role")=="system":
+                        request_messages[0]["content"]+=checkpoint_request
+                    else:
+                        request_messages.insert(0,{"role":"system","content":checkpoint_request.strip()})
+                    manifest=build_prompt_manifest(
+                        request_messages,tools,request_index=request_index,context=self.context.context,
+                        output_tokens=self.state["max_tokens"],input_budget=self.context.budget(self.state["max_tokens"]),
+                        skills_enabled=self.state["skills_enabled"],skill_sources=self.state["skill_sources"],
+                        available_skills=self.state["registry"].skill_rows,catalog_skill_names=getattr(self,"_catalog_skill_names",[]),
+                        project_instructions=self.project_instructions,harness_profile=self.harness_profile,
+                        task_intent=self.task_intent,access=self.workspace.access)
+                    pressure=update_context_checkpoint_pressure(
+                        checkpoint,manifest["estimated_request_input_tokens"],manifest["input_budget"])
+                    manifest.update({"context_checkpoint_due":bool(pressure.get("due")),
+                                     "context_checkpoint_threshold_ratio":pressure.get("threshold_ratio",CONTEXT_CHECKPOINT_DUE_RATIO),
+                                     "context_checkpoint_reset_ratio":pressure.get("reset_ratio",CONTEXT_CHECKPOINT_RESET_RATIO),
+                                     "context_checkpoint_ratio":pressure.get("last_ratio"),
+                                     "context_checkpoint_acknowledged":bool(pressure.get("acknowledged"))})
                 request_scope=checkpoint_state.get("active_turn_id") or checkpoint_state.get("task_id", "task")
                 self.event({"type":"prompt_manifest","activityId":f"{request_scope}-request-{request_index}",**manifest,
                             "selected_tool_names":[(item.get("function") or {}).get("name","") for item in tools],
@@ -2450,7 +2515,12 @@ class AgentEngine:
                                     discovery_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
                                     out=self._load_tools(args,base_request,discovery_budget)
                                 elif name.startswith("mcp__") and self.mcp_call:
-                                    if not self._approval(name,args):out="Denied by user."
+                                    checkpoint_state=current_task(checkpoint).get("context_checkpoint",{})
+                                    if isinstance(checkpoint_state,dict) and checkpoint_state.get("due"):
+                                        out=("Blocked before dispatch: the active request is near its selected input budget. "
+                                             "First call update_plan with progress_checkpoint containing verified_findings, "
+                                             "completed_work, pending_work, and next_action. Then continue the same task.")
+                                    elif not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
                                 else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
                             except RequestCancelled:out="Cancelled before the workspace file operation completed."

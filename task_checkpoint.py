@@ -9,6 +9,8 @@ from typing import Any
 
 _PLAN_TERMINAL_STATUSES = {"done", "complete", "completed", "verified", "not_required", "not required",
                            "skipped", "cancelled", "canceled", "deferred"}
+CONTEXT_CHECKPOINT_DUE_RATIO = 0.70
+CONTEXT_CHECKPOINT_RESET_RATIO = 0.60
 
 
 def plan_item_is_open(item: Any) -> bool:
@@ -145,6 +147,49 @@ def record_implementation_requested(checkpoint: dict[str, Any], requested: bool 
     task["updated_at"] = time.time()
 
 
+def update_context_checkpoint_pressure(checkpoint: dict[str, Any], estimated_tokens: int,
+                                       input_budget: int) -> dict[str, Any]:
+    """Latch a durable progress checkpoint request near the actual request input budget.
+
+    The lower reset band avoids repeatedly asking for a checkpoint while compaction is
+    gradually reducing the same long task. This never changes model limits or cancels work.
+    """
+    task = _current(checkpoint)
+    state = task.setdefault("context_checkpoint", {})
+    if not isinstance(state, dict):
+        state = task["context_checkpoint"] = {}
+    budget = max(1, int(input_budget))
+    estimated = max(0, int(estimated_tokens))
+    ratio = estimated / budget
+    state["threshold_ratio"] = CONTEXT_CHECKPOINT_DUE_RATIO
+    state["reset_ratio"] = CONTEXT_CHECKPOINT_RESET_RATIO
+    if ratio < CONTEXT_CHECKPOINT_RESET_RATIO:
+        state.update({"armed": False, "due": False, "acknowledged": False,
+                      "last_ratio": ratio, "last_estimated_tokens": estimated,
+                      "input_budget": budget, "updated_at": time.time()})
+    else:
+        state.update({"last_ratio": ratio, "last_estimated_tokens": estimated,
+                      "input_budget": budget, "updated_at": time.time()})
+        if ratio >= CONTEXT_CHECKPOINT_DUE_RATIO and not state.get("armed"):
+            state.update({"armed": True, "due": True, "acknowledged": False,
+                          "threshold_ratio": CONTEXT_CHECKPOINT_DUE_RATIO,
+                          "requested_at": time.time()})
+    task["updated_at"] = time.time()
+    return copy.deepcopy(state)
+
+
+def acknowledge_context_checkpoint(checkpoint: dict[str, Any], summary: dict[str, Any]) -> None:
+    """Persist the model's concise, explicit progress handoff before allowing mutations."""
+    task = _current(checkpoint)
+    state = task.setdefault("context_checkpoint", {})
+    if not isinstance(state, dict):
+        state = task["context_checkpoint"] = {}
+    state.update({"due": False, "acknowledged": True,
+                  "summary": copy.deepcopy(summary), "acknowledged_at": time.time(),
+                  "updated_at": time.time()})
+    task["updated_at"] = time.time()
+
+
 def record_user_update(checkpoint: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     """Persist one same-task steering input and update its delivery state idempotently."""
     task = _current(checkpoint)
@@ -253,7 +298,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
             "schema_version", "task_id", "status", "task_mode", "plan_source", "goal", "user_updates", "workspace",
             "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
             "implementation_requested", "acceptance_criteria", "acceptance_criteria_source",
-            "last_assistant_update", "next_action",
+            "last_assistant_update", "next_action", "context_checkpoint",
         )
         if checkpoint.get(key) not in (None, [], "")
     }
