@@ -376,7 +376,19 @@ class ToolTests(unittest.TestCase):
     return (0,str(root),'') if '--show-toplevel' in argv else (0,'commit page\n','')
    tools._git_capture=capture
    self.assertEqual(tools.run('git_log',{'limit':2500,'offset':320}), 'commit page\n')
-   self.assertEqual(calls[1],['git','log','--max-count=2500','--skip=320','--oneline','--decorate'])
+   self.assertEqual(calls[1],['git','log','--max-count=2501','--skip=320','--oneline','--decorate'])
+
+ def test_git_log_page_reports_next_offset_only_when_more_history_exists(self):
+  with tempfile.TemporaryDirectory() as directory:
+   root=Path(directory).resolve();tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True);calls=[]
+   def capture(argv):
+    calls.append(argv)
+    if '--show-toplevel' in argv:return (0,str(root),'')
+    return (0,'a first\nb second\nc third\n','')
+   tools._git_capture=capture
+   page=tools.run('git_log',{'limit':2,'offset':10})
+   self.assertEqual(page,'a first\nb second\n\nMore commit history is available. Continue with offset=12, limit=2.')
+   self.assertEqual(calls[1][2],'--max-count=3')
 
  def test_git_capture_keeps_waiting_after_initial_poll_until_process_finishes(self):
   import subprocess

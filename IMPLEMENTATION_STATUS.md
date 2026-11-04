@@ -3,7 +3,7 @@
 ## 2026-11-04 cancellable, deadline-free Git inspection (verification queued)
 
 - Replaced the built-in Git tools' hidden 10-second subprocess deadline with a cancellable wait that preserves complete stdout/stderr and follows the existing Windows Job Object/process-tree cancellation path. Git status, diff, and log can now finish on large/slow workspaces; the app Cancel event remains the stop mechanism.
-- Removed `git_log`'s arbitrary 100-commit maximum and added an offset page parameter alongside the caller-selected limit. No global history cap was added. Regression cases cover an extended wait, cancellation with partial output, and pages larger than 100 commits. These are authored and queued; no tests, typecheck, package, or live app/model run has been performed for this change.
+- Removed `git_log`'s arbitrary 100-commit maximum and added an offset page parameter alongside the caller-selected limit. A one-entry lookahead reports the exact next offset only when more history exists; empty pages say no commit history rather than incorrectly reporting no file changes. No global history cap was added. Regression cases cover an extended wait, cancellation with partial output, pages larger than 100 commits, and next-page reporting. These are authored and queued; no tests, typecheck, package, or live app/model run has been performed for this change.
 
 ## 2026-11-04 adaptive no-progress continuation (verification queued)
 

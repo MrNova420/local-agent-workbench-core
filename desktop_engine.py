@@ -855,7 +855,7 @@ class ToolRegistry:
                     return "Invalid limit: expected a positive integer."
                 if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
                     return "Invalid offset: expected a non-negative integer."
-                argv = ["git", "log", f"--max-count={limit}", f"--skip={offset}", "--oneline", "--decorate"]
+                argv = ["git", "log", f"--max-count={limit + 1}", f"--skip={offset}", "--oneline", "--decorate"]
             else:
                 argv = ["git", "diff", "--no-ext-diff", "--"]
             code, stdout, stderr = self._git_capture(argv)
@@ -865,6 +865,15 @@ class ToolRegistry:
                 return f"Git diff unavailable: {stderr or stdout or 'could not start git'}"
             if code != 0:
                 return f"Git inspection failed (exit {code}):\n{stderr or stdout}"
+            if name == "git_log":
+                records = stdout.splitlines()
+                if not records:
+                    return f"No commit history found at offset {offset}."
+                has_more = len(records) > limit
+                stdout = "\n".join(records[:limit])
+                if has_more:
+                    stdout += f"\n\nMore commit history is available. Continue with offset={offset + limit}, limit={limit}."
+                return stdout
             return (stdout + stderr) or "No tracked changes."
         if name == "update_plan":
             checkpoint_state=current_task(self.task_checkpoint).get("context_checkpoint",{}) if self.task_checkpoint is not None else {}
