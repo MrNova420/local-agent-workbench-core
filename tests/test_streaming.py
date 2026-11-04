@@ -8,6 +8,14 @@ class FakeResponse:
  def readline(self):return next(self.lines,b'')
  def close(self):self.closed=True
 class StreamTests(unittest.TestCase):
+ def test_provider_payload_escapes_a_lone_surrogate_from_user_text(self):
+  marker="\udc9d";lines=[json.dumps({'message':{'content':'ready'},'done':True}).encode()+b'\n']
+  events=[];state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),
+                   'temperature':0.2,'context':4096,'max_tokens':512,'runtime_options':{}}
+  with patch('desktop_engine.open_http_stream',return_value=FakeResponse(lines)) as open_url:
+   OllamaRuntime().stream(state,[{'role':'user','content':f'hello {marker}'}],threading.Event(),events.append)
+  payload=json.loads(open_url.call_args.args[0].data)
+  self.assertEqual(payload['messages'][0]['content'],f'hello {marker}')
  def test_provider_payload_omits_internal_same_task_steering_metadata(self):
   messages=[{'role':'user','content':'Keep the style','turn_id':'turn-1','steering_id':'steer-1','steering_status':'delivered'}]
   self.assertEqual(_provider_message_history(messages),[{'role':'user','content':'Keep the style'}])

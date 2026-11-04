@@ -5,6 +5,20 @@ from pathlib import Path
 from desktop_engine import ContextManager, CONTEXT_MAX, MODEL, ToolRegistry, Workspace, tool_result_for_context
 
 class ContextTests(unittest.TestCase):
+    def test_compaction_estimates_prompt_and_checkpoint_with_windows_surrogate_escapes(self):
+        marker = "\udc9d"
+        manager = ContextManager(context=4096, reserve=0)
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": f"continue {marker}"},
+        ]
+        checkpoint = {"current": {"goal": f"continue {marker}", "operations": [], "plan": []}}
+
+        compacted = manager.compact(messages, [], 512, checkpoint=checkpoint)
+
+        self.assertIn(marker, compacted[0]["content"])
+        self.assertIn(marker, compacted[-1]["content"])
+
     def test_oversized_tool_results_with_lone_surrogates_remain_excerptable(self):
         result = "prefix \udc9d " + ("body " * 400) + " suffix"
 
