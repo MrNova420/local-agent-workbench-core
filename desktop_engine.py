@@ -2690,31 +2690,13 @@ class AgentEngine:
                         implementation_requested,self.workspace.access,action_denied,
                         completed_project_change,review_required,plan_remaining,
                         command_effects_inspected=command_side_effects_possible and post_change_inspection)
-                    auto_intent_unclassified=(
-                        self.task_intent=="auto" and self.state["registry"].task_mode=="auto"
-                        and tool_action_index==0
-                        and not _plan_requests_implementation(
-                            self.state["registry"].task_mode,self.state["registry"].plan_source,
-                            self.state["registry"].plan)
-                        and not implementation_requested
-                        and not mutation_attempted and not completed_project_change and not command_side_effects_possible
-                    )
                     # Keep the task moving across distinct reasoning/final
                     # responses. A repeat is only considered a cycle when both
                     # the complete response and saved host/project state match.
                     response_signature=_no_progress_response_signature(checkpoint_state,verification_steps,msg)
-                    if (unfinished or missing_final_response or auto_intent_unclassified) and response_signature not in seen_no_progress_responses:
+                    if (unfinished or missing_final_response) and response_signature not in seen_no_progress_responses:
                         seen_no_progress_responses.add(response_signature)
-                        if auto_intent_unclassified:
-                            continuation=(
-                                "Automatic task intent is not classified in saved task state yet. Use update_plan to mark "
-                                "discussion for an informational request, plan_only only when the user explicitly requested "
-                                "no implementation, or plan/implement for actionable project work. If this is project work, "
-                                "continue from its next useful step through structured tools and verification; a prose-only "
-                                "plan is not a completed implementation. Do not repeat the unclassified answer."
-                            )
-                            reason="automatic task needs structured intent classification"
-                        elif missing_final_response and not unfinished:
+                        if missing_final_response and not unfinished:
                             continuation="Return a concise user-visible response for the user. Summarize only work confirmed by saved tool results and state the terminal status or the remaining blocker. Do not start another operation unless the saved plan or evidence shows work remains."
                             reason="model produced no user-visible final response"
                         elif review_required:

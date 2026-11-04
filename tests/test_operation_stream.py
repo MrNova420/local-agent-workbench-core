@@ -966,28 +966,20 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(checkpoint["plan"][0]["status"], "completed")
             self.assertFalse(any(event.get("type") == "tool_start" for event in events))
 
-    def test_automatic_unclassified_response_gets_state_based_classification_followup(self):
+    def test_automatic_final_answer_does_not_trigger_metadata_only_model_request(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
             requests = []
-            responses = [
-                {"message": {"role": "assistant", "content": "I can explain the project."}},
-                {"message": {"role": "assistant", "content": "It contains application code and configuration."}},
-                {"message": {"role": "assistant", "content": "", "tool_calls": [
-                    {"id": "classify", "function": {"name": "update_plan", "arguments": {"task_mode": "discussion"}}}
-                ]}},
-                {"message": {"role": "assistant", "content": "The project contains application code and configuration."}},
-            ]
+            responses = [{"message": {"role": "assistant", "content": "The project contains application code and configuration."}}]
             engine = AgentEngine(root, access="edit", task_intent="auto", event=events.append)
             engine.runtime.stream = lambda _state, messages, *_args: (requests.append(copy.deepcopy(messages)) or responses.pop(0))
 
             engine.run("What does this project do?")
 
-            self.assertEqual(len(requests), 4)
-            self.assertIn("Automatic task intent is not classified", requests[1][0]["content"])
+            self.assertEqual(len(requests), 1)
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(completion["workflowOutcome"], "no_action")
-            self.assertEqual([event.get("name") for event in events if event.get("type") == "tool_start"], ["update_plan"])
+            self.assertEqual([event.get("name") for event in events if event.get("type") == "tool_start"], [])
 
     def test_automatic_prose_plan_must_classify_then_implement_before_completion(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1019,13 +1011,13 @@ class OperationStreamTests(unittest.TestCase):
                 ]}},
                 {"message": {"role": "assistant", "content": "The page is written and inspected."}},
             ]
-            engine = AgentEngine(root, access="edit", task_intent="auto", event=events.append)
+            engine = AgentEngine(root, access="edit", task_intent="implement", event=events.append)
             engine.runtime.stream = lambda _state, messages, *_args: (requests.append(copy.deepcopy(messages)) or responses.pop(0))
 
             engine.run("Create a simple home page.")
 
             self.assertEqual(len(requests), 6)
-            self.assertIn("Automatic task intent is not classified", requests[1][0]["content"])
+            self.assertIn("Start the next safe action", requests[1][0]["content"])
             self.assertEqual(Path(root, "index.html").read_text(encoding="utf-8"), "<h1>Ready</h1>")
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(completion["workflowOutcome"], "inspected")

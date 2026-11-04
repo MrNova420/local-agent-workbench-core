@@ -580,3 +580,9 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 
 - Removed the legacy 1,024-token floor from `ContextManager.input_budget`; the property now reports only configured context minus its reserve, floored at zero when exhausted. It can no longer advertise more context than the selected configuration provides.
 - Added queued below-capacity and reserve-exceeds-context regressions. This does not change model context or output settings; no tests were run.
+
+# Automatic intent no longer spends an extra request on outcome metadata (2026-11-04)
+
+- Removed the host retry that asked a model with a complete plain-text answer to make a second provider request solely to set `task_mode`. Informational turns can now finish after one answer. The extra request was especially costly with reasoning-heavy local models and did not add project work.
+- Explicit `implement` intent still continues a prose-only first response into structured project operations. In Automatic intent, structured agent plans and observed mutations continue to drive implementation; a plain-text answer without structured work ends as `no_action`, not as a claim that files changed. A model that fails to issue tools for an actionable request remains a model/tool-use failure and can be continued by the user; this change does not use brittle phrase matching to infer intent.
+- Focused operation-stream regressions: **4 passed** for ordinary one-request answers, automatic no-action state, direct-write flow, and implementation continuation under explicit Implement intent. Full engine suite and app/package acceptance remain pending.
