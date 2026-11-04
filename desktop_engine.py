@@ -1,6 +1,8 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
-import codecs, copy, hashlib, json, os, queue, re, tempfile, threading, time, urllib.request, uuid
+import codecs, copy, hashlib, json, os, queue, re, socket, tempfile, threading, time, urllib.error, urllib.request, uuid
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import stat
 import weakref
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -56,8 +58,33 @@ class UncertainFileOperationError(RuntimeError):
  """A failed file operation could not prove its partial effects were rolled back."""
 
 class InferenceStreamError(RuntimeError):
- def __init__(self,message:str,partial_message:dict|None=None):
-  super().__init__(message);self.partial_message=partial_message
+ def __init__(self,message:str,partial_message:dict|None=None,*,status_code:int|None=None,
+              retry_after:float|None=None,retryable:bool=False,failure_phase:str|None=None):
+  super().__init__(message);self.partial_message=partial_message;self.status_code=status_code
+  self.retry_after=retry_after;self.retryable=retryable;self.failure_phase=failure_phase
+
+def _inference_retry_metadata(error:BaseException,response:Any=None)->tuple[int|None,float|None,bool]:
+    """Return transport-based retry metadata; never infer it from provider prose."""
+    status=getattr(error,"code",None)
+    headers=getattr(error,"headers",None)
+    if status is None and response is not None:
+        status=getattr(response,"status",None)
+        headers=getattr(response,"headers",headers)
+    if isinstance(status,bool) or not isinstance(status,int):status=None
+    retry_after=None
+    raw=headers.get("Retry-After") if headers is not None and hasattr(headers,"get") else None
+    if isinstance(raw,str):
+        try:retry_after=max(0.0,float(raw.strip()))
+        except (TypeError,ValueError):
+            try:
+                retry_at=parsedate_to_datetime(raw)
+                if retry_at.tzinfo is None:retry_at=retry_at.replace(tzinfo=timezone.utc)
+                retry_after=max(0.0,(retry_at-datetime.now(timezone.utc)).total_seconds())
+            except (TypeError,ValueError,OverflowError):retry_after=None
+    transport_failure=isinstance(error,(ConnectionError,TimeoutError,socket.timeout,ConnectionResetError,urllib.error.URLError))
+    retryable=(status in {408,425,429,502,503,504} if status is not None and status>=400
+               else transport_failure)
+    return status,retry_after,retryable
 
 def _project_directory_listing_state(path:Path)->tuple[Any,...]|None:
     """Cheaply detect path/ignore changes that would invalidate a paused walk."""
@@ -2035,7 +2062,7 @@ class OllamaRuntime:
                         except json.JSONDecodeError:pass
                 result["message"]["tool_calls"]=[calls[i] for i in sorted(calls)]
             if result.get("done") is not True:
-                raise RuntimeError("Ollama stream closed without its final done=true record; received output was preserved as partial.")
+                raise ConnectionError("Ollama stream closed without its final done=true record; received output was preserved as partial.")
             emit({"type":"request_complete","provider":"ollama","request_index":request_index,
                   "provider_done":result.get("done"),"provider_done_reason":result.get("done_reason")})
             return result
@@ -2054,7 +2081,11 @@ class OllamaRuntime:
                 partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
                 raise RequestCancelled("Cancelled",{"role":"assistant",**partial} if partial else None) from exc
             partial={key:result["message"][key] for key in ("content","thinking") if result["message"].get(key)}
-            raise InferenceStreamError(str(exc),{"role":"assistant",**partial} if partial else None) from exc
+            status_code,retry_after,retryable=_inference_retry_metadata(exc,active_response)
+            raise InferenceStreamError(str(exc),{"role":"assistant",**partial} if partial else None,
+                                       status_code=status_code,retry_after=retry_after,
+                                       retryable=retryable and not has_partial_stream,
+                                       failure_phase=failure_phase) from exc
         finally:
             with self.lock:connection=self.connection;active_response=self.response;self.connection=None;self.response=None
             interrupt_connection(connection,active_response)
@@ -2413,7 +2444,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;seen_no_progress_responses=set();last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        start=time.monotonic();request_index=0;provider_retry_attempt=0;seen_no_progress_responses=set();last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
         implementation_requested=(
             True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
             bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
@@ -2502,6 +2533,28 @@ class AgentEngine:
                                     "elapsed":time.monotonic()-start})
                         continue
                     raise
+                except InferenceStreamError as exc:
+                    # Retry only transport-classified transient failures that
+                    # produced no partial assistant/tool output. A partial stream
+                    # may contain meaningful work and must be recovered explicitly.
+                    if not exc.retryable or exc.partial_message or self.cancel_event.is_set():
+                        raise
+                    provider_retry_attempt+=1
+                    delay=(exc.retry_after if exc.retry_after is not None
+                           else min(0.5 * (2 ** min(provider_retry_attempt-1, 6)), 30.0))
+                    retry_phase=f"retrying provider · attempt {provider_retry_attempt} · next retry in {delay:g}s"
+                    self.event({"type":"phase","phase":retry_phase,"elapsed":time.monotonic()-start,
+                                "retryAttempt":provider_retry_attempt,"retryDelaySeconds":delay,
+                                "httpStatus":exc.status_code,"failurePhase":exc.failure_phase,
+                                "reason":str(exc)})
+                    retry_until=time.monotonic()+delay
+                    while time.monotonic()<retry_until:
+                        if self.cancel_event.is_set():raise RequestCancelled("Cancelled during provider retry wait")
+                        if self.steering_handler and self.steering_interrupt_event.is_set():break
+                        self.cancel_event.wait(min(0.25,max(0.0,retry_until-time.monotonic())))
+                    if self.cancel_event.is_set():raise RequestCancelled("Cancelled during provider retry wait")
+                    continue
+                provider_retry_attempt=0
                 msg=result["message"]
                 calls=msg.get("tool_calls") or []
                 if calls or _assistant_has_final_content(msg) or (isinstance(msg.get("thinking"),str) and msg["thinking"].strip()):

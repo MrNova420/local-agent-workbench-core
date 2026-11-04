@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-04 cancelable provider retry recovery (verification queued)
+
+- The loop now preserves structured transport failure metadata for both Ollama and llama.cpp: HTTP status, failure phase, retryability, and numeric or HTTP-date `Retry-After`. Standard transient statuses and connection failures retry the same request with a cancelable exponential wait; the wait grows to 30 seconds and then stays there, with no attempt limit or total task deadline.
+- The retry path is visible in the live phase and reports attempt, next wait, status, and cause. Partial text, reasoning, or tool-call progress disables automatic replay; partial assistant text remains saved as an incomplete response for recovery. HTTP 500 allocation/context errors are not assumed transient based on their prose.
+- Added `tests/test_provider_retry.py` for metadata, successful retry, and partial-stream preservation. Tests remain queued with the grouped verification pass; no tests or live model request were run for this change.
+
 ## 2026-11-04 OpenCode-inspired repeated-action review (verification queued)
 
 - Compared the current Workbench agent loop with OpenCode's V1 prompt/processor split and its exact repeated-tool guard. Workbench already has state-aware continuation for prose, saved task checkpoints, tool-result recovery, steering at request boundaries, and no task-duration or total-iteration cap; it did not inspect repeated structured tool calls.

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from cancellable_http import interrupt_connection, open_http_stream
-from desktop_engine import InferenceStreamError, RequestCancelled
+from desktop_engine import InferenceStreamError, RequestCancelled, _inference_retry_metadata
 
 
 class LlamaCppServer:
@@ -343,7 +343,11 @@ class LlamaCppRuntime:
                 partial = {key: result["message"][key] for key in ("content", "thinking") if result["message"].get(key)}
                 raise RequestCancelled("Cancelled", {"role": "assistant", **partial} if partial else None) from exc
             partial = {key: result["message"][key] for key in ("content", "thinking") if result["message"].get(key)}
-            raise InferenceStreamError(str(exc), {"role": "assistant", **partial} if partial else None) from exc
+            status_code, retry_after, retryable = _inference_retry_metadata(exc, active_response)
+            raise InferenceStreamError(str(exc), {"role": "assistant", **partial} if partial else None,
+                                       status_code=status_code, retry_after=retry_after,
+                                       retryable=retryable and not partial,
+                                       failure_phase=failure_phase) from exc
         finally:
             with self.lock:
                 connection = self.connection
