@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-03 Automatic task classification handoff
+
+- A fresh Automatic task that receives prose without any structured operation now gets one state-based prompt to classify the request as discussion, explicit `plan_only`, or expandable intermediate plan/implementation. Identical unchanged state then ends with the existing saved no-action result; emitted response/reasoning remains in history and cannot keep the task looping. The classification trigger is limited to before any tool operation, so it cannot add extra model requests after denied, failed, or successful tools.
+- Automatic guidance now explicitly distinguishes expandable `plan` from the explicit no-implementation `plan_only` choice. Existing plan-only no-progress handoff remains intact; planning may continue when new evidence changes the plan, and plan updates alone do not claim project implementation progress.
+- Added regressions for one-time classification, prose-plan-to-tool implementation, and workflow guidance. Focused `tests/test_operation_stream.py tests/test_workflow_outcome.py`: **84 passed**. `python -m py_compile desktop_engine.py` and `git diff --check` pass. Full engine/app suites, packaging, visible workflow, and Flint acceptance remain pending.
+
 ## 2026-11-03 independent file-write batching
 
 - The engine now runs a model-supplied batch of `write_file`, `append_file`, and `edit_file` calls concurrently only when every target is inside the captured project, targets are distinct and non-overlapping (including hard-link identity where available), no persistent permission asks/denials apply, and the selected approval path is already non-interactive. `ask`, plan, copy, per-action approval, mixed tool batches, same/ancestor paths, and ambiguous targets remain ordered. Tool activity/checkpoints are recorded per operation as each finishes; the returned chat tool messages retain model call order.

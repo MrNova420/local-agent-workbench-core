@@ -966,6 +966,66 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(checkpoint["plan"][0]["status"], "completed")
             self.assertFalse(any(event.get("type") == "tool_start" for event in events))
 
+    def test_automatic_unclassified_response_gets_state_based_classification_followup(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            requests = []
+            responses = [
+                {"message": {"role": "assistant", "content": "I can explain the project."}},
+                {"message": {"role": "assistant", "content": "It contains application code and configuration."}},
+            ]
+            engine = AgentEngine(root, access="edit", task_intent="auto", event=events.append)
+            engine.runtime.stream = lambda _state, messages, *_args: (requests.append(copy.deepcopy(messages)) or responses.pop(0))
+
+            engine.run("What does this project do?")
+
+            self.assertEqual(len(requests), 2)
+            self.assertIn("Automatic task intent is not classified", requests[1][0]["content"])
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "no_action")
+            self.assertFalse(any(event.get("type") == "tool_start" for event in events))
+
+    def test_automatic_prose_plan_must_classify_then_implement_before_completion(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            requests = []
+            plan = [
+                {"title": "Create the page", "status": "pending"},
+                {"title": "Inspect the finished page", "status": "pending"},
+            ]
+            responses = [
+                {"message": {"role": "assistant", "content": "I will plan the page and then create it."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "plan", "function": {"name": "update_plan", "arguments": {"task_mode": "plan", "items": plan}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "write", "function": {"name": "write_file", "arguments": {"path": "index.html", "content": "<h1>Ready</h1>"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "inspect", "function": {"name": "read_file", "arguments": {"path": "index.html"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "finish-plan", "function": {"name": "update_plan", "arguments": {
+                        "task_mode": "implement",
+                        "items": [
+                            {"title": "Create the page", "status": "completed"},
+                            {"title": "Inspect the finished page", "status": "completed"},
+                        ],
+                    }}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The page is written and inspected."}},
+            ]
+            engine = AgentEngine(root, access="edit", task_intent="auto", event=events.append)
+            engine.runtime.stream = lambda _state, messages, *_args: (requests.append(copy.deepcopy(messages)) or responses.pop(0))
+
+            engine.run("Create a simple home page.")
+
+            self.assertEqual(len(requests), 6)
+            self.assertIn("Automatic task intent is not classified", requests[1][0]["content"])
+            self.assertEqual(Path(root, "index.html").read_text(encoding="utf-8"), "<h1>Ready</h1>")
+            completion = next(event for event in events if event.get("type") == "complete")
+            self.assertEqual(completion["workflowOutcome"], "inspected")
+
     def test_repeated_identical_plan_tool_calls_are_detected_as_no_progress(self):
         with tempfile.TemporaryDirectory() as root:
             events = []

@@ -154,7 +154,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         if harness_profile == "small-model" else ""
     )
     intent_guidance = {
-        "auto": "Task intent: automatic. Use discussion for informational work that needs no project change. Use task_mode=plan_only only when the user explicitly asks for a plan with no implementation; that is different from task_mode=plan, which is an intermediate planning phase. For actionable project work, an agent-authored plan must continue into implementation and verification even if its items are marked complete prematurely. Set task_mode=implement for implementation work. Respect the actual access policy and approval rules below.",
+        "auto": "Task intent: automatic. Before ending without a structured project operation, record a task-mode decision with update_plan: use discussion for informational work that needs no project change; use task_mode=plan_only only when the user explicitly asks for a plan with no implementation; use task_mode=plan or implement for actionable project work. task_mode=plan_only is the explicit no-implementation choice; task_mode=plan is an intermediate phase that remains expandable, not a final answer. For actionable project work, an agent-authored plan must continue into implementation and verification even if its items are marked complete prematurely. Set task_mode=implement for implementation work. Respect the actual access policy and approval rules below.",
         "discuss": "Task intent: discussion. Explain or investigate the request without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "plan": "Task intent: plan only. Refine the visible starter checklist, analyze dependencies and risks, and present actionable steps without changing project files; the host exposes only read-only project tools and omits MCP tools for this task.",
         "implement": "Task intent: implementation. Refine the visible starter checklist, then carry the requested project work through structured tools and relevant verification; follow the actual access and approval policy below.",
@@ -2273,10 +2273,33 @@ class AgentEngine:
                         implementation_requested,self.workspace.access,action_denied,
                         completed_project_change,review_required,plan_remaining,
                         command_effects_inspected=command_side_effects_possible and post_change_inspection)
-                    progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps,msg)
-                    if (unfinished or missing_final_response) and progress_signature not in seen_continuation_signatures:
+                    auto_intent_unclassified=(
+                        self.task_intent=="auto" and self.state["registry"].task_mode=="auto"
+                        and tool_action_index==0
+                        and not _plan_requests_implementation(
+                            self.state["registry"].task_mode,self.state["registry"].plan_source,
+                            self.state["registry"].plan)
+                        and not implementation_requested
+                        and not mutation_attempted and not completed_project_change and not command_side_effects_possible
+                    )
+                    # New prose or private reasoning alone cannot keep an
+                    # unclassified Automatic task cycling. Those messages are
+                    # still saved; only a structured mode/operation change
+                    # advances this classification state.
+                    progress_signature=_continuation_progress_signature(
+                        checkpoint_state,verification_steps,None if auto_intent_unclassified else msg)
+                    if (unfinished or missing_final_response or auto_intent_unclassified) and progress_signature not in seen_continuation_signatures:
                         seen_continuation_signatures.add(progress_signature)
-                        if missing_final_response and not unfinished:
+                        if auto_intent_unclassified:
+                            continuation=(
+                                "Automatic task intent is not classified in saved task state yet. Use update_plan to mark "
+                                "discussion for an informational request, plan_only only when the user explicitly requested "
+                                "no implementation, or plan/implement for actionable project work. If this is project work, "
+                                "continue from its next useful step through structured tools and verification; a prose-only "
+                                "plan is not a completed implementation. Do not repeat the unclassified answer."
+                            )
+                            reason="automatic task needs structured intent classification"
+                        elif missing_final_response and not unfinished:
                             continuation="Return a concise user-visible response for the user. Summarize only work confirmed by saved tool results and state the terminal status or the remaining blocker. Do not start another operation unless the saved plan or evidence shows work remains."
                             reason="model produced no user-visible final response"
                         elif review_required:
