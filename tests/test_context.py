@@ -5,6 +5,15 @@ from pathlib import Path
 from desktop_engine import ContextManager, CONTEXT_MAX, MODEL, ToolRegistry, Workspace, tool_result_for_context
 
 class ContextTests(unittest.TestCase):
+    def test_oversized_tool_results_with_lone_surrogates_remain_excerptable(self):
+        result = "prefix \udc9d " + ("body " * 400) + " suffix"
+
+        excerpt = tool_result_for_context(result, 512, "operation-surrogate")
+
+        self.assertLessEqual(len(excerpt.encode("utf-8", errors="surrogatepass")), 512)
+        self.assertIn("read_operation_result", excerpt)
+        self.assertIn("operation-surrogate", excerpt)
+
     def test_oversized_tool_results_keep_full_saved_result_retrievable_with_utf8_safe_cursor(self):
         import re
         result = ("start 雪\n" + "middle-" * 5000 + "\nfinish 雪")

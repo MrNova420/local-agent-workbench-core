@@ -387,9 +387,16 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 ## 2026-11-01 uncertain MCP completion safety
 
 - Once an MCP tool call is dispatched, cancellation or a lost/failed response is now recorded as `uncertain`; the remote server may have applied side effects even though the app did not receive a result. User-visible errors omit raw exception text that might contain endpoint credentials.
-- The engine stops the remaining calls from that same model tool batch after an uncertain MCP result. Those calls are persisted as `blocked` with an explicit not-executed result; no later call or automatic retry is made.
+- The engine stops the remaining calls from that same model tool batch after an uncertain MCP result. Those calls are persisted as `blocked` with an explicit not-executed result; automatic retry is forbidden. The 2026-11-04 continuation update below supersedes the earlier immediate task termination: the same task now continues with MCP paused and can still provide an honest final response or perform safe local work.
 - The uncertain operation and its exact arguments/result are retained in the task checkpoint and sidecar run state, and journal replay reconstructs the warning. Added queued engine, status, and persistence regressions. No tests or runtime checks were run.
 - The MCP adapter regression additionally injects a post-dispatch timeout containing credential-like text and requires an uncertain result that omits the raw exception message. It is queued and unrun.
+
+## 2026-11-04 uncertain MCP continuation and prompt-size Unicode handling
+
+- An uncertain MCP result now blocks the rest of that model tool batch, persists every skipped call as not executed, suppresses MCP schemas for the remainder of the same task (including after recovery), and continues the task with safe local tools and a required user-facing status. It never automatically repeats the remote operation.
+- A final response cannot mark a task completed while an MCP result remains uncertain. The saved task ends as `stopped` with `workflow_outcome=blocked`, and the unresolved operation is included in the compactable checkpoint so later turns retain its identity and result.
+- Prompt-manifest and large-tool-result byte estimates now use surrogate-safe UTF-8 accounting. This preserves imported/session text and prevents a lone surrogate from crashing request preparation or context excerpt sizing.
+- Regression cases cover one remote dispatch, blocked same-batch calls, MCP suppression on the continuation request, honest final status, blocked terminal state, checkpoint retention, and malformed-text size accounting. These tests are authored and queued; no test or runtime verification was run for this change.
 
 ## 2026-11-01 streamed structured-tool preparation
 

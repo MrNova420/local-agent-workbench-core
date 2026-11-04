@@ -35,7 +35,7 @@ class EngineToolBatchTests(unittest.TestCase):
             self.assertGreaterEqual(peak, 2)
             self.assertEqual([m["content"] for m in history if m.get("role") == "tool"], ["git_status", "git_diff"])
 
-    def test_uncertain_mcp_result_stops_remaining_batched_actions(self):
+    def test_uncertain_mcp_result_stops_batch_then_returns_honest_final_status(self):
         with tempfile.TemporaryDirectory() as root:
             mcp_tool = {"type": "function", "function": {
                 "name": "mcp__calendar__create_event", "description": "Create an event",
@@ -44,7 +44,7 @@ class EngineToolBatchTests(unittest.TestCase):
             def fail_remote_call(*args):
                 remote_calls.append(args)
                 raise TimeoutError("response timed out")
-            engine = AgentEngine(root, access="edit", approval_mode="auto", mcp_tools=[mcp_tool],
+            engine = AgentEngine(root, access="edit", approval_mode="auto", task_intent="discuss", mcp_tools=[mcp_tool],
                                  mcp_call=fail_remote_call)
             events = []
             engine.event = events.append
@@ -53,23 +53,37 @@ class EngineToolBatchTests(unittest.TestCase):
                 {"id": "remote", "function": {"name": "mcp__calendar__create_event", "arguments": {}}},
                 {"id": "plan", "function": {"name": "update_plan", "arguments": {"items": []}}},
             ]}}
-            engine.runtime.stream = lambda *args: (requests.append(args[1]) or batch)
+            responses = [batch, {"message": {"role": "assistant", "content": (
+                "I could not confirm whether the calendar event was created because the server timed out. "
+                "I did not retry it; please inspect the calendar before trying again."
+            )}}]
+            def stream(*args):
+                requests.append({"messages": args[1], "tools": args[0]["request_tools"]})
+                return responses.pop(0)
+            engine.runtime.stream = stream
 
             history = engine.run("Implement the requested change")
 
-            assert len(requests) == 1
+            assert len(requests) == 2
             assert len(remote_calls) == 1
+            assert all(not (tool.get("function") or {}).get("name", "").startswith("mcp__")
+                       for tool in requests[1]["tools"])
             done = [row for row in events if row.get("type") == "tool_done"]
             assert [row.get("status") for row in done] == ["uncertain", "blocked"]
             assert done[1]["name"] == "update_plan"
-            assert events[-1]["type"] == "error"
+            assert events[-1]["type"] == "complete"
             tool_results = [row for row in history if row.get("role") == "tool"]
             assert len(tool_results) == 2
             assert "Not executed" in tool_results[1]["content"]
+            final = next(row for row in reversed(history) if row.get("role") == "assistant")
+            assert "could not confirm" in final["content"]
             checkpoint = engine.state["task_checkpoint"]["current"]
             uncertain = next(row for row in checkpoint["operations"] if row["name"] == "mcp__calendar__create_event")
             assert uncertain["status"] == "uncertain"
             assert checkpoint["uncertain_operation"]["name"] == "mcp__calendar__create_event"
+            assert checkpoint["status"] == "stopped"
+            assert checkpoint["outcome"] == "blocked"
+            assert checkpoint["verification"]["status"] == "blocked"
 
     def test_finish_after_operation_drains_already_started_read_batch_before_stopping(self):
         with tempfile.TemporaryDirectory() as root:

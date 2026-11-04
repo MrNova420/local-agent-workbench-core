@@ -236,6 +236,10 @@ def test_task_acceptance_criteria_survive_followup_compaction_and_archive():
 
 def test_uncertain_operation_checkpoint_requires_inspection_before_replay():
     checkpoint = begin_task(None, prompt="Generate the package", turn_id="t1", workspace="C:/p", settings={})
+    checkpoint["current"]["uncertain_operation"] = {
+        "operationId": "mcp-1", "name": "mcp__calendar__create_event",
+        "status": "uncertain", "result": "response timed out",
+    }
     record_operation(checkpoint, {
         "operationId": "cmd-1", "name": "run_command", "status": "uncertain",
         "affectedFiles": [], "result": "partial output; timed out",
@@ -245,6 +249,8 @@ def test_uncertain_operation_checkpoint_requires_inspection_before_replay():
 
     assert checkpoint["current"]["operations"][0]["status"] == "uncertain"
     assert checkpoint["current"]["operations"][0]["result_ref"] == "cmd-1"
+    assert "mcp__calendar__create_event" in rendered
+    assert "response timed out" in rendered
     assert "inspect the current workspace" in rendered
     assert "Never treat an uncertain operation as safe to replay automatically." in rendered
 

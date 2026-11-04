@@ -10,6 +10,11 @@ _INSTRUCTION_SOURCE = re.compile(r"(?m)^--- ([^\r\n]+) ---$")
 _CHECKPOINT_PREFIX = "Active task continuity checkpoint ("
 
 
+def _estimated_tokens(text: str) -> int:
+    """Estimate UTF-8 size without letting malformed imported text break a run."""
+    return max(1, (len(text.encode("utf8", errors="surrogatepass")) + 1) // 2)
+
+
 def _message_source(message: dict[str, Any]) -> str:
     role = str(message.get("role", "unknown"))
     content = str(message.get("content", ""))
@@ -58,7 +63,7 @@ def _instruction_sources(text: str) -> list[dict[str, Any]]:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         content = text[match.end():end].strip()
         rows.append({"path": match.group(1), "characters": len(content),
-                     "estimated_tokens": max(1, (len(content.encode("utf8")) + 1) // 2) if content else 0})
+                     "estimated_tokens": _estimated_tokens(content) if content else 0})
     return rows
 
 
@@ -93,7 +98,7 @@ def build_prompt_manifest(
             "role": str(message.get("role", "unknown")),
             "source": source,
             "characters": len(content),
-            "estimated_tokens": max(1, (len(content.encode("utf8")) + 1) // 2),
+            "estimated_tokens": _estimated_tokens(content),
             "tool_name": str(message.get("tool_name", "")) or None,
             "retrieved_files": files,
             "has_tool_calls": bool(message.get("tool_calls")),
@@ -104,7 +109,7 @@ def build_prompt_manifest(
         "configured_context": context,
         "maximum_output_tokens": output_tokens,
         "input_budget": input_budget,
-        "estimated_request_input_tokens": max(1, (len(json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf8")) + 1) // 2),
+        "estimated_request_input_tokens": _estimated_tokens(json.dumps(request, ensure_ascii=False, separators=(",", ":"))),
         "message_count": len(messages),
         "messages": message_rows,
         "project_instruction_sources": _instruction_sources(project_instructions) if project_instructions != "(none found)" else [],

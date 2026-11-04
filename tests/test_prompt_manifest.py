@@ -51,6 +51,21 @@ def test_manifest_recognizes_checkpoint_embedded_in_merged_system_guidance():
     assert manifest["messages"][0]["source"] == "task_checkpoint"
 
 
+def test_manifest_size_estimates_tolerate_lone_surrogates_from_imported_session_text():
+    malformed = "imported text \udc9d after Windows path decoding"
+    manifest = build_prompt_manifest(
+        [{"role": "system", "content": f"--- AGENTS.md ---\n{malformed}"},
+         {"role": "user", "content": malformed}], [], request_index=1, context=65536,
+        output_tokens=8192, input_budget=57344, skills_enabled=False, skill_sources=[],
+        available_skills=[], catalog_skill_names=[], project_instructions=f"--- AGENTS.md ---\n{malformed}",
+        harness_profile="standard", task_intent="auto", access="ask",
+    )
+
+    assert manifest["estimated_request_input_tokens"] > 0
+    assert all(row["estimated_tokens"] > 0 for row in manifest["messages"])
+    assert manifest["project_instruction_sources"][0]["estimated_tokens"] > 0
+
+
 def test_manifest_reports_only_skill_calls_with_corresponding_tool_results():
     messages = [
         {"role": "assistant", "tool_calls": [{"function": {"name": "skill", "arguments": {"action": "load", "name": "python-review"}}}]},

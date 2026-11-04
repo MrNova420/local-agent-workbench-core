@@ -1484,7 +1484,7 @@ class ToolRegistry:
 def _utf8_prefix(value:str,budget:int)->tuple[str,int]:
     used=0;index=0
     while index<len(value):
-        size=len(value[index].encode("utf8"))
+        size=len(value[index].encode("utf8",errors="surrogatepass"))
         if used+size>budget:break
         used+=size;index+=1
     return value[:index],index
@@ -1492,7 +1492,7 @@ def _utf8_prefix(value:str,budget:int)->tuple[str,int]:
 def _utf8_suffix(value:str,budget:int)->tuple[str,int]:
     used=0;index=len(value)
     while index>0:
-        size=len(value[index-1].encode("utf8"))
+        size=len(value[index-1].encode("utf8",errors="surrogatepass"))
         if used+size>budget:break
         used+=size;index-=1
     return value[index:],index
@@ -1500,7 +1500,7 @@ def _utf8_suffix(value:str,budget:int)->tuple[str,int]:
 def tool_result_for_context(value:str,byte_budget:int,operation_id:str)->str:
     """Keep large tool results complete on disk and provide a bounded resumable model excerpt."""
     byte_budget=max(192,int(byte_budget))
-    if len(value.encode("utf8"))<=byte_budget:return value
+    if len(value.encode("utf8",errors="surrogatepass"))<=byte_budget:return value
     content_budget=max(0,(byte_budget-240)//2)
     head_budget=content_budget*2//3;tail_budget=content_budget-head_budget
     while True:
@@ -1511,7 +1511,7 @@ def tool_result_for_context(value:str,byte_budget:int,operation_id:str)->str:
                 f"Omitted characters {head_end}-{tail_start}; continue with read_operation_result "
                 f"operation_id={operation_id} offset={head_end} length={omitted}.]")
         excerpt=head+"\n\n"+marker+"\n\n"+tail
-        if len(excerpt.encode("utf8"))<=byte_budget:return excerpt
+        if len(excerpt.encode("utf8",errors="surrogatepass"))<=byte_budget:return excerpt
         if head_budget==0 and tail_budget==0:return marker[:byte_budget]
         head_budget=head_budget*3//4;tail_budget=tail_budget*3//4
 
@@ -1858,6 +1858,7 @@ class AgentEngine:
                 if saved is not None:return saved
             return self.operation_results.get(operation_id)
         checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
+        self._mcp_uncertain_for_task=bool(current_task(checkpoint).get("uncertain_operation"))
         self.permission_workspace_root=Path(permission_workspace_root or root)
         self.permission_rules=permission_rules_for_workspace(validate_permission_rules(permission_rules or []),self.permission_workspace_root)
         read_output_budget=self.context.budget(max_tokens)
@@ -1957,8 +1958,10 @@ class AgentEngine:
     def cancel(self):self.cancel_event.set();self.runtime.cancel()
     def finish_after_operation(self):self.stop_after_operation.set()
     def _tools_for_request(self,base_messages:list[dict],selected_names:set[str]|None=None)->list[dict]:
-        catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
+        catalog=copy.deepcopy(self.state["registry"].schemas+([] if self._mcp_uncertain_for_task else self.mcp_tools))
         selected_names=set(self._selected_tool_names if selected_names is None else selected_names)
+        if self._mcp_uncertain_for_task:
+            selected_names={name for name in selected_names if not name.startswith("mcp__")}
         by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
         unknown=selected_names-set(by_name)
         if unknown:raise ValueError("Selected tool schema is no longer available in this workspace: "+", ".join(sorted(unknown)))
@@ -2037,7 +2040,7 @@ class AgentEngine:
         if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
         if limit is not None and (not isinstance(limit,int) or isinstance(limit,bool) or limit<1):return "Invalid limit: expected a positive integer."
         if not isinstance(requested,list) or any(not isinstance(name,str) for name in requested):return "Invalid names: expected an array of exact tool names."
-        catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
+        catalog=copy.deepcopy(self.state["registry"].schemas+([] if self._mcp_uncertain_for_task else self.mcp_tools))
         by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
         if requested:
             unknown=[name for name in requested if name not in by_name]
@@ -2061,7 +2064,7 @@ class AgentEngine:
                 candidate=page+[row]
                 preview={"total_matches":len(rows),"offset":offset,"next_offset":offset+len(candidate),
                          "selected_for_next_request":sorted(self._selected_tool_names),"schemas":candidate}
-                serialized_size=len(json.dumps(preview,ensure_ascii=False).encode("utf8"))
+                serialized_size=len(json.dumps(preview,ensure_ascii=False).encode("utf8",errors="surrogatepass"))
                 if serialized_size>max(0,response_byte_budget):
                     if page:break
                     name=(row.get("function") or {}).get("name","unknown")
@@ -2401,12 +2404,24 @@ class AgentEngine:
                         return msgs
                     verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
                         command_side_effects_possible,post_change_inspection)
-                    self._advance_workbench_plan("run_command", "completed", final=True,
-                                                 verification=str(verification.get("status", "")),
-                                                 project_changed=completed_project_change,
-                                                 post_change_inspection=post_change_inspection)
-                    workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested,self.state["registry"].task_mode)
-                    finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
+                    unresolved_mcp=checkpoint_state.get("uncertain_operation")
+                    if isinstance(unresolved_mcp,dict):
+                        uncertainty_reason=(
+                            "Task paused with an unresolved MCP operation: "
+                            f"{unresolved_mcp.get('name', 'unknown tool')}. Its remote effect must be inspected before retry."
+                        )
+                        record_blocker(checkpoint,uncertainty_reason)
+                        verification["status"]="blocked"
+                        verification["incomplete_reason"]=uncertainty_reason
+                        workflow_outcome="blocked"
+                        finish_task(checkpoint,"stopped",verification,blocker=uncertainty_reason,outcome=workflow_outcome)
+                    else:
+                        self._advance_workbench_plan("run_command", "completed", final=True,
+                                                     verification=str(verification.get("status", "")),
+                                                     project_changed=completed_project_change,
+                                                     post_change_inspection=post_change_inspection)
+                        workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,completed_project_change,verification,checkpoint_state.get("plan",[]),self.task_intent,implementation_requested,self.state["registry"].task_mode)
+                        finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
                     self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,"implementationRequested":implementation_requested,"projectChanged":completed_project_change,"actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome});return msgs
                 # Run independent read-only calls together. Mixed batches, writes,
                 # commands, MCP, and permission-prompted actions stay ordered.
@@ -2453,6 +2468,7 @@ class AgentEngine:
                                 operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":parsed_batch[batch_index][1].get("id",f"call-{batch_index}"),"name":batch_name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":completed_at}
                                 self.operation_results[operation_id]=str(out);record_operation(checkpoint,operation_event,parsed_batch[batch_index][3]);self.event(operation_event)
                                 prepared_batch[batch_index]={"operation_id":operation_id,"started":operation_started,"output":str(out),"budget":output_budget,"completed_event":True}
+                mcp_uncertain_in_batch=False
                 for index,call in enumerate(calls):
                     fn=call.get("function") or {};name=fn.get("name","");raw_args=fn.get("arguments",{})
                     prepared=prepared_batch.get(index)
@@ -2520,6 +2536,10 @@ class AgentEngine:
                                         out=("Blocked before dispatch: the active request is near its selected input budget. "
                                              "First call update_plan with progress_checkpoint containing verified_findings, "
                                              "completed_work, pending_work, and next_action. Then continue the same task.")
+                                    elif self._mcp_uncertain_for_task:
+                                        out=("Not executed: an earlier MCP operation in this task has an uncertain result. "
+                                             "Inspect local state and report the uncertainty; MCP tools remain paused for this task "
+                                             "to avoid duplicate remote effects.")
                                     elif not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
                                 else:out=self.state["registry"].run(name,args,output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index))
@@ -2595,7 +2615,17 @@ class AgentEngine:
                     tool_message={"role":"tool","tool_name":name or "unknown_tool","content":context_result}
                     msgs.append(tool_message);batch_tool_messages.append(tool_message)
                     if name.startswith("mcp__") and status == "uncertain" and not self.cancel_event.is_set():
-                        reason="MCP operation outcome is uncertain; inspect its remote effects before any retry. Remaining batched actions were not executed."
+                        reason="An MCP operation was dispatched but its remote result is uncertain. Inspect available local state, do not repeat it in this task, and tell the user what remains unverified."
+                        self._mcp_uncertain_for_task=True
+                        mcp_uncertain_in_batch=True
+                        current_continuation_guidance=(
+                            "An MCP operation was dispatched but the server result is uncertain. Its complete call and result "
+                            "are saved in this chat. Do not repeat the MCP action or issue another MCP call in this task; the "
+                            "host has paused MCP schemas to prevent duplicate remote effects. Continue any independent local "
+                            "inspection or project work that is still safe. Then give the user a clear status naming the exact "
+                            "uncertain operation, what local evidence you checked, and what remote effect still needs review. "
+                            "Do not claim it succeeded or failed without evidence."
+                        )
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             pending_fn=pending.get("function") or {}
                             pending_name=pending_fn.get("name","unknown_tool")
@@ -2613,9 +2643,10 @@ class AgentEngine:
                             record_operation(checkpoint,skipped_event,pending_fn.get("arguments",{}))
                             self.event(skipped_event)
                             msgs.append({"role":"tool","tool_name":pending_name,"content":pending_result})
-                        finish_task(checkpoint,"failed",blocker=reason,outcome="blocked")
-                        self.event({"type":"error","error":reason,"workflowOutcome":"blocked"})
-                        return msgs
+                        record_blocker(checkpoint,reason)
+                        self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,
+                                    "reason":"MCP result is uncertain; preserving the task and requiring an honest user-facing status"})
+                        break
                     # Safe read batches are already in flight together. Drain and record
                     # every submitted operation before stopping ahead of the next model call.
                     if self.stop_after_operation.is_set() and not prepared:
@@ -2706,7 +2737,10 @@ class AgentEngine:
                     # plan-only nudge is no longer relevant after project evidence.
                     plan_only_signature=None
                     plan_only_guidance_signature=None
-                    current_continuation_guidance=None
+                    if not mcp_uncertain_in_batch:
+                        current_continuation_guidance=None
+                if mcp_uncertain_in_batch:
+                    continue
         except RequestCancelled as exc:
             partial=exc.partial_message
             if isinstance(partial,dict) and any(partial.get(key) for key in ("content","thinking")):

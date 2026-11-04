@@ -297,7 +297,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
         for key in (
             "schema_version", "task_id", "status", "task_mode", "plan_source", "goal", "user_updates", "workspace",
             "settings", "decisions", "blockers", "plan", "operations", "changed_files", "verification", "workflow_outcome",
-            "implementation_requested", "acceptance_criteria", "acceptance_criteria_source",
+            "implementation_requested", "acceptance_criteria", "acceptance_criteria_source", "uncertain_operation",
             "last_assistant_update", "next_action", "context_checkpoint",
         )
         if checkpoint.get(key) not in (None, [], "")
