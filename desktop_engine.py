@@ -74,12 +74,15 @@ def _inference_retry_metadata(error:BaseException,response:Any=None)->tuple[int|
     retry_after=None
     raw=headers.get("Retry-After") if headers is not None and hasattr(headers,"get") else None
     if isinstance(raw,str):
-        try:retry_after=max(0.0,float(raw.strip()))
+        try:
+            seconds=float(raw.strip())
+            retry_after=max(0.0,seconds) if math.isfinite(seconds) else None
         except (TypeError,ValueError):
             try:
                 retry_at=parsedate_to_datetime(raw)
                 if retry_at.tzinfo is None:retry_at=retry_at.replace(tzinfo=timezone.utc)
-                retry_after=max(0.0,(retry_at-datetime.now(timezone.utc)).total_seconds())
+                seconds=(retry_at-datetime.now(timezone.utc)).total_seconds()
+                retry_after=max(0.0,seconds) if math.isfinite(seconds) else None
             except (TypeError,ValueError,OverflowError):retry_after=None
     transport_failure=isinstance(error,(ConnectionError,TimeoutError,socket.timeout,ConnectionResetError,urllib.error.URLError))
     retryable=(status in {408,425,429,502,503,504} if status is not None and status>=400
