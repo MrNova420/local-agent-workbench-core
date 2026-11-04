@@ -102,6 +102,15 @@ class StreamTests(unittest.TestCase):
   self.assertEqual(next(event['text'] for event in events if event['type']=='thinking'),'plan ')
   self.assertEqual(next(event['text'] for event in events if event['type']=='text'),'answer')
 
+ def test_reasoning_off_override_is_sent_as_boolean_false(self):
+  lines=[json.dumps({'message':{'content':'answer'},'done':True}).encode()+b'\n']
+  state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),
+         'temperature':0.2,'context':16384,'max_tokens':500,'runtime_options':{},'reasoning':False}
+  with patch('desktop_engine.open_http_stream',return_value=FakeResponse(lines)) as open_url:
+   OllamaRuntime().stream(state,[],threading.Event(),lambda _event:None)
+  payload=json.loads(open_url.call_args.args[0].data)
+  self.assertIs(payload['think'],False)
+
  def test_ollama_ndjson_stream_and_tool_call_assembly(self):
   lines=[json.dumps({'message':{'content':'hello'}}).encode()+b'\n',json.dumps({'message':{'tool_calls':[{'function':{'name':'list_files','arguments':'{"path":"."}'}}]},'done':True,'prompt_eval_count':18,'prompt_eval_cached_count':7,'eval_count':1}).encode()+b'\n']
   response=FakeResponse(lines);runtime=OllamaRuntime();events=[];state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),'temperature':0.2,'context':16384,'max_tokens':500,'runtime_options':{},'request_index':3,'keep_alive':'2h'}
