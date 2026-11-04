@@ -3,6 +3,16 @@ from pathlib import Path
 from sessions import SessionStore
 from desktop_engine import AgentEngine, MODEL, CONTEXT_MAX
 class SessionTests(unittest.TestCase):
+ def test_save_round_trips_unpaired_surrogate_as_valid_utf8_json(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)/'sessions';store=SessionStore(root);state=store.create(t,MODEL,CONTEXT_MAX)
+   state['messages'].append({'role':'user','content':'before\\udc9dafter'})
+   store.save(state)
+   raw=(root/(state['session_id']+'.json')).read_bytes()
+   loaded=store.load(state['session_id'])
+   self.assertIn(b'\\udc9d',raw)
+   self.assertEqual(loaded['messages'][-1]['content'],'before\\udc9dafter')
+
  def test_save_retries_a_windows_sharing_lock_longer_than_old_burst(self):
   from unittest.mock import patch
   with tempfile.TemporaryDirectory() as t:

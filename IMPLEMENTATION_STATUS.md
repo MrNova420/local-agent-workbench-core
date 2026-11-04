@@ -5,6 +5,13 @@
 - A fresh Automatic task that receives prose without any structured operation now gets one state-based prompt to classify the request as discussion, explicit `plan_only`, or expandable intermediate plan/implementation. Identical unchanged state then ends with the existing saved no-action result; emitted response/reasoning remains in history and cannot keep the task looping. The classification trigger is limited to before any tool operation, so it cannot add extra model requests after denied, failed, or successful tools.
 - Automatic guidance now explicitly distinguishes expandable `plan` from the explicit no-implementation `plan_only` choice. Existing plan-only no-progress handoff remains intact; planning may continue when new evidence changes the plan, and plan updates alone do not claim project implementation progress.
 - Added regressions for one-time classification, prose-plan-to-tool implementation, and workflow guidance. Focused `tests/test_operation_stream.py tests/test_workflow_outcome.py`: **84 passed**. `python -m py_compile desktop_engine.py` and `git diff --check` pass. Full engine/app suites, packaging, visible workflow, and Flint acceptance remain pending.
+- Session snapshots now JSON-escape lone UTF-16 surrogates so they can be written as valid UTF-8 and round-trip without loss. `tests/test_sessions.py -k unpaired_surrogate`: **1 passed**. Full engine suite is still pending.
+
+## 2026-11-03 Automatic task classification handoff
+
+- A fresh Automatic task that receives prose without any structured operation now gets one state-based prompt to classify the request as discussion, explicit `plan_only`, or expandable intermediate plan/implementation. Identical unchanged state then ends with the existing saved no-action result; emitted response/reasoning remains in history and cannot keep the task looping. The classification trigger is limited to before any tool operation, so it cannot add extra model requests after denied, failed, or successful tools.
+- Automatic guidance now explicitly distinguishes expandable `plan` from the explicit no-implementation `plan_only` choice. Existing plan-only no-progress handoff remains intact; planning may continue when new evidence changes the plan, and plan updates alone do not claim project implementation progress.
+- Added regressions for one-time classification, prose-plan-to-tool implementation, and workflow guidance. Focused `tests/test_operation_stream.py tests/test_workflow_outcome.py`: **84 passed**. `python -m py_compile desktop_engine.py` and `git diff --check` pass. Full engine/app suites, packaging, visible workflow, and Flint acceptance remain pending.
 
 ## 2026-11-03 independent file-write batching
 

@@ -15,7 +15,7 @@ class SessionStore:
         with self._lock:
             try:
                 with tempfile.NamedTemporaryFile('w',encoding='utf8',delete=False,dir=self.root,prefix=path.stem+'-',suffix='.tmp') as handle:
-                    tmp=Path(handle.name);json.dump(state,handle,indent=2,ensure_ascii=False);handle.flush();os.fsync(handle.fileno())
+                    tmp=Path(handle.name);json.dump(state,handle,indent=2,ensure_ascii=True);handle.flush();os.fsync(handle.fileno())
                 _replace_with_retry(tmp,path);return path
             finally:
                 if tmp is not None:
