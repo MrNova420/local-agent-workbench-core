@@ -15,9 +15,12 @@ class RunSettingsTests(unittest.TestCase):
 
     def test_rejects_invalid_context_and_output_limits(self):
         with self.assertRaisesRegex(ValueError, "Context"):
-            parse_run_settings("512", "8192", "0.7")
+            parse_run_settings("0", "8192", "0.7")
         with self.assertRaisesRegex(ValueError, "output"):
             parse_run_settings("262144", "0", "0.7")
+
+    def test_accepts_positive_context_below_the_old_artificial_minimum(self):
+        self.assertEqual(parse_run_settings("512", "8192", "0.7"), (512, 8192, 0.7))
 
 
 if __name__ == "__main__":

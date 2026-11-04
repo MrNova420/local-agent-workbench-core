@@ -495,7 +495,12 @@ def _no_progress_response_signature(task: dict[str, Any], verification_steps: li
         "thinking": message.get("thinking", ""),
     }, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
     material = f"{_continuation_progress_signature(task, verification_steps)}\0{response}"
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return hashlib.sha256(material.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _utf8_size(text: str) -> int:
+    """Measure text safely, including Windows paths with surrogate escapes."""
+    return len(text.encode("utf-8", errors="surrogatepass"))
 
 
 def _provider_response_was_truncated(result: dict[str, Any]) -> bool:
@@ -738,7 +743,7 @@ class ToolRegistry:
                         break
                     if scan_capped:break
                 item=self.workspace.display_path(path)
-                item_bytes=len(item.encode("utf8"))+(1 if matches else 0)
+                item_bytes=_utf8_size(item)+(1 if matches else 0)
                 if len(matches)<limit and (active_output_budget is None or used_bytes+item_bytes<=active_output_budget or not matches):
                     matches.append(item);used_bytes+=item_bytes;cursor.match_index+=1
                     continue
@@ -1085,9 +1090,9 @@ class ToolRegistry:
                                 path,line_number,content=found
                                 path_line=f"{self.workspace.display_path(path)}:{line_number}: "
                                 budget=active_output_budget
-                                if budget is not None and len((path_line+content).encode("utf8"))>budget:
+                                if budget is not None and _utf8_size(path_line+content)>budget:
                                     content=f"[matching line exceeds the result budget; inspect with read_file at line {line_number}]"
-                                record=path_line+content;record_bytes=len(record.encode("utf8"))+(1 if hits else 0)
+                                record=path_line+content;record_bytes=_utf8_size(record)+(1 if hits else 0)
                                 if budget is not None and used_bytes+record_bytes>budget and hits:
                                     cursor.pending=found;has_more=True
                                     if not from_pending:cursor.matches_seen+=1
@@ -1146,7 +1151,7 @@ class ToolRegistry:
                     with p.open("r",encoding="utf8") as handle:
                         for i,line in enumerate(handle,1):
                             if self.cancel_event.is_set():cancelled=True;break
-                            line_bytes=len(line.encode("utf8"))
+                            line_bytes=_utf8_size(line)
                             if self.search_byte_limit is not None and bytes_read+line_bytes>self.search_byte_limit:
                                 capped=True;break
                             bytes_read+=line_bytes
@@ -1162,10 +1167,10 @@ class ToolRegistry:
                                 path_line=f"{self.workspace.display_path(p)}:{i}: "
                                 content=line.rstrip("\r\n")
                                 budget=active_output_budget
-                                if budget is not None and len((path_line+content).encode("utf8"))>budget:
+                                if budget is not None and _utf8_size(path_line+content)>budget:
                                     content=f"[matching line exceeds the result budget; inspect with read_file at line {i}]"
                                 record=path_line+content
-                                record_bytes=len(record.encode("utf8"))+(1 if hits else 0)
+                                record_bytes=_utf8_size(record)+(1 if hits else 0)
                                 if budget is not None and used_bytes+record_bytes>budget and hits:
                                     has_more=True;break
                                 hits.append(record);used_bytes+=record_bytes
@@ -1227,7 +1232,7 @@ class ToolRegistry:
                         if line_number==start and char=="\n" and column<start_column:
                             return f"Requested start column {start_column} is beyond line {line_number}."
                         if line_number>=start and column>=(start_column if line_number==start else 1):
-                            char_bytes=len(char.encode("utf8"))
+                            char_bytes=_utf8_size(char)
                             if active_output_budget is not None and used_bytes+char_bytes>active_output_budget:
                                 truncated=True
                                 next_position=(line_number,column)
@@ -1892,8 +1897,8 @@ class OllamaRuntime:
     def loaded(self)->list[dict]:return self.get("/api/ps").get("models",[])
     def preload(self,model:str,context:int,keep_alive:str)->dict:
         """Warm one Ollama model using its selected context, without generating a reply."""
-        if not isinstance(context,int) or isinstance(context,bool) or context<1024:
-            raise ValueError("Preload context must be an integer of at least 1,024 tokens.")
+        if not isinstance(context,int) or isinstance(context,bool) or context<1:
+            raise ValueError("Preload context must be a positive integer.")
         payload={"model":model,"prompt":"","stream":False,"keep_alive":keep_alive,"options":{"num_ctx":context}}
         request=urllib.request.Request(self.base_url+"/api/generate",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json"},method="POST")
         with urllib.request.urlopen(request,timeout=None) as response:return json.loads(response.read().decode())

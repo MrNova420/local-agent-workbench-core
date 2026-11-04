@@ -2,8 +2,10 @@ import unittest,tempfile,threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from pathlib import Path
-from desktop_engine import Workspace,ToolRegistry,RequestCancelled
+from desktop_engine import Workspace,ToolRegistry,RequestCancelled,_utf8_size
 class ToolTests(unittest.TestCase):
+ def test_utf8_budget_measurement_accepts_windows_surrogate_escapes(self):
+  self.assertEqual(_utf8_size("path-\udc9d"),len("path-\udc9d".encode("utf8",errors="surrogatepass")))
  def test_advertised_tools_include_git_diff(self):
   with tempfile.TemporaryDirectory() as t:
    tools=ToolRegistry(Workspace(t),lambda *_:True)

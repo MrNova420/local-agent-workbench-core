@@ -22,8 +22,8 @@ def parse_run_settings(context_text: str, max_tokens_text: str, temperature_text
         temperature = float(temperature_text)
     except (TypeError, ValueError) as exc:
         raise ValueError("Temperature must be a number from 0 to 2.") from exc
-    if context < 1024:
-        raise ValueError("Context must be at least 1,024 tokens.")
+    if context < 1:
+        raise ValueError("Context must be a positive whole number of tokens.")
     if max_tokens < 1:
         raise ValueError("Maximum output must be positive.")
     if not math.isfinite(temperature) or not 0 <= temperature <= 2:

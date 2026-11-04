@@ -104,8 +104,8 @@ class LlamaCppServer:
             raise ValueError("Choose a llama.cpp Windows server executable (.exe).")
         if not gguf.is_file() or gguf.suffix.casefold() != ".gguf":
             raise ValueError("Choose a local GGUF model file.")
-        if isinstance(context, bool) or not isinstance(context, int) or context < 1024:
-            raise ValueError("Runtime context must be an integer of at least 1,024 tokens.")
+        if isinstance(context, bool) or not isinstance(context, int) or context < 1:
+            raise ValueError("Runtime context must be a positive integer.")
         valid_reasoning = {None, True, False, "minimal", "low", "medium", "high", "xhigh", "max"}
         if reasoning not in valid_reasoning:
             raise ValueError("Unsupported llama.cpp reasoning selection.")
