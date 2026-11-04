@@ -2,7 +2,7 @@ import unittest,tempfile,threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from pathlib import Path
-from desktop_engine import Workspace,ToolRegistry
+from desktop_engine import Workspace,ToolRegistry,RequestCancelled
 class ToolTests(unittest.TestCase):
  def test_advertised_tools_include_git_diff(self):
   with tempfile.TemporaryDirectory() as t:
@@ -504,6 +504,31 @@ class ToolTests(unittest.TestCase):
    content='x'*600000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
    self.assertEqual(tools.run('write_file',{'path':'large.txt','content':content}),'Wrote large.txt')
    self.assertEqual((Path(t)/'large.txt').read_text(),content)
+ def test_cancelled_chunked_file_replacement_preserves_old_file_and_removes_temporary_file(self):
+  class CancelAfterFirstChunk:
+   def __init__(self):self.checks=0
+   def is_set(self):
+    self.checks+=1
+    return self.checks>=2
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);target=root/'large.txt';target.write_text('original',encoding='utf8')
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True,cancel_event=CancelAfterFirstChunk())
+   with self.assertRaises(RequestCancelled):
+    tools.run('write_file',{'path':'large.txt','content':'x'*(2*1024*1024+1)})
+   self.assertEqual(target.read_text(encoding='utf8'),'original')
+   self.assertEqual([path.name for path in root.iterdir()],['large.txt'])
+ def test_cancelled_chunked_append_rolls_back_partial_chunk_output(self):
+  class CancelAfterFirstChunk:
+   def __init__(self):self.checks=0
+   def is_set(self):
+    self.checks+=1
+    return self.checks>=2
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);target=root/'large.txt';target.write_text('original',encoding='utf8')
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True,cancel_event=CancelAfterFirstChunk())
+   with self.assertRaises(RequestCancelled):
+    tools.run('append_file',{'path':'large.txt','content':'x'*(2*1024*1024+1)})
+   self.assertEqual(target.read_text(encoding='utf8'),'original')
  def test_direct_write_requires_approval(self):
   with tempfile.TemporaryDirectory() as t:
    tools=ToolRegistry(Workspace(t,'ask'),lambda *_:False)

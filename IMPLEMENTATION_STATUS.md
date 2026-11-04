@@ -546,3 +546,9 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 - The engine now latches a durable progress-checkpoint request when its estimated request input reaches 70% of the actual input budget, and rearms only after compaction drops it below 60%. It does not alter context/output/reasoning settings or interrupt an active generation.
 - Before writes, commands, or MCP dispatch, the host now requires `update_plan.progress_checkpoint` with verified findings, completed work, pending work, and a next action. Read/inspection tools and planning remain available; a saved handoff clears the gate and the same task continues.
 - The request prompt manifest records the checkpoint pressure and the canonical task checkpoint retains the handoff. Engine regression cases are authored but deliberately not run yet; grouped verification remains queued per the current implementation batch.
+
+# Cancellable large-file writes (2026-11-04)
+
+- `write_file` and `edit_file` now stream replacement bytes to a same-directory temporary file in bounded I/O chunks, checking the active request cancellation between chunks and before atomic replace. Cancellation removes the temporary file and leaves the prior destination intact.
+- `append_file` uses the same internal chunk size and rolls back the appended bytes if cancellation arrives before the append is committed. The chunk size only controls cancellation responsiveness and I/O; it is not a file-size, line-count, model-context, output, or runtime limit.
+- Added queued regressions for cancellation after partial replacement and partial append, asserting preservation of the original file and cleanup/rollback. Tests were intentionally not run as part of the current implementation batch; include them in final grouped engine/sidecar/app verification.

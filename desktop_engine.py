@@ -26,6 +26,7 @@ CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 PROJECT_LIST_SCAN_LIMIT = None
+_FILE_IO_CHUNK_BYTES = 1024 * 1024
 _APPEND_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 _APPEND_LOCKS_GUARD = threading.Lock()
 _CONTINUATION_GUIDANCE_MARKER = "\n\n[Current Workbench continuation]\n"
@@ -1336,7 +1337,19 @@ class ToolRegistry:
         temp_path=None
         try:
             with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
-                temp_path=Path(handle.name);handle.write(data);handle.flush();os.fsync(handle.fileno())
+                temp_path=Path(handle.name)
+                offset=0
+                while offset<len(data):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RequestCancelled("File replacement cancelled before it was committed.")
+                    end=min(offset+_FILE_IO_CHUNK_BYTES,len(data))
+                    written=handle.write(data[offset:end])
+                    if written is None or written<=0:
+                        raise OSError("The file system accepted zero bytes for a replacement write.")
+                    offset+=written
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RequestCancelled("File replacement cancelled before it was committed.")
+                handle.flush();os.fsync(handle.fileno())
             ToolRegistry._replace_with_retry(temp_path,path,cancel_event)
         finally:
             if temp_path is not None:
@@ -1365,9 +1378,11 @@ class ToolRegistry:
                     while written<len(data):
                         if cancel_event is not None and cancel_event.is_set():
                             raise RequestCancelled("Append cancelled before the complete chunk was written.")
-                        count=os.write(descriptor,data[written:])
+                        count=os.write(descriptor,data[written:written+_FILE_IO_CHUNK_BYTES])
                         if count<=0:raise OSError("The file system accepted zero bytes for an append write.")
                         written+=count
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RequestCancelled("Append cancelled before the complete chunk was committed.")
                     os.fsync(descriptor)
                 except BaseException:
                     if written:
