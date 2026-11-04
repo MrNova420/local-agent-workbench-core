@@ -1,6 +1,7 @@
 import json
 from io import BytesIO
 import threading
+from email.message import Message
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -39,6 +40,43 @@ def test_search_and_repo_files_keep_revision_and_format_metadata(tmp_path):
     assert files[0]["format"] == "gguf"
     assert files[0]["size"] == 100
     assert next(row for row in files if row["path"].endswith(".safetensors"))["format"] == "safetensors"
+
+
+def test_search_pages_follow_hub_next_link_and_keep_results_page_sized(tmp_path):
+    first_url = "https://huggingface.co/api/models?search=model&limit=30&cursor=opaque-cursor"
+    first_response = FakeResponse(b'[{"id":"org/first","sha":"rev-1"}]')
+    first_response.headers = Message()
+    first_response.headers["Link"] = f'<{first_url}>; rel="next"'
+    second_response = FakeResponse(b'[{"id":"org/second","sha":"rev-2"}]')
+    second_response.headers = Message()
+    first_opener, second_opener = Mock(), Mock()
+    first_opener.open.return_value = first_response
+    second_opener.open.return_value = second_response
+    catalog = HuggingFaceCatalog(tmp_path)
+
+    with patch("urllib.request.build_opener", side_effect=[first_opener, second_opener]):
+        first = catalog.search_page("model")
+        second = catalog.search_page("model", cursor=first["next_cursor"])
+
+    assert [row["repo"] for row in first["models"]] == ["org/first"]
+    assert first["next_cursor"] == first_url
+    assert [row["repo"] for row in second["models"]] == ["org/second"]
+    assert second["next_cursor"] is None
+    assert second_opener.open.call_args.args[0].full_url == first_url
+
+
+def test_search_ignores_cross_origin_next_links_and_rejects_external_cursor(tmp_path):
+    response = FakeResponse(b'[]')
+    response.headers = Message()
+    response.headers["Link"] = '<https://attacker.example/api/models?cursor=private>; rel="next"'
+    opener = Mock()
+    opener.open.return_value = response
+    catalog = HuggingFaceCatalog(tmp_path)
+    with patch("urllib.request.build_opener", return_value=opener):
+        page = catalog.search_page("model")
+    assert page["next_cursor"] is None
+    with pytest.raises(ValueError, match="outside the configured Hub model endpoint"):
+        catalog.search_page("model", cursor="https://attacker.example/api/models?cursor=private")
 
 
 def test_download_uses_auth_header_pins_revision_and_reports_progress(tmp_path):

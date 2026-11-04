@@ -55,10 +55,13 @@ class HuggingFaceCatalog:
         return urllib.request.Request(url, headers=headers)
 
     def _json(self, url: str) -> Any:
+        return self._json_with_headers(url)[0]
+
+    def _json_with_headers(self, url: str) -> tuple[Any, Any]:
         request = self._request(url)
         try:
             with urllib.request.build_opener(_CredentialSafeRedirect()).open(request, timeout=30) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return json.loads(response.read().decode("utf-8")), response.headers
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 raise RuntimeError("Hugging Face denied this request. Sign in with `hf auth login` for gated repositories.") from None
@@ -66,19 +69,44 @@ class HuggingFaceCatalog:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Hugging Face request failed: {type(exc).__name__}.") from None
 
-    def search(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
+    def search_page(self, query: str, cursor: str | None = None, limit: int = 30) -> dict[str, Any]:
         query = query.strip()
         if not query or len(query) > 160:
             raise ValueError("Enter a search term from 1 to 160 characters.")
-        limit = max(1, min(int(limit), 100))
-        url = self.endpoint + "/api/models?" + urllib.parse.urlencode({"search": query, "limit": limit, "sort": "downloads", "direction": "-1"})
-        rows = self._json(url)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("Hugging Face page size must be a positive integer.")
+        if cursor is None:
+            url = self.endpoint + "/api/models?" + urllib.parse.urlencode({"search": query, "limit": limit, "sort": "downloads", "direction": "-1"})
+        else:
+            parsed = urllib.parse.urlsplit(cursor)
+            endpoint = urllib.parse.urlsplit(self.endpoint)
+            if ((parsed.scheme.casefold(), parsed.netloc.casefold()) !=
+                    (endpoint.scheme.casefold(), endpoint.netloc.casefold()) or parsed.path != "/api/models"):
+                raise ValueError("Hugging Face continuation link is outside the configured Hub model endpoint.")
+            url = cursor
+        rows, headers = self._json_with_headers(url)
         if not isinstance(rows, list):
             raise RuntimeError("Hugging Face returned an unexpected model list.")
-        return [{"repo": str(row.get("id", "")), "revision": str(row.get("sha", "main")),
-                 "downloads": int(row.get("downloads") or 0), "likes": int(row.get("likes") or 0),
-                 "private": bool(row.get("private")), "gated": bool(row.get("gated"))}
-                for row in rows if isinstance(row, dict) and row.get("id")]
+        models = [{"repo": str(row.get("id", "")), "revision": str(row.get("sha", "main")),
+                   "downloads": int(row.get("downloads") or 0), "likes": int(row.get("likes") or 0),
+                   "private": bool(row.get("private")), "gated": bool(row.get("gated"))}
+                  for row in rows if isinstance(row, dict) and row.get("id")]
+        next_url = None
+        link_header = headers.get("Link", "") if headers is not None else ""
+        for match in re.finditer(r"<([^>]+)>\s*((?:;[^,]*)+)", link_header):
+            if re.search(r"(?:^|;)\s*rel\s*=\s*\"?next\"?(?:\s*;|$)", match.group(2), re.IGNORECASE):
+                candidate = urllib.parse.urljoin(self.endpoint + "/", match.group(1))
+                parsed = urllib.parse.urlsplit(candidate)
+                endpoint = urllib.parse.urlsplit(self.endpoint)
+                if ((parsed.scheme.casefold(), parsed.netloc.casefold()) ==
+                        (endpoint.scheme.casefold(), endpoint.netloc.casefold()) and parsed.path == "/api/models"):
+                    next_url = candidate
+                break
+        return {"models": models, "next_cursor": next_url}
+
+    def search(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
+        """Compatibility helper for callers that only need the first page."""
+        return self.search_page(query, limit=limit)["models"]
 
     @staticmethod
     def _repo_path(repo: str) -> str:
