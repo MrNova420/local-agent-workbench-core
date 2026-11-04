@@ -108,7 +108,7 @@ class StreamTests(unittest.TestCase):
   with patch('desktop_engine.open_http_stream',return_value=response) as open_url:
    got=runtime.stream(state,[],threading.Event(),events.append)
   self.assertEqual(got['message']['content'],'hello');self.assertEqual(got['message']['tool_calls'][0]['function']['name'],'list_files');self.assertEqual(got['prompt_eval_count'],18);self.assertEqual(got['prompt_eval_cached_count'],7);self.assertEqual(next(e['text'] for e in events if e['type']=='text'),'hello');self.assertEqual(next(e['phase'] for e in events if e['type']=='phase'),'generating')
-  progress=next(e for e in events if e['type']=='tool_call_progress');self.assertEqual(progress['tool_name'],'list_files');self.assertGreater(progress['argument_characters'],0);self.assertNotIn('arguments',progress);self.assertNotIn('arguments_preview',progress)
+  progress=next(e for e in events if e['type']=='tool_call_progress');self.assertEqual(progress['tool_name'],'list_files');self.assertGreater(progress['argument_characters'],0);self.assertEqual(progress['argument_preview'],'{"path":"."}');self.assertFalse(progress['argument_preview_truncated']);self.assertNotIn('arguments',progress)
   payload=json.loads(open_url.call_args.args[0].data);self.assertEqual(payload['options']['num_ctx'],16384);self.assertNotIn('think',payload);self.assertNotIn('reasoning_effort',payload);self.assertNotIn('timeout',open_url.call_args.kwargs)
   settings=next(event for event in events if event['type']=='inference_settings')
   self.assertGreater(settings['estimated_input_tokens'],0)
@@ -122,6 +122,18 @@ class StreamTests(unittest.TestCase):
   self.assertFalse(settings['reasoning_field_sent'])
   self.assertEqual(settings['additional_fields'],{})
   self.assertNotIn('think',payload)
+
+ def test_ollama_tool_call_preview_is_explicitly_partial_for_large_arguments(self):
+  raw='{"content":"'+('x'*1000)
+  lines=[json.dumps({'message':{'tool_calls':[{'function':{'name':'write_file','arguments':raw}}]},'done':True}).encode()+b'\n']
+  response=FakeResponse(lines);runtime=OllamaRuntime();events=[];state={'model':'mock','messages':[],'registry':type('R',(),{'schemas':[]})(),'temperature':0.2,'context':16384,'max_tokens':500,'runtime_options':{}}
+  with patch('desktop_engine.open_http_stream',return_value=response):
+   runtime.stream(state,[],threading.Event(),events.append)
+  progress=next(event for event in events if event['type']=='tool_call_progress')
+  self.assertEqual(len(progress['argument_preview']),768)
+  self.assertEqual(progress['argument_characters'],len(raw))
+  self.assertTrue(progress['argument_preview_truncated'])
+  self.assertNotIn('arguments',progress)
 
  def test_selected_context_output_and_temperature_override_conflicting_runtime_options(self):
   lines=[json.dumps({'message':{'content':'ok'},'done':True}).encode()+b'\n']

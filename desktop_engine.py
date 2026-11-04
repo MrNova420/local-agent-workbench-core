@@ -2047,11 +2047,16 @@ class OllamaRuntime:
                     if isinstance(args,str):slot["function"]["arguments"]+=args
                     elif isinstance(args,dict):slot["function"]["arguments"]=args
                     partial_args=slot["function"].get("arguments","")
-                    argument_characters=(len(partial_args) if isinstance(partial_args,str)
-                                         else len(json.dumps(partial_args,ensure_ascii=False,separators=(",",":"))))
+                    argument_text=(partial_args if isinstance(partial_args,str)
+                                   else json.dumps(partial_args,ensure_ascii=False,separators=(",",":")))
+                    argument_characters=len(argument_text)
+                    preview_limit=768
                     emit({"type":"tool_call_progress","provider":"ollama","request_index":request_index,
                           "call_index":ordinal,"tool_name":slot["function"].get("name",""),
-                          "argument_characters":argument_characters,"at":time.time()})
+                          "argument_characters":argument_characters,
+                          "argument_preview":argument_text[:preview_limit],
+                          "argument_preview_truncated":argument_characters>preview_limit,
+                          "at":time.time()})
                 for key in ("done","done_reason","total_duration","load_duration","prompt_eval_count","prompt_eval_cached_count","eval_count","prompt_eval_duration","eval_duration"):
                     if key in item:result[key]=item[key]
             if cancel.is_set():
