@@ -30,7 +30,7 @@ class OperationStreamTests(unittest.TestCase):
             engine.run("Summarize the project")
 
             self.assertEqual(len(requests), 2)
-            self.assertIn("selected output-token limit", requests[1][0]["content"])
+            self.assertIn("selected output-token limit", "\n".join(str(message.get("content", "")) for message in requests[1]))
             self.assertEqual(settings, [settings[0], settings[0]])
             self.assertEqual(settings[0][:2], (65536, 8192))
             self.assertEqual(next(event["workflowOutcome"] for event in events if event["type"] == "complete"), "discussion")
@@ -833,7 +833,7 @@ class OperationStreamTests(unittest.TestCase):
             completion = next(event for event in events if event.get("type") == "complete")
             operations = [event for event in events if event.get("type") == "tool_done"]
             self.assertEqual([event["status"] for event in operations], ["failed", "completed", "completed"])
-            self.assertIn("escapes the selected project", request_snapshots[1][-1]["content"])
+            self.assertIn("escapes the selected project", "\n".join(str(message.get("content", "")) for message in request_snapshots[1]))
             self.assertEqual((Path(root) / "result.txt").read_text(encoding="utf-8"), "ready\\n")
             self.assertEqual(completion["workflowOutcome"], "inspected")
 
@@ -909,10 +909,10 @@ class OperationStreamTests(unittest.TestCase):
 
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(len(calls), 6)
-            continuation_system = request_snapshots[2][0]["content"]
-            self.assertIn("Create and inspect the project file", continuation_system)
-            self.assertIn("next open step", continuation_system)
-            self.assertIn("Do not re-plan unless new evidence changes the work", continuation_system)
+            continuation_request = "\n".join(str(message.get("content", "")) for message in request_snapshots[2])
+            self.assertIn("Create and inspect the project file", continuation_request)
+            self.assertIn("next open step", continuation_request)
+            self.assertIn("Do not re-plan unless new evidence changes the work", continuation_request)
             self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
             saved_write = next(row for row in engine.state["task_checkpoint"]["current"]["operations"]
                                if row.get("name") == "write_file")
@@ -1017,7 +1017,7 @@ class OperationStreamTests(unittest.TestCase):
             engine.run("Create a simple home page.")
 
             self.assertEqual(len(requests), 6)
-            self.assertIn("Start the next safe action", requests[1][0]["content"])
+            self.assertIn("Start the next safe action", "\n".join(str(message.get("content", "")) for message in requests[1]))
             self.assertEqual(Path(root, "index.html").read_text(encoding="utf-8"), "<h1>Ready</h1>")
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(completion["workflowOutcome"], "inspected")
@@ -1186,7 +1186,7 @@ class OperationStreamTests(unittest.TestCase):
 
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(len(calls), 3)
-            self.assertIn("Start the next open step now", request_snapshots[2][0]["content"])
+            self.assertIn("Start the next open step now", "\n".join(str(message.get("content", "")) for message in request_snapshots[2]))
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
             self.assertTrue(engine.state["registry"].plan)
 

@@ -343,8 +343,8 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
 
     # Compact inference copies use a short wrapper; the canonical checkpoint remains
     # complete on disk and can be paged through read_task_checkpoint.
-    header = "Checkpoint:\n"
-    footer = "\nUse read_task_checkpoint for omitted details."
+    header = "Active task continuity (summary):\n"
+    footer = "\nUse read_task_checkpoint."
 
     # Canonical checkpoints on disk remain complete. Only the inference copy is
     # summarized, and every removed history category is counted in-band so the

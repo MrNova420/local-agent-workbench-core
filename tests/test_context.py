@@ -16,8 +16,9 @@ class ContextTests(unittest.TestCase):
 
         compacted = manager.compact(messages, [], 512, checkpoint=checkpoint)
 
-        self.assertIn(marker, compacted[0]["content"])
-        self.assertIn(marker, compacted[-1]["content"])
+        self.assertEqual(compacted[0]["content"], "system")
+        self.assertTrue(any(marker in str(message.get("content", "")) for message in compacted[1:]))
+        self.assertIn("\\udc9d", json.dumps(compacted, ensure_ascii=True))
 
     def test_oversized_tool_results_with_lone_surrogates_remain_excerptable(self):
         result = "prefix \udc9d " + ("body " * 400) + " suffix"
@@ -118,8 +119,9 @@ class ContextTests(unittest.TestCase):
         events=[]
         compacted=manager.compact(messages,output_tokens=512,on_compact=events.append,checkpoint=checkpoint)
         system_messages=[message for message in compacted if message.get('role')=='system']
-        self.assertEqual(len(system_messages),1,'provider chat templates require continuity to remain inside the leading system message')
-        checkpoint_message=system_messages[0]
+        self.assertEqual(system_messages,[messages[0]],'task checkpoints must not churn the stable system prefix')
+        checkpoint_message=next(message for message in compacted if 'Active task continuity checkpoint' in str(message.get('content')))
+        self.assertEqual(checkpoint_message['role'],'user')
         self.assertIn('Active task continuity checkpoint',checkpoint_message['content'])
         self.assertIn('Finish the website',checkpoint_message['content'])
         self.assertIn('Implement page',checkpoint_message['content'])
@@ -136,8 +138,9 @@ class ContextTests(unittest.TestCase):
 
         compacted=manager.compact(messages,output_tokens=512,on_compact=events.append,checkpoint=checkpoint)
 
-        system_content=compacted[0]['content']
-        self.assertIn(goal,system_content)
+        self.assertEqual(compacted[0],messages[0])
+        checkpoint_message=next(message for message in compacted if 'Active task continuity checkpoint' in str(message.get('content')))
+        self.assertIn(goal,checkpoint_message['content'])
         self.assertEqual(events,[])
     def test_context_estimation_handles_unpaired_surrogates_from_model_output(self):
         manager=ContextManager(context=4096,reserve=512)
@@ -185,9 +188,9 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(events[0]['checkpointCompacted'])
         self.assertGreater(events[0]['checkpointOmissions']['operations'],0)
         self.assertTrue(any('Continue this project' in str(message.get('content','')) for message in compacted))
-        compacted_system=next(message['content'] for message in compacted if message.get('role')=='system')
-        self.assertIn('Keep building the full project',compacted_system)
-        self.assertIn('Finish implementation',compacted_system,
+        compacted_checkpoint=next(message['content'] for message in compacted if str(message.get('content','')).startswith('Active task continuity'))
+        self.assertIn('Keep building the full project',compacted_checkpoint)
+        self.assertIn('Finish implementation',compacted_checkpoint,
                       'the active plan step must survive checkpoint budgeting')
         self.assertEqual(len(checkpoint['current']['operations']),200,
                          'inference compaction must not mutate the canonical checkpoint')
@@ -218,8 +221,10 @@ class ContextTests(unittest.TestCase):
                     manager=ContextManager(context=context,reserve=min(1024,max(256,context//8)))
                     compacted=manager.compact(messages,output_tokens=output_tokens,checkpoint=checkpoint)
                     system='\n'.join(str(row.get('content','')) for row in compacted if row.get('role')=='system')
-                    self.assertIn('Continue the requested project without losing work',system)
-                    self.assertIn('Implement the approved project changes',system)
+                    request=json.dumps(compacted,ensure_ascii=False)
+                    self.assertEqual(system,'System instructions','dynamic progress must not churn the reusable system prefix')
+                    self.assertIn('Continue the requested project without losing work',request)
+                    self.assertIn('Implement the approved project changes',request)
                     self.assertTrue(any(row.get('role')=='user' and row.get('content')=='Continue the active project task.' for row in compacted))
                     self.assertNotIn(reasoning, json.dumps(compacted,ensure_ascii=False),
                                      'older emitted reasoning should be retrieved on demand, not silently resent wholesale')

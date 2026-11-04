@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 _RETRIEVED_FILE = re.compile(r"(?m)^--- relevant file: (.+?) \(relevance \d+\) ---$")
 _INSTRUCTION_SOURCE = re.compile(r"(?m)^--- ([^\r\n]+) ---$")
-_CHECKPOINT_PREFIX = "Active task continuity checkpoint ("
+_CHECKPOINT_PREFIX = "Active task continuity"
 
 
 def _estimated_tokens(text: str) -> int:
@@ -20,6 +20,8 @@ def _message_source(message: dict[str, Any]) -> str:
     content = str(message.get("content", ""))
     if role == "system":
         return "task_checkpoint" if _CHECKPOINT_PREFIX in content else "system_guidance_and_project_instructions"
+    if role == "user" and _CHECKPOINT_PREFIX in content:
+        return "task_checkpoint"
     if role == "user" and "[Context notice:" in content:
         return "compaction_notice"
     if role == "user" and "Relevant project files:" in content:

@@ -32,7 +32,6 @@ PROJECT_LIST_SCAN_LIMIT = None
 _FILE_IO_CHUNK_SIZE = 1024 * 1024
 _APPEND_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 _APPEND_LOCKS_GUARD = threading.Lock()
-_CONTINUATION_GUIDANCE_MARKER = "\n\n[Current Workbench continuation]\n"
 
 def approval_policy_guidance(mode: str) -> str:
     """Describe the host's actual approval behavior without implying every action is manual."""
@@ -596,12 +595,12 @@ def _needs_implementation_continuation(implementation_requested:bool,access:str,
                 and (review_required or plan_remaining
                      or (not project_change_observed and not command_effects_inspected)))
 
-def _replace_continuation_guidance(system_prompt: str, guidance: str | None) -> str:
-    """Keep only the latest host continuation while preserving the base prompt."""
-    base_prompt = str(system_prompt).split(_CONTINUATION_GUIDANCE_MARKER, 1)[0]
-    if not guidance or not guidance.strip():
-        return base_prompt
-    return base_prompt + _CONTINUATION_GUIDANCE_MARKER + guidance.strip()
+def _append_continuation_guidance(messages: list[dict[str, Any]], guidance: str | None) -> list[dict[str, Any]]:
+    """Add request-local host guidance after history without mutating the stable system prefix."""
+    request_messages=list(messages)
+    if guidance and guidance.strip():
+        request_messages.append({"role":"user","content":"[Current Workbench continuation]\n"+guidance.strip()})
+    return request_messages
 
 def _verification_report(steps: list[dict[str, Any]], implementation_requested: bool, project_changed: bool,
                          command_side_effects_possible: bool = False, post_effect_inspection: bool | None = None) -> dict[str, Any]:
@@ -1926,23 +1925,19 @@ class ContextManager:
         def request_size(rows):return self.estimate_request(json.dumps({"messages":rows,"tools":tools},ensure_ascii=False,separators=(",",":")))
         tool_size=self.estimate_request(json.dumps(tools,ensure_ascii=False,separators=(",",":"))) if tools else 0
         if tool_size+max(self.reserve,output_tokens)>=self.context:raise ValueError(f"Tool definitions and output reserve exceed the {self.context:,}-token context; context was not reduced.")
-        # Ollama chat templates (including the selected Ornith GGUF template)
-        # require every system instruction to be in the first message. Keep
-        # saved history intact, but normalize provider-bound context into one
-        # leading system message before adding the task checkpoint.
+        # Keep the system message stable so provider prefix caches can reuse it
+        # across tool continuations. Task progress is context, not policy, so put
+        # its current snapshot in a request-local user message after history.
         system_messages=[message for message in messages if message.get("role")=="system"]
         conversation=[message for message in messages if message.get("role")!="system"]
         system_content="\n\n".join(str(message.get("content", "")) for message in system_messages if message.get("content"))
         full_checkpoint_text=render_checkpoint(checkpoint)
         checkpoint_text=full_checkpoint_text
-        system_base=system_content
-        def assemble_base(checkpoint_value:str)->list[dict]:
-            combined=system_base
-            if checkpoint_value:
-                combined=(combined+"\n\n" if combined else "")+checkpoint_value
-            return [{"role":"system","content":combined}] if combined else []
-        base=assemble_base(checkpoint_text)
-        request=base+conversation
+        base=[{"role":"system","content":system_content}] if system_content else []
+        def checkpoint_suffix(value:str)->list[dict]:
+            return [{"role":"user","content":value}] if value else []
+        suffix=checkpoint_suffix(checkpoint_text)
+        request=base+conversation+suffix
         total=request_size(request)
         # Preserve the complete checkpoint whenever it fits with the current
         # conversation. Only spend its detail when actual context pressure
@@ -1952,8 +1947,8 @@ class ContextManager:
             checkpoint_target=max(64,budget//4)
             if self.estimate(checkpoint_text)>checkpoint_target:
                 checkpoint_text=render_checkpoint(checkpoint,token_budget=checkpoint_target)
-                base=assemble_base(checkpoint_text)
-                request=base+conversation
+                suffix=checkpoint_suffix(checkpoint_text)
+                request=base+conversation+suffix
                 total=request_size(request)
         checkpoint_omitted=checkpoint_omissions(checkpoint_text)
         if total<=budget:
@@ -1981,7 +1976,7 @@ class ContextManager:
             notice=[]
             if dropped:
                 notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript, including emitted assistant reasoning, and tool results remain saved; use read_conversation_history for omitted user/assistant content and reasoning, read_task_checkpoint for saved decisions/plans/progress, and saved operation references for tool results. Do not claim omitted material was reviewed unless the checkpoint or a retrieval tool confirms it.]"}]
-            proposed=base+notice+[m for group in candidate for m in group]
+            proposed=base+notice+[m for group in candidate for m in group]+suffix
             if request_size(proposed)>budget:
                 if not kept:
                     if turn is turns[-1]:
@@ -1993,15 +1988,15 @@ class ContextManager:
                                 missing=len(blocks)-1-len(trial)
                                 within_notice=([{"role":"user","content":f"[Active task compaction: {missing} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript, including emitted assistant reasoning, and outputs remain saved. Use read_conversation_history for omitted user/assistant content and reasoning; use operation IDs in the task checkpoint with read_operation_result for full tool output; inspect the workspace before repeating any action.]"}] if missing else [])
                                 candidate_turn=blocks[0]+within_notice+[message for group in trial for message in group]
-                                if request_size(base+notice+candidate_turn)>budget:break
+                                if request_size(base+notice+candidate_turn+suffix)>budget:break
                                 retained=trial
                             omitted_groups=len(blocks)-1-len(retained)
                             within_notice=([{"role":"user","content":f"[Active task compaction: {omitted_groups} earlier assistant/tool exchange group(s) from this same task are omitted from this request. Their full transcript, including emitted assistant reasoning, and outputs remain saved. Use read_conversation_history for omitted user/assistant content and reasoning; use operation IDs in the task checkpoint with read_operation_result for full tool output; inspect the workspace before repeating any action.]"}] if omitted_groups else [])
                             compact_turn=blocks[0]+within_notice+[message for group in retained for message in group]
-                            if request_size(base+notice+compact_turn)<=budget:
+                            if request_size(base+notice+compact_turn+suffix)<=budget:
                                 turn=compact_turn
                                 candidate=[turn]+kept
-                                proposed=base+notice+[m for group in candidate for m in group]
+                                proposed=base+notice+[m for group in candidate for m in group]+suffix
                             else:
                                 raise ValueError(f"The current user prompt and compaction notice exceed the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
                         else:
@@ -2014,13 +2009,13 @@ class ContextManager:
         notice=[]
         if dropped:
             notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript, including emitted assistant reasoning, and tool results remain saved; use read_conversation_history for omitted user/assistant content and reasoning, read_task_checkpoint for saved decisions/plans/progress, and saved operation references for tool results. Do not claim omitted material was reviewed unless the checkpoint or a retrieval tool confirms it.]"}]
-        compacted=base+notice+[m for group in kept for m in group]
+        compacted=base+notice+[m for group in kept for m in group]+suffix
         # If the notice itself pushes the request over budget, discard complete older turns,
         # never individual assistant/tool messages or fragments of user text.
         while request_size(compacted)>budget and len(kept)>1:
             kept=kept[1:];dropped=len(turns)-len(kept)
             notice=[{"role":"user","content":f"[Context notice: {dropped} earlier complete conversation turn(s) were omitted from this inference request. The full transcript, including emitted assistant reasoning, and tool results remain saved; use read_conversation_history for omitted user/assistant content and reasoning, read_task_checkpoint for saved decisions/plans/progress, and saved operation references for tool results. Do not claim omitted material was reviewed unless the checkpoint or a retrieval tool confirms it.]"}]
-            compacted=base+notice+[m for group in kept for m in group]
+            compacted=base+notice+[m for group in kept for m in group]+suffix
         if request_size(compacted)>budget:
             raise ValueError(f"Current turn and context notice exceed the {budget:,}-token input budget at configured context {self.context:,}; context/output settings were not changed.")
         if on_compact:
@@ -2487,7 +2482,6 @@ class AgentEngine:
             "edit":"Project file changes are allowed subject to persistent permission rules and the selected approval mode. Commands use the same host policy and run with the current user's permissions.",
         }[self.workspace.access]
         system={"role":"system","content":agent_system_prompt(access_policy,self.project_instructions,self.harness_profile,self.state["skills_enabled"],self.task_intent,approval_policy_guidance(self.approval_mode))}
-        base_system_content = system["content"]
         msgs=messages if messages is not None else []
         _normalize_tool_history(msgs)
         if msgs and msgs[0].get("role")=="system":msgs[0]=system
@@ -2586,6 +2580,9 @@ class AgentEngine:
         try:
             while True:
                 if self.cancel_event.is_set():raise RequestCancelled()
+                checkpoint_pressure=current_task(checkpoint).get("context_checkpoint",{})
+                if isinstance(checkpoint_pressure,dict) and checkpoint_pressure.get("acknowledged"):
+                    current_continuation_guidance=None
                 if self.stop_after_operation.is_set():
                     finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
@@ -2596,9 +2593,9 @@ class AgentEngine:
                 if self.steering_handler and self.steering_handler(msgs, False):
                     self.steering_interrupt_event.clear()
                     self.event({"type":"steering_applied","elapsed":time.monotonic()-start})
-                msgs[0]["content"] = _replace_continuation_guidance(base_system_content, current_continuation_guidance)
+                request_history=_append_continuation_guidance(msgs,current_continuation_guidance)
                 tools=self._tools_for_request(base_request)
-                request_messages=self.context.compact(msgs,tools,self.state["max_tokens"],self.event,checkpoint=checkpoint)
+                request_messages=self.context.compact(request_history,tools,self.state["max_tokens"],self.event,checkpoint=checkpoint)
                 request_index+=1
                 self.state["request_tools"]=tools
                 manifest=build_prompt_manifest(
@@ -2627,10 +2624,7 @@ class AgentEngine:
                     "checkpoint. A progress_checkpoint-only call leaves the current plan unchanged. After saving it, "
                     "continue the same task normally. Do not restate private chain-of-thought."
                     )
-                    if request_messages and request_messages[0].get("role")=="system":
-                        request_messages[0]["content"]+=checkpoint_request
-                    else:
-                        request_messages.insert(0,{"role":"system","content":checkpoint_request.strip()})
+                    request_messages=_append_continuation_guidance(request_messages,checkpoint_request)
                     manifest=build_prompt_manifest(
                         request_messages,tools,request_index=request_index,context=self.context.context,
                         output_tokens=self.state["max_tokens"],input_budget=self.context.budget(self.state["max_tokens"]),

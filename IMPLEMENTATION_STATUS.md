@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-04 preserve reusable prompt prefixes across agent continuation (paired verification pending)
+
+- The inference request now keeps the configured system prompt and project instructions stable across turns. Current task checkpoints, continuation guidance, and the context-pressure handoff are request-local user messages; they no longer rewrite the system prefix or canonical saved transcript. This addresses a concrete prompt-cache invalidation source while keeping progress after the conversation and preserving Ollama template compatibility with a single leading system message.
+- Budgeted checkpoints retain a recognizable provenance header and concise footer, stay within the requested checkpoint budget, and remain identifiable in the prompt manifest. Full checkpoint/history remains on disk and recoverable through the existing readers; only the inference copy is summarized.
+- No context, output, reasoning, keep-alive, model, KV precision, or placement setting changed. Focused engine suites: **150 passed, 12 subtests passed**. The full engine suite and paired app/sidecar suite are running next. Provider-reported cache counts remain the evidence for reuse; this source change alone does not prove that a live Ollama request will report cache hits.
+
 ## 2026-11-04 cancelable provider retry recovery (verification queued)
 
 - The loop now preserves structured transport failure metadata for both Ollama and llama.cpp: HTTP status, failure phase, retryability, and numeric or HTTP-date `Retry-After`. Standard transient statuses and connection failures retry the same request with a cancelable exponential wait; the wait grows to 30 seconds and then stays there, with no attempt limit or total task deadline.

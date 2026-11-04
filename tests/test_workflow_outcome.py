@@ -234,17 +234,19 @@ def test_structured_task_mode_change_counts_as_continuation_progress():
         {"task_mode": "implement"}, [])
 
 
-def test_current_continuation_replaces_stale_guidance_without_changing_base_prompt():
-    base = "Base agent contract.\nProject instructions remain here."
-    replace_guidance = getattr(desktop_engine, "_replace_continuation_guidance", None)
-    assert callable(replace_guidance)
-    first = replace_guidance(base, "First next action: inspect the project.")
-    second = replace_guidance(first, "Updated next action: implement the saved plan.")
+def test_current_continuation_is_a_request_suffix_and_keeps_system_prefix_stable():
+    base = [{"role":"system","content":"Base agent contract.\nProject instructions remain here."},
+            {"role":"user","content":"Create the requested project."}]
+    append_guidance = getattr(desktop_engine, "_append_continuation_guidance", None)
+    assert callable(append_guidance)
+    first = append_guidance(base, "First next action: inspect the project.")
+    second = append_guidance(base, "Updated next action: implement the saved plan.")
 
-    assert "Base agent contract." in second
-    assert "Project instructions remain here." in second
-    assert "Updated next action: implement the saved plan." in second
-    assert "First next action:" not in second
+    assert first[0] == second[0] == base[0]
+    assert first[-1]["role"] == second[-1]["role"] == "user"
+    assert "First next action:" in first[-1]["content"]
+    assert "Updated next action: implement the saved plan." in second[-1]["content"]
+    assert len(base) == 2
 
 
 def test_saved_implementation_obligation_counts_as_continuation_state():

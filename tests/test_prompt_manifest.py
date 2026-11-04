@@ -5,7 +5,7 @@ from desktop_engine import AgentEngine
 def test_manifest_accounts_for_the_exact_request_sources_without_copying_prompt_content():
     messages = [
         {"role": "system", "content": "Coding guidance\n--- AGENTS.md ---\nUse the project convention."},
-        {"role": "system", "content": "Active task continuity checkpoint (facts from saved state): {...}"},
+        {"role": "user", "content": "Active task continuity checkpoint (facts from saved state): {...}"},
         {"role": "user", "content": "Add a page\n\nRelevant project files:\n--- relevant file: src/app.py (relevance 8) ---\nsource content"},
     ]
     tools = [
@@ -34,11 +34,11 @@ def test_manifest_accounts_for_the_exact_request_sources_without_copying_prompt_
     assert "source content" not in str(manifest)
 
 
-def test_manifest_recognizes_checkpoint_embedded_in_merged_system_guidance():
+def test_manifest_recognizes_checkpoint_as_a_separate_continuity_message():
     messages = [{
-        "role": "system",
-        "content": "Coding guidance\nFollow project instructions.\n\n"
-                   "Active task continuity checkpoint (facts from saved state): {\"task_id\":\"t1\"}",
+        "role": "system", "content": "Coding guidance\nFollow project instructions.",
+    }, {
+        "role": "user", "content": "Active task continuity checkpoint (facts from saved state): {\"task_id\":\"t1\"}",
     }]
 
     manifest = build_prompt_manifest(
@@ -48,7 +48,21 @@ def test_manifest_recognizes_checkpoint_embedded_in_merged_system_guidance():
     )
 
     assert manifest["checkpoint_included"] is True
-    assert manifest["messages"][0]["source"] == "task_checkpoint"
+    assert manifest["messages"][0]["source"] == "system_guidance_and_project_instructions"
+    assert manifest["messages"][1]["source"] == "task_checkpoint"
+
+
+def test_manifest_recognizes_budgeted_checkpoint_header():
+    manifest = build_prompt_manifest(
+        [{"role": "system", "content": "Coding guidance."},
+         {"role": "user", "content": "Active task continuity (summary): {\"task_id\":\"t1\"}"}],
+        [], request_index=1, context=4096, output_tokens=512, input_budget=3072,
+        skills_enabled=False, skill_sources=[], available_skills=[], catalog_skill_names=[],
+        project_instructions="(none found)", harness_profile="standard", task_intent="implement", access="ask",
+    )
+
+    assert manifest["checkpoint_included"] is True
+    assert manifest["messages"][1]["source"] == "task_checkpoint"
 
 
 def test_manifest_size_estimates_tolerate_lone_surrogates_from_imported_session_text():
@@ -183,13 +197,18 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
 
     engine.run("Review the current project without making changes.")
 
-    system_message = next(message for message in dispatched if message.get("role") == "system")
-    assert "[Workbench progress checkpoint requested]" in system_message["content"]
+    checkpoint_request = next(message for message in dispatched
+                              if message.get("role") == "user" and "[Workbench progress checkpoint requested]" in message.get("content", ""))
+    assert "[Workbench progress checkpoint requested]" in checkpoint_request["content"]
     manifest = next(event for event in events if event.get("type") == "prompt_manifest")
     assert manifest["context_checkpoint_due"] is True
     assert manifest["context_checkpoint_threshold_ratio"] == 0.70
     assert manifest["context_checkpoint_ratio"] == 0.71
     assert len(calls)==3
+    system_prefixes=[next(message["content"] for message in request if message.get("role")=="system") for request in calls]
+    assert len(set(system_prefixes))==1
+    assert any(message.get("role")=="user" and "[Current Workbench continuation]" in message.get("content","")
+               for message in calls[1])
     task=engine.state["task_checkpoint"]["current"]
     assert task["context_checkpoint"]["acknowledged"] is True
     assert task["context_checkpoint"]["summary"]["next_action"]=="Continue from the current review findings."
