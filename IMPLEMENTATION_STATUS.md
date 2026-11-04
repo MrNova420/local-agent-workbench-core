@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-04 sequential project-list cursor
+
+- Repeated `list_files` offset pages within one agent task now continue one lazy traversal rather than restarting at the project root. The cursor is held by that task's `ToolRegistry`, covers only the current resolved directory/pattern query, and retains a matching lookahead when the request output budget ends a page. Backward offsets, changed queries, cancellation, or changed directory/`.gitignore` metadata restart traversal, preserving filtering and current-workspace isolation. Read-only tools between pages do not discard the cursor. It adds no file, page, context, or duration ceiling; the existing optional scan ceiling remains unset in production.
+- Focused inventory/tool verification: **57 passed** across `tests/test_tools.py`, `tests/test_project_walk.py`, and `tests/test_project_view.py`. This includes reduced walker yields across sequential pages, root/nested directory and ignore-rule invalidation, output-budget continuation, cancellation, backward offsets, and isolated paths. `py_compile` and `git diff --check` pass. Full suites, app pin, packaging, and visible acceptance remain separate gates.
+- Tradeoff: a cache validates metadata for each directory already traversed before resuming. This costs work proportional to visited directories rather than rescanning all earlier files; files are not snapshotted, and offsets continue to represent the current sorted traversal after invalidation.
+
 ## 2026-11-02 incremental large-file save path
 
 - `append_file` now appends only the new bytes to the existing file instead of copying and replacing the entire growing file for every model chunk. Windows file descriptors are opened in binary mode, preserving exact UTF-8 bytes and `\n` line endings. Synchronous partial write failures roll back to the original byte length; if rollback cannot be confirmed, the tool reports an uncertain result that must be inspected before retrying. A process interruption during an append remains recoverable as an uncertain in-flight write.

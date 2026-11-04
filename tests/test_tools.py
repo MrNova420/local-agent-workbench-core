@@ -52,6 +52,111 @@ class ToolTests(unittest.TestCase):
    second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':2})
    self.assertIn('a.py',first);self.assertIn('b.py',first);self.assertIn('next offset 2',first.casefold())
    self.assertIn('c.py',second);self.assertIn('d.py',second);self.assertNotIn('a.py',second)
+ def test_sequential_file_listing_pages_reuse_the_live_traversal(self):
+  import desktop_engine
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for name in ('a.py','b.py','c.py','d.py','e.py','f.py'):(root/name).write_text(name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   traversed=[];real_walk=desktop_engine.iter_project_files
+   def recording_walk(*args,**kwargs):
+    for path in real_walk(*args,**kwargs):
+     traversed.append(path.name);yield path
+   with patch('desktop_engine.iter_project_files',side_effect=recording_walk):
+    first=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':2})
+    tools.run('read_file',{'path':'a.py'})
+    second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':2})
+   self.assertIn('next offset 2',first.casefold())
+   self.assertIn('c.py',second);self.assertIn('d.py',second)
+   self.assertEqual(len(traversed),5)
+   self.assertEqual(len(set(traversed)),5)
+ def test_sequential_file_listing_cursor_restarts_when_directory_changes(self):
+  import os,time
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for name in ('a.py','b.py','c.py','d.py','e.py'):(root/name).write_text(name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   first=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':2})
+   self.assertIn('next offset 2',first.casefold())
+   (root/'z.py').write_text('new')
+   now=time.time_ns()+2_000_000_000
+   os.utime(root,ns=(now,now))
+   second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':2})
+   third=tools.run('list_files',{'path':'.','pattern':'*.py','offset':4,'limit':2})
+   self.assertIn('c.py',second);self.assertIn('d.py',second)
+   self.assertIn('z.py',third)
+ def test_sequential_file_listing_cursor_restarts_when_gitignore_changes(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'.gitignore').write_text('',encoding='utf-8')
+   for name in ('a.py','b.py','c.py'):(root/name).write_text(name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   first=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':1})
+   self.assertIn('a.py',first)
+   (root/'.gitignore').write_text('b.py\n',encoding='utf-8')
+   second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':1,'limit':1})
+   self.assertIn('c.py',second);self.assertNotIn('b.py',second)
+ def test_sequential_file_listing_cursor_restarts_when_nested_directory_changes(self):
+  import os,time
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);nested=root/'src';nested.mkdir()
+   for name in ('a.py','b.py','c.py','d.py'):(nested/name).write_text(name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   first=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':2})
+   self.assertIn('next offset 2',first.casefold())
+   (nested/'z.py').write_text('new')
+   now=time.time_ns()+2_000_000_000
+   os.utime(nested,ns=(now,now))
+   second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':3})
+   self.assertIn('c.py',second);self.assertIn('d.py',second);self.assertIn('z.py',second)
+ def test_file_listing_cursor_is_discarded_on_cancellation(self):
+  import threading,desktop_engine
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for name in ('a.py','b.py','c.py'):(root/name).write_text(name)
+   cancelled=threading.Event();tools=ToolRegistry(Workspace(root),lambda *_:True,cancel_event=cancelled)
+   real_walk=desktop_engine.iter_project_files
+   def cancel_after_first(*args,**kwargs):
+    for path in real_walk(*args,**kwargs):
+     yield path
+     if path.name=='a.py':cancelled.set()
+   with patch('desktop_engine.iter_project_files',side_effect=cancel_after_first):
+    partial=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':2})
+   self.assertIn('cancelled',partial.casefold());self.assertIn('a.py',partial)
+   cancelled.clear()
+   recovered=tools.run('list_files',{'path':'.','pattern':'*.py','offset':1,'limit':1})
+   self.assertIn('b.py',recovered)
+ def test_file_listing_cursor_preserves_budget_lookahead_for_the_next_page(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for name in ('a.py','b.py','c.py'):(root/name).write_text(name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   first=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':3},output_byte_budget=4)
+   second=tools.run('list_files',{'path':'.','pattern':'*.py','offset':1,'limit':2},output_byte_budget=64)
+   self.assertIn('a.py',first);self.assertIn('next offset 1',first.casefold())
+   self.assertIn('b.py',second);self.assertIn('c.py',second)
+ def test_file_listing_cursor_falls_back_for_a_backward_offset(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t)
+   for name in ('a.py','b.py','c.py','d.py'):(root/name).write_text(name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   later=tools.run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':1})
+   earlier=tools.run('list_files',{'path':'.','pattern':'*.py','offset':0,'limit':1})
+   self.assertIn('c.py',later);self.assertIn('a.py',earlier)
+ def test_file_listing_past_the_last_page_does_not_claim_the_project_is_empty(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'a.py').write_text('a')
+   result=ToolRegistry(Workspace(root),lambda *_:True).run('list_files',{'path':'.','pattern':'*.py','offset':2,'limit':2})
+   self.assertIn('No more project files',result)
+   self.assertNotIn('directory is empty',result)
+ def test_file_listing_cursor_is_isolated_by_resolved_directory_and_pattern(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'src').mkdir();(root/'docs').mkdir()
+   for directory in ('src','docs'):
+    for name in ('a.py','b.py','c.py'):(root/directory/name).write_text(directory+name)
+   tools=ToolRegistry(Workspace(root),lambda *_:True)
+   first=tools.run('list_files',{'path':'src','pattern':'*.py','offset':0,'limit':1})
+   other=tools.run('list_files',{'path':'docs','pattern':'*.py','offset':1,'limit':1})
+   self.assertIn('a.py',first);self.assertIn('b.py',other);self.assertNotIn('src',other)
  def test_empty_directory_listing_returns_an_explicit_result(self):
   with tempfile.TemporaryDirectory() as t:
    result=ToolRegistry(Workspace(t),lambda *_:True).run('list_files',{'path':'.'})

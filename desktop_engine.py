@@ -1,6 +1,7 @@
 """Minimal runtime, safe tool registry, event stream and project context for the desktop app."""
 from __future__ import annotations
 import codecs, copy, hashlib, json, os, queue, re, tempfile, threading, time, urllib.request, uuid
+import stat
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonschema.exceptions import SchemaError
 from referencing import Registry
@@ -53,6 +54,40 @@ class UncertainFileOperationError(RuntimeError):
 class InferenceStreamError(RuntimeError):
  def __init__(self,message:str,partial_message:dict|None=None):
   super().__init__(message);self.partial_message=partial_message
+
+def _project_directory_listing_state(path:Path)->tuple[Any,...]|None:
+    """Cheaply detect path/ignore changes that would invalidate a paused walk."""
+    try:
+        if path.is_symlink() or getattr(os.path,"isjunction",lambda value:False)(path):return None
+        directory=path.lstat()
+        if not stat.S_ISDIR(directory.st_mode):return None
+        ignore=path/".gitignore"
+        if ignore.is_symlink() or getattr(os.path,"isjunction",lambda value:False)(ignore):
+            ignore_state=("linked",)
+        elif ignore.is_file():
+            ignored=ignore.stat()
+            ignore_state=(ignored.st_dev,ignored.st_ino,ignored.st_mtime_ns,ignored.st_ctime_ns,ignored.st_size)
+        else:
+            ignore_state=None
+        return (directory.st_dev,directory.st_ino,directory.st_mtime_ns,directory.st_ctime_ns,directory.st_size,ignore_state)
+    except (OSError,RuntimeError):
+        return None
+
+class _ProjectListCursor:
+    """One lazy project listing continuation, scoped to one ToolRegistry run."""
+    def __init__(self,base:Path,pattern:str,max_files:int|None=None):
+        self.key=(os.path.normcase(str(base)),pattern.casefold())
+        self.directory_states:dict[Path,tuple[Any,...]|None]={}
+        self.match_index=0
+        self.files_scanned=0
+        self.pending:Path|None=None
+        self.exhausted=False
+        self.paths=iter_project_files(base,max_files=max_files,directory_observer=self.observe_directory)
+    def observe_directory(self,path:Path)->None:
+        self.directory_states[path]=_project_directory_listing_state(path)
+    def is_current(self)->bool:
+        return all(before is not None and _project_directory_listing_state(path)==before
+                   for path,before in self.directory_states.items())
 
 class _InferenceCancelSignal:
  def __init__(self,cancel_event:threading.Event,steering_event:threading.Event):
@@ -522,6 +557,8 @@ class ToolRegistry:
     def __init__(self, workspace: Workspace, approval: Callable[[str, Any], bool], event:Callable[[dict],None]|None=None,cancel_event:threading.Event|None=None,search_file_limit:int|None=None,search_byte_limit:int|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,task_checkpoint:dict[str,Any]|None=None,read_output_token_budget:int|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None):
         self.workspace, self.approval, self.event = workspace, approval, event or (lambda e:None)
         self.cancel_event=cancel_event or threading.Event()
+        self._list_files_lock=threading.RLock()
+        self._list_files_cursor:_ProjectListCursor|None=None
         self.search_file_limit,self.search_byte_limit=search_file_limit,search_byte_limit
         self.plan=[]
         self.plan_source="workbench"
@@ -588,6 +625,93 @@ class ToolRegistry:
     @staticmethod
     def _schema(name: str, description: str, properties: dict, required: list) -> dict:
         return {"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required,"additionalProperties":False}}}
+    def _list_files(self,args:dict[str,Any],active_output_budget:int|None)->str:
+        base=self.workspace.resolve(args.get("path","."));pattern=args.get("pattern","*")
+        offset=args.get("offset",0);limit=args.get("limit",1200)
+        if not isinstance(pattern,str):return "Invalid pattern: expected text."
+        if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
+        if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
+        import fnmatch
+        key=(os.path.normcase(str(base)),pattern.casefold())
+        with self._list_files_lock:
+            cursor=self._list_files_cursor
+            if cursor is not None and (cursor.key!=key or offset<cursor.match_index or not cursor.is_current()):
+                cursor=None
+            if cursor is None:
+                list_scan_max=PROJECT_LIST_SCAN_LIMIT+1 if PROJECT_LIST_SCAN_LIMIT is not None else None
+                cursor=_ProjectListCursor(base,pattern,list_scan_max)
+                self._list_files_cursor=cursor
+            matches=[];scanned=0;used_bytes=0;has_more=False;scan_capped=False;cancelled=False
+            last_progress_at=time.monotonic();last_progress_scanned=0
+            def report_list_progress():
+                nonlocal last_progress_at,last_progress_scanned
+                now=time.monotonic()
+                if scanned-last_progress_scanned<256 and now-last_progress_at<1.0:return
+                self.event({"type":"tool_progress","progress":{"message":f"Scanning files · {scanned:,} inspected · {len(matches):,} matches on this page",
+                             "filesScanned":scanned,"matches":cursor.match_index,"timestamp":time.time()}})
+                last_progress_at=now;last_progress_scanned=scanned
+            while True:
+                if self.cancel_event.is_set():
+                    cancelled=True
+                    self._list_files_cursor=None
+                    break
+                path=cursor.pending
+                if path is not None:
+                    cursor.pending=None
+                else:
+                    path=None
+                    for candidate in cursor.paths:
+                        scanned+=1
+                        cursor.files_scanned+=1
+                        report_list_progress()
+                        if PROJECT_LIST_SCAN_LIMIT is not None and cursor.files_scanned>PROJECT_LIST_SCAN_LIMIT:
+                            scan_capped=True
+                            cursor.exhausted=True
+                            self._list_files_cursor=None
+                            break
+                        relative=candidate.relative_to(base).as_posix()
+                        if "/" in pattern:
+                            is_match=fnmatch.fnmatchcase(relative.casefold(),pattern.casefold())
+                            if pattern.startswith("**/"):
+                                is_match=is_match or fnmatch.fnmatchcase(relative.casefold(),pattern[3:].casefold())
+                        else:
+                            is_match=fnmatch.fnmatchcase(candidate.name.casefold(),pattern.casefold())
+                        if not is_match:continue
+                        if cursor.match_index<offset:
+                            cursor.match_index+=1
+                            continue
+                        path=candidate
+                        break
+                    else:
+                        cursor.exhausted=True
+                        self._list_files_cursor=None
+                        break
+                    if scan_capped:break
+                item=self.workspace.display_path(path)
+                item_bytes=len(item.encode("utf8"))+(1 if matches else 0)
+                if len(matches)<limit and (active_output_budget is None or used_bytes+item_bytes<=active_output_budget or not matches):
+                    matches.append(item);used_bytes+=item_bytes;cursor.match_index+=1
+                    continue
+                cursor.pending=path
+                has_more=True
+                break
+            result="\n".join(matches)
+            if cancelled:
+                result="Cancelled: project file listing stopped by the user; returned paths may be incomplete.\n"+result
+            if not result and not has_more and not scan_capped:
+                if cursor.match_index>0 and offset>0:
+                    result=f"No more project files matched '{pattern}' under '{args.get('path', '.')}' after offset {cursor.match_index}."
+                else:
+                    result=f"No project files found under '{args.get('path', '.')}'. The directory is empty or contains only ignored files."
+            if has_more:
+                result+="\n\n" if result else ""
+                if len(matches)>=limit:result+=f"[This page reached the requested {limit}-file page size.] "
+                elif active_output_budget is not None:result+="[This page reached the remaining request-context budget.] "
+                result+=f"More results are available. Next offset {offset+len(matches)}; continue with limit {limit}."
+            elif scan_capped:
+                result+="\n\n" if result else ""
+                result+=f"[File listing scan capped at {PROJECT_LIST_SCAN_LIMIT:,} files; results may be incomplete. Narrow the path or pattern.]"
+            return result
     def run(self, name: str, args: dict, *, output_byte_budget: int | None = None) -> str:
         active_output_budget=self.read_output_byte_budget if output_byte_budget is None else max(0,int(output_byte_budget))
         if name == "ask_user":
@@ -747,52 +871,7 @@ class ToolRegistry:
             if args.get("action")=="list":return knowledge.skill_catalog(skills)
             if args.get("action")=="read":return knowledge.read_skill_resource(args.get("name",""),args.get("path",""),skills)
             return knowledge.load_skill(args.get("name",""),skills)
-        if name == "list_files":
-            base = self.workspace.resolve(args.get("path", ".")); pattern = args.get("pattern", "*")
-            offset=args.get("offset",0);limit=args.get("limit",1200)
-            if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:return "Invalid offset: expected a non-negative integer."
-            if not isinstance(limit,int) or isinstance(limit,bool) or limit<1:return "Invalid limit: expected a positive integer."
-            import fnmatch
-            matches=[];matched=0;scanned=0;used_bytes=0;has_more=False;scan_capped=False;cancelled=False
-            last_progress_at=time.monotonic();last_progress_scanned=0
-            def report_list_progress():
-                nonlocal last_progress_at,last_progress_scanned
-                now=time.monotonic()
-                if scanned-last_progress_scanned<256 and now-last_progress_at<1.0:return
-                self.event({"type":"tool_progress","progress":{"message":f"Scanning files · {scanned:,} inspected · {len(matches):,} matches on this page",
-                             "filesScanned":scanned,"matches":matched,"timestamp":time.time()}})
-                last_progress_at=now;last_progress_scanned=scanned
-            list_scan_max=PROJECT_LIST_SCAN_LIMIT+1 if PROJECT_LIST_SCAN_LIMIT is not None else None
-            for p in iter_project_files(base,max_files=list_scan_max):
-                if self.cancel_event.is_set():cancelled=True;break
-                scanned+=1
-                report_list_progress()
-                if PROJECT_LIST_SCAN_LIMIT is not None and scanned>PROJECT_LIST_SCAN_LIMIT:scan_capped=True;break
-                relative=p.relative_to(base).as_posix()
-                if "/" in pattern:
-                    is_match=fnmatch.fnmatchcase(relative.casefold(),pattern.casefold())
-                    if pattern.startswith("**/"):is_match=is_match or fnmatch.fnmatchcase(relative.casefold(),pattern[3:].casefold())
-                else:is_match=fnmatch.fnmatchcase(p.name.casefold(),pattern.casefold())
-                if is_match:
-                    if matched<offset:matched+=1;continue
-                    item=self.workspace.display_path(p)
-                    item_bytes=len(item.encode("utf8"))+(1 if matches else 0)
-                    if len(matches)<limit and (active_output_budget is None or used_bytes+item_bytes<=active_output_budget or not matches):
-                        matches.append(item);used_bytes+=item_bytes
-                    else:has_more=True;break
-            result="\n".join(matches)
-            if cancelled:result="Cancelled: project file listing stopped by the user; returned paths may be incomplete.\n"+result
-            if not result and not has_more and not scan_capped:
-                result=f"No project files found under '{args.get('path', '.')}'. The directory is empty or contains only ignored files."
-            if has_more:
-                result+="\n\n" if result else ""
-                if len(matches)>=limit:result+=f"[This page reached the requested {limit}-file page size.] "
-                elif active_output_budget is not None:result+="[This page reached the remaining request-context budget.] "
-                result+=f"More results are available. Next offset {offset+len(matches)}; continue with limit {limit}."
-            elif scan_capped:
-                result+="\n\n" if result else ""
-                result+=f"[File listing scan capped at {PROJECT_LIST_SCAN_LIMIT:,} files; results may be incomplete. Narrow the path or pattern.]"
-            return result
+        if name == "list_files":return self._list_files(args,active_output_budget)
         if name == "search_files":
             search_root=self.workspace.resolve(args.get("path","."));include=str(args.get("include","*")).strip() or "*"
             query = str(args.get("query", "")).strip();hits=[];scanned=0;bytes_read=0;used_bytes=0;capped=False;has_more=False;cancelled=False

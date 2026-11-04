@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathspec import GitIgnoreSpec
 
 
@@ -31,7 +31,8 @@ def _is_ignored(relative: str, is_directory: bool, rules: tuple[tuple[str, GitIg
     return ignored
 
 
-def iter_project_files(root: Path | str, ignored: set[str] | None = None, max_files: int | None = None) -> Iterator[Path]:
+def iter_project_files(root: Path | str, ignored: set[str] | None = None, max_files: int | None = None,
+                       directory_observer: Callable[[Path], None] | None = None) -> Iterator[Path]:
     """Yield project files under ignore rules without descending into links or generated folders."""
     base = Path(root).resolve(strict=True)
     ignored_names = DEFAULT_IGNORED if ignored is None else ignored
@@ -39,6 +40,8 @@ def iter_project_files(root: Path | str, ignored: set[str] | None = None, max_fi
     rules_by_directory: dict[Path, tuple[tuple[str, GitIgnoreSpec], ...]] = {base: ()}
     for current, directories, files in os.walk(base, topdown=True, followlinks=False):
         current_path = Path(current)
+        if directory_observer is not None:
+            directory_observer(current_path)
         rules = rules_by_directory.pop(current_path, ())
         gitignore = current_path / ".gitignore"
         if gitignore.is_file() and not _link_or_junction(gitignore):
