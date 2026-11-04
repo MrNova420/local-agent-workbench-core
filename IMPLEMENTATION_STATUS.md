@@ -561,5 +561,5 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 
 # Exact small tool-result budgets (2026-11-04)
 
-- Removed the unconditional 512-byte floor from the fallback read-result budget. When a request budget is supplied, the engine now derives the fallback byte budget directly from it, including very small values; it does not spend more context than the computed allowance just to satisfy a minimum excerpt size.
-- Added a queued regression for a one-token tool-result allowance. No inference setting changed and no test was run; include this case in the grouped context/tool-budget suite.
+- Removed the unconditional 512-byte fallback floor and the downstream 192-byte excerpt floor. Oversized tool results reserve the actual recovery marker size; a smaller allowance returns the shortest retrievable pointer that fits, and zero allowance returns an empty excerpt while the complete result remains saved by operation ID.
+- Added queued regressions for a one-token fallback and 0–192 byte excerpts. No inference setting changed and no test was run; include these cases in the grouped context/tool-budget suite.

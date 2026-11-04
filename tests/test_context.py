@@ -14,6 +14,16 @@ class ContextTests(unittest.TestCase):
         self.assertIn("read_operation_result", excerpt)
         self.assertIn("operation-surrogate", excerpt)
 
+    def test_tool_result_excerpts_never_exceed_a_small_computed_budget(self):
+        result = "雪🙂" * 500
+        for budget in (0, 1, 2, 32, 64, 128, 192):
+            with self.subTest(budget=budget):
+                excerpt = tool_result_for_context(result, budget, "op-42")
+                self.assertLessEqual(len(excerpt.encode("utf-8", errors="surrogatepass")), budget)
+                if budget == 0:
+                    self.assertEqual(excerpt, "")
+        self.assertIn("operation_id=op-42", tool_result_for_context(result, 64, "op-42"))
+
     def test_oversized_tool_results_keep_full_saved_result_retrievable_with_utf8_safe_cursor(self):
         import re
         result = ("start 雪\n" + "middle-" * 5000 + "\nfinish 雪")

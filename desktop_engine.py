@@ -1658,9 +1658,16 @@ def _utf8_suffix(value:str,budget:int)->tuple[str,int]:
 
 def tool_result_for_context(value:str,byte_budget:int,operation_id:str)->str:
     """Keep large tool results complete on disk and provide a bounded resumable model excerpt."""
-    byte_budget=max(192,int(byte_budget))
+    byte_budget=max(0,int(byte_budget))
+    if byte_budget==0:return ""
     if len(value.encode("utf8",errors="surrogatepass"))<=byte_budget:return value
-    content_budget=max(0,(byte_budget-240)//2)
+    short_marker=f"[read_operation_result operation_id={operation_id}]"
+    if len(short_marker.encode("utf8",errors="surrogatepass"))>byte_budget:
+        return _utf8_prefix("[saved]",byte_budget)[0]
+    marker_reserve=(f"[Tool result excerpt: full {len(value):,}-character result remains saved. "
+                    f"Omitted characters {len(value)}-{len(value)}; continue with read_operation_result "
+                    f"operation_id={operation_id} offset={len(value)} length={len(value)}.]")
+    content_budget=max(0,byte_budget-len(marker_reserve.encode("utf8",errors="surrogatepass"))-4)
     head_budget=content_budget*2//3;tail_budget=content_budget-head_budget
     while True:
         head,head_end=_utf8_prefix(value,head_budget)
@@ -1671,7 +1678,8 @@ def tool_result_for_context(value:str,byte_budget:int,operation_id:str)->str:
                 f"operation_id={operation_id} offset={head_end} length={omitted}.]")
         excerpt=head+"\n\n"+marker+"\n\n"+tail
         if len(excerpt.encode("utf8",errors="surrogatepass"))<=byte_budget:return excerpt
-        if head_budget==0 and tail_budget==0:return marker[:byte_budget]
+        if head_budget==0 and tail_budget==0:
+            return marker if len(marker.encode("utf8",errors="surrogatepass"))<=byte_budget else short_marker
         head_budget=head_budget*3//4;tail_budget=tail_budget*3//4
 
 def _split_turn_for_compaction(turn:list[dict])->list[list[dict]]:
