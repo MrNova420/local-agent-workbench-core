@@ -578,6 +578,40 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(len({event["operationId"] for event in completed}), 2)
             self.assertEqual(events[-1]["type"], "cancelled")
 
+    def test_finish_after_operation_drains_parallel_write_batch_without_next_model_call(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", approval_mode="auto", task_intent="implement", event=events.append)
+            barrier = threading.Barrier(2)
+            request_count = 0
+
+            def finish_after_current_batch(_name, args, **_kwargs):
+                barrier.wait(timeout=1)
+                engine.finish_after_operation()
+                return f"Saved {args['path']}"
+
+            engine.state["registry"].run = finish_after_current_batch
+            response = {"message": {"role": "assistant", "tool_calls": [
+                {"id": "write-a", "function": {"name": "write_file", "arguments": {"path": "a.txt", "content": "alpha"}}},
+                {"id": "write-b", "function": {"name": "write_file", "arguments": {"path": "b.txt", "content": "beta"}}},
+            ]}}
+
+            def stream(*_args):
+                nonlocal request_count
+                request_count += 1
+                return response
+
+            engine.runtime.stream = stream
+            messages = engine.run("Create two independent files")
+
+            completed = [event for event in events if event.get("type") == "tool_done"]
+            self.assertEqual(len(completed), 2)
+            self.assertEqual({event["result"] for event in completed}, {"Saved a.txt", "Saved b.txt"})
+            self.assertEqual([message["content"] for message in messages if message.get("role") == "tool"],
+                             ["Saved a.txt", "Saved b.txt"])
+            self.assertEqual(request_count, 1)
+            self.assertEqual(events[-1]["type"], "stopped_after_operation")
+
     def test_per_action_approval_stays_in_call_order_for_independent_writes(self):
         with tempfile.TemporaryDirectory() as root:
             approvals = []
