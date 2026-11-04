@@ -8,6 +8,71 @@ from desktop_engine import AgentEngine
 
 
 class EngineToolBatchTests(unittest.TestCase):
+    def test_repeated_identical_tool_calls_require_a_one_action_review_without_limiting_task(self):
+        with tempfile.TemporaryDirectory() as root:
+            reviews = []
+            executed = []
+            engine = AgentEngine(
+                root,
+                access="edit",
+                approval_mode="auto",
+                task_intent="discuss",
+                approve_repeated_action=lambda name, args: reviews.append((name, args)) or True,
+            )
+            engine.state["registry"].run = lambda name, args, **kwargs: executed.append((name, args)) or "same result"
+            call = {"id": "read", "function": {"name": "read_file", "arguments": {"path": "README.md"}}}
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [call]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [call]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [call]}},
+                {"message": {"role": "assistant", "content": "I reviewed the unchanged result and finished."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            history = engine.run("Inspect the README")
+
+            assert len(executed) == 3
+            assert reviews == [("read_file", {"path": "README.md"})]
+            decision = next(row for row in engine.state["task_checkpoint"]["current"]["decisions"]
+                            if row["kind"] == "repeated_action_review")
+            assert decision["decision"] == "approved"
+            assert decision["approval_scope"] == "one_action"
+            assert engine.state["task_checkpoint"]["current"]["status"] == "completed"
+            assert "finished" in next(row for row in reversed(history) if row.get("role") == "assistant")["content"]
+
+    def test_repeat_review_decline_blocks_only_that_exact_action_and_allows_other_work(self):
+        with tempfile.TemporaryDirectory() as root:
+            reviews = []
+            executed = []
+            engine = AgentEngine(
+                root,
+                access="edit",
+                approval_mode="auto",
+                task_intent="discuss",
+                approve_repeated_action=lambda name, args: reviews.append((name, args)) or False,
+            )
+            engine.state["registry"].run = lambda name, args, **kwargs: executed.append((name, args)) or "same result"
+            repeated = {"id": "read", "function": {"name": "read_file", "arguments": {"path": "README.md"}}}
+            different = {"id": "status", "function": {"name": "git_status", "arguments": {}}}
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [different]}},
+                {"message": {"role": "assistant", "content": "I used the other operation and finished."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            history = engine.run("Inspect the project")
+
+            assert len(reviews) == 1
+            assert executed.count(("read_file", {"path": "README.md"})) == 2
+            assert ("git_status", {}) in executed
+            blocked = [row for row in history if row.get("role") == "tool" and "repeat review was declined" in row.get("content", "").casefold()]
+            assert blocked
+            assert engine.state["task_checkpoint"]["current"]["status"] == "completed"
+
     def test_independent_read_only_calls_execute_concurrently_and_keep_ordered_results(self):
         with tempfile.TemporaryDirectory() as root:
             engine = AgentEngine(root)

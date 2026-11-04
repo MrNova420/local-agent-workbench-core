@@ -498,6 +498,53 @@ def _no_progress_response_signature(task: dict[str, Any], verification_steps: li
     return hashlib.sha256(material.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
+def _operation_arguments_fingerprint(name: str, arguments: Any) -> str:
+    material = json.dumps({"name": name, "arguments": arguments}, ensure_ascii=True,
+                          sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(material.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _identical_operation_streak(task: dict[str, Any], name: str, arguments: Any) -> int:
+    """Count trailing identical completed calls with the same unchanged result."""
+    fingerprint = _operation_arguments_fingerprint(name, arguments)
+    operations = task.get("operations", [])
+    if not isinstance(operations, list):
+        return 0
+    expected_result = None
+    count = 0
+    for row in reversed(operations):
+        if not isinstance(row, dict) or row.get("name") == "update_plan":
+            continue
+        if row.get("name") != name or row.get("arguments_fingerprint") != fingerprint:
+            break
+        result = row.get("result_fingerprint")
+        if not isinstance(result, str) or row.get("status") not in {"completed", "failed", "partial"}:
+            break
+        if expected_result is None:
+            expected_result = result
+        elif result != expected_result:
+            break
+        count += 1
+    return count
+
+
+def _repeat_action_denied_since_last_user_update(task: dict[str, Any], fingerprint: str) -> bool:
+    """Keep a denied repeat blocked until the user adds new same-task guidance."""
+    decisions = task.get("decisions", [])
+    updates = task.get("user_updates", [])
+    if not isinstance(decisions, list):
+        return False
+    decision = next((row for row in reversed(decisions)
+                     if isinstance(row, dict) and row.get("kind") == "repeated_action_review"
+                     and row.get("arguments_fingerprint") == fingerprint), None)
+    if not isinstance(decision, dict) or decision.get("decision") != "denied":
+        return False
+    denied_at = decision.get("timestamp", 0)
+    return not (isinstance(updates, list) and any(
+        isinstance(row, dict) and isinstance(row.get("timestamp"), (int, float))
+        and row.get("timestamp") > denied_at for row in updates))
+
+
 def _utf8_size(text: str) -> int:
     """Measure text safely, including Windows paths with surrogate escapes."""
     return len(text.encode("utf-8", errors="surrogatepass"))
@@ -2012,9 +2059,9 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None,steering_interrupt_event:threading.Event|None=None):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None,steering_interrupt_event:threading.Event|None=None,approve_repeated_action:Callable[[str,Any],bool]|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
-        self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event();self._approval_lock=threading.RLock()
+        self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.approve_repeated_action=approve_repeated_action or self.approve;self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event();self._approval_lock=threading.RLock()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
         self.steering_handler=steering_handler
@@ -2618,7 +2665,7 @@ class AgentEngine:
                 readonly_names={"list_files","search_files","read_file","read_operation_result","read_task_checkpoint","read_conversation_history","git_status","git_diff","git_log"}
                 prepared_batch:dict[int,dict[str,Any]]={}
                 if len(calls)>1:
-                    parsed_batch=[];batch_is_readonly=True;batch_write_candidate=True
+                    parsed_batch=[];batch_is_readonly=True;batch_write_candidate=True;batch_signatures=set();batch_has_duplicate_action=False
                     available_schemas=tools
                     for batch_index,batch_call in enumerate(calls):
                         batch_fn=batch_call.get("function") or {};batch_name=batch_fn.get("name","");batch_raw=batch_fn.get("arguments",{})
@@ -2626,13 +2673,17 @@ class AgentEngine:
                         except json.JSONDecodeError:batch_args=None
                         batch_schema=next((item.get("function",{}).get("parameters",{}) for item in available_schemas if item.get("function",{}).get("name")==batch_name),None)
                         batch_invalid=not isinstance(batch_args,dict) or batch_schema is None or bool(_validate_tool_arguments(batch_args,batch_schema))
+                        if not batch_invalid:
+                            signature=_operation_arguments_fingerprint(batch_name,batch_args)
+                            if signature in batch_signatures:batch_has_duplicate_action=True
+                            batch_signatures.add(signature)
                         if batch_name not in readonly_names or batch_invalid or permission_decision(batch_name,batch_args if isinstance(batch_args,dict) else {},self.permission_rules) is not None:
                             batch_is_readonly=False
                         if batch_name not in {"write_file","append_file","edit_file"} or batch_invalid:
                             batch_write_candidate=False
                         parsed_batch.append((batch_index,batch_call,batch_name,batch_args if isinstance(batch_args,dict) else {}))
                     batch_is_parallel_write=batch_write_candidate and self._can_parallelize_file_writes(parsed_batch)
-                    if (batch_is_readonly or batch_is_parallel_write) and not self.cancel_event.is_set():
+                    if (batch_is_readonly or batch_is_parallel_write) and not batch_has_duplicate_action and not self.cancel_event.is_set():
                         if batch_is_parallel_write and self.task_intent=="auto" and not self.state["registry"].plan:
                             registry=self.state["registry"]
                             registry.plan=initial_task_plan(prompt,"implement")
@@ -2719,10 +2770,31 @@ class AgentEngine:
                             registry.event=lambda event,op=operation_id:self.event({**event,"operationId":op})
                             self.event({"type":"tool_start","operationId":operation_id,"toolCallId":tool_call_id,"name":name,"arguments":args,"status":"running","startedAt":operation_started})
                             try:
-                                if name=="load_tools":
+                                repeated_action_fingerprint=_operation_arguments_fingerprint(name,args)
+                                repeated_streak=_identical_operation_streak(current_task(checkpoint),name,args)
+                                repeat_denied=_repeat_action_denied_since_last_user_update(current_task(checkpoint),repeated_action_fingerprint)
+                                repeat_review_required=(repeated_streak>=2 and permission_decision(name,args,self.permission_rules)!="deny")
+                                repeat_blocked=False
+                                if repeat_denied:
+                                    out=("Blocked: this exact repeated action was declined. Use the previous operation result or choose a different safe approach. "
+                                         "The user can explicitly steer the task if they want this action reconsidered.")
+                                    repeat_blocked=True
+                                elif repeat_review_required:
+                                    self.event({"type":"repeated_action_review","operationId":operation_id,"name":name,
+                                                "arguments":args,"repeatCount":repeated_streak+1})
+                                    approved=self.approve_repeated_action(name,args) if not self.cancel_event.is_set() else False
+                                    record_decision(checkpoint,{"kind":"repeated_action_review","tool":name,
+                                        "arguments_fingerprint":repeated_action_fingerprint,
+                                        "decision":"cancelled" if self.cancel_event.is_set() else "approved" if approved else "denied",
+                                        "approval_scope":"one_action"})
+                                    if not approved:
+                                        out=("Blocked: the user declined this repeated identical action. Do not retry the same action or route around that decision. "
+                                             "Use the prior result, continue with independent work, or ask a structured question if the user must choose another path.")
+                                        repeat_blocked=True
+                                if not repeat_blocked and name=="load_tools":
                                     discovery_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index)
                                     out=self._load_tools(args,base_request,discovery_budget)
-                                elif name.startswith("mcp__") and self.mcp_call:
+                                elif not repeat_blocked and name.startswith("mcp__") and self.mcp_call:
                                     checkpoint_state=current_task(checkpoint).get("context_checkpoint",{})
                                     if isinstance(checkpoint_state,dict) and checkpoint_state.get("due"):
                                         out=("Blocked before dispatch: the active request is near its selected input budget. "
@@ -2735,7 +2807,7 @@ class AgentEngine:
                                             out=self.mcp_call(name,args)
                                     elif not self._approval(name,args):out="Denied by user."
                                     else:out=self.mcp_call(name,args)
-                                else:out=self.state["registry"].run(name,args,
+                                elif not repeat_blocked:out=self.state["registry"].run(name,args,
                                     output_byte_budget=self._tool_output_budget(request_messages,assistant_tool_message,batch_tool_messages,tools,checkpoint,name,len(calls)-index),
                                     event_callback=registry.event)
                             except RequestCancelled:out="Cancelled before the workspace file operation completed."

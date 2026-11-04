@@ -5,6 +5,7 @@ This repository contains the Python agent loop and local runtime/tooling service
 ## Scope
 
 - Iterative model/tool/model orchestration with Ollama and optional llama.cpp adapters.
+- State-aware continuation and one-action review for a repeated identical tool call that returns the same result; this guards a stuck action without imposing a task-length or runtime cap.
 - Project context assembly, instruction/skill discovery, request-only compaction, and workspace tools, including case-aware literal/regex search with per-match timeout reporting. When the selected input budget is tight, the request keeps core project operations available and discovers additional built-in/MCP schemas on demand; selected context and output values are not lowered.
 - Large-file construction through ordered append chunks, resumable reads/results, and progress-based implementation continuation with durable incomplete status when the model stops advancing.
 - Approval-aware file and command operations, MCP support, run events, and session persistence. Windows shell commands can select PowerShell (the default) or CMD; both remain non-interactive, receive end-of-input on stdin, stream output, and follow the same approval and cancellation policy.

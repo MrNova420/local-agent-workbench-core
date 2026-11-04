@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-04 OpenCode-inspired repeated-action review (verification queued)
+
+- Compared the current Workbench agent loop with OpenCode's V1 prompt/processor split and its exact repeated-tool guard. Workbench already has state-aware continuation for prose, saved task checkpoints, tool-result recovery, steering at request boundaries, and no task-duration or total-iteration cap; it did not inspect repeated structured tool calls.
+- Added a one-action human review after the same tool, exact arguments, and unchanged result recur across calls. A declined repeat stays blocked for that exact action until the user adds new same-task guidance; other tools and work remain available. Approval is one attempt even under Auto mode. Duplicate identical calls in one model batch are serialized so this guard sees prior results. This is not a task, token, or runtime limit.
+- Added engine regressions for approve-once, decline-with-alternate-work, and repeated actions in the same task. Tests remain queued for the grouped verification pass; no suite or model was run for this change.
+
 ## 2026-11-04 cancellable, deadline-free Git inspection (verification queued)
 
 - Replaced the built-in Git tools' hidden 10-second subprocess deadline with a cancellable wait that preserves complete stdout/stderr and follows the existing Windows Job Object/process-tree cancellation path. Git status, diff, and log can now finish on large/slow workspaces; the app Cancel event remains the stop mechanism.
