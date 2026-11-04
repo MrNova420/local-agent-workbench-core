@@ -162,9 +162,23 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
 
     monkeypatch.setattr(desktop_engine, "build_prompt_manifest", measured_manifest)
     engine = AgentEngine(tmp_path, event=events.append, task_intent="discuss")
+    engine.state["registry"].plan=[{"title":"Keep current plan","status":"pending"}]
+    original_plan=list(engine.state["registry"].plan)
+    responses=iter([
+        {"message":{"role":"assistant","tool_calls":[{"id":"premature-write","type":"function",
+          "function":{"name":"write_file","arguments":{"path":"before-checkpoint.txt","content":"not written"}}}]}},
+        {"message":{"role":"assistant","tool_calls":[{"id":"checkpoint","type":"function",
+          "function":{"name":"update_plan","arguments":{"progress_checkpoint":{
+              "verified_findings":["The repository review is complete."],
+              "completed_work":["Inspected the project."],"pending_work":["Continue the requested review."],
+              "next_action":"Continue from the current review findings."}}}}]}},
+        {"message":{"role":"assistant","content":"Review complete."}},
+    ])
+    calls=[]
     def finish(state, messages, *_args):
         dispatched.extend(messages)
-        return {"message": {"role": "assistant", "content": "Review complete."}}
+        calls.append(messages)
+        return next(responses)
     engine.runtime.stream = finish
 
     engine.run("Review the current project without making changes.")
@@ -175,3 +189,31 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
     assert manifest["context_checkpoint_due"] is True
     assert manifest["context_checkpoint_threshold_ratio"] == 0.70
     assert manifest["context_checkpoint_ratio"] == 0.71
+    assert len(calls)==3
+    task=engine.state["task_checkpoint"]["current"]
+    assert task["context_checkpoint"]["acknowledged"] is True
+    assert task["context_checkpoint"]["summary"]["next_action"]=="Continue from the current review findings."
+    assert task["plan"]==original_plan
+    assert task["task_mode"]=="discussion"
+    assert not (tmp_path/"before-checkpoint.txt").exists()
+    assert any(event.get("type")=="progress_checkpoint" for event in events)
+
+
+def test_context_checkpoint_repeat_stops_with_recoverable_checkpoint_missing(tmp_path, monkeypatch):
+    import desktop_engine
+
+    events=[]
+    monkeypatch.setattr(desktop_engine,"build_prompt_manifest",lambda messages,tools,**kwargs:{
+        "request_index":kwargs["request_index"],"estimated_request_input_tokens":710,"input_budget":1000,
+        "configured_context":kwargs["context"],"maximum_output_tokens":kwargs["output_tokens"],"messages":[]})
+    engine=AgentEngine(tmp_path,event=events.append,task_intent="discuss")
+    calls=[]
+    engine.runtime.stream=lambda *_args:(calls.append(True) or {"message":{"role":"assistant","content":"I am still reviewing."}})
+
+    engine.run("Review the current project without making changes.")
+
+    terminal=next(event for event in events if event.get("type")=="complete")
+    assert len(calls)==2
+    assert terminal["workflowOutcome"]=="checkpoint_missing"
+    assert terminal["verification"]["status"]=="checkpoint_missing"
+    assert "transcript, plan, and completed operations are preserved" in terminal["verification"]["incomplete_reason"]
