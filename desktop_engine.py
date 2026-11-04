@@ -642,7 +642,7 @@ class ToolRegistry:
             self.plan_source=saved_plan_source
         self.task_intent="auto"
         self.conversation_messages:list[dict[str,Any]]=[]
-        self.read_output_byte_budget=max(512,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
+        self.read_output_byte_budget=max(0,int(read_output_token_budget)*2) if read_output_token_budget is not None else None
         read_budget_description="Return the complete requested result when it fits the remaining request context. If the current request or a batch cannot fit it, return a clearly marked continuation cursor; do not silently omit material."
         self.skill_rows=ProjectKnowledge(self.workspace.root).skills(sources=self.skill_sources) if self.skills_enabled else []
         self.schemas = [

@@ -558,3 +558,8 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 - `write_file`, `edit_file`, and `append_file` now emit cumulative UTF-8 bytes-written progress as each encoded I/O chunk completes. Normal and parallel-safe file operations attach the progress event to their operation ID, allowing the existing sidecar activity record and chat/worksheet surfaces to display it.
 - Progress delivery is observational: a UI/event callback exception cannot fail or partially apply a filesystem operation. Completion still comes from the saved `tool_done` result; progress is not treated as proof of a completed write.
 - Added queued Unicode multi-chunk write/append progress coverage. No tests or UI acceptance were run; verify event association, rendering, cancellation, and final results in the grouped engine/sidecar/renderer/package acceptance batch.
+
+# Exact small tool-result budgets (2026-11-04)
+
+- Removed the unconditional 512-byte floor from the fallback read-result budget. When a request budget is supplied, the engine now derives the fallback byte budget directly from it, including very small values; it does not spend more context than the computed allowance just to satisfy a minimum excerpt size.
+- Added a queued regression for a one-token tool-result allowance. No inference setting changed and no test was run; include this case in the grouped context/tool-budget suite.

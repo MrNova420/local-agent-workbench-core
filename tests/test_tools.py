@@ -463,6 +463,10 @@ class ToolTests(unittest.TestCase):
     self.assertEqual(engine.state['context'],65536)
     self.assertEqual(engine.state['max_tokens'],8192)
    self.assertEqual(engine.state['registry'].read_output_byte_budget,114688)
+ def test_small_remaining_tool_budget_is_not_raised_to_an_arbitrary_minimum(self):
+  with tempfile.TemporaryDirectory() as t:
+   tools=ToolRegistry(Workspace(t),lambda *_:True,read_output_token_budget=1)
+   self.assertEqual(tools.read_output_byte_budget,2)
 
  def test_file_listing_pages_within_context_budget(self):
    import re
