@@ -79,6 +79,38 @@ def test_search_ignores_cross_origin_next_links_and_rejects_external_cursor(tmp_
         catalog.search_page("model", cursor="https://attacker.example/api/models?cursor=private")
 
 
+def test_repo_file_pages_continue_within_the_selected_revision(tmp_path):
+    next_url = "https://huggingface.co/api/models/org/model/tree/abc123?recursive=true&expand=true&cursor=opaque"
+    first_response = FakeResponse(b'[{"path":"model.gguf","size":12}]')
+    first_response.headers = Message()
+    first_response.headers["Link"] = f'<{next_url}>; rel="next"'
+    second_response = FakeResponse(b'[{"path":"tokenizer.json","size":3}]')
+    second_response.headers = Message()
+    first_opener, second_opener = Mock(), Mock()
+    first_opener.open.return_value = first_response
+    second_opener.open.return_value = second_response
+    catalog = HuggingFaceCatalog(tmp_path)
+
+    with patch("urllib.request.build_opener", side_effect=[first_opener, second_opener]):
+        first = catalog.repo_files_page("org/model", "abc123")
+        second = catalog.repo_files_page("org/model", "abc123", cursor=first["next_cursor"])
+
+    assert first["files"][0]["format"] == "gguf"
+    assert first["next_cursor"] == next_url
+    assert second["files"][0]["path"] == "tokenizer.json"
+    assert second["next_cursor"] is None
+
+
+def test_repo_file_cursor_cannot_switch_repository_or_revision(tmp_path):
+    catalog = HuggingFaceCatalog(tmp_path)
+    for cursor in (
+        "https://huggingface.co/api/models/org/other/tree/abc123?cursor=x",
+        "https://huggingface.co/api/models/org/model/tree/other-revision?cursor=x",
+    ):
+        with pytest.raises(ValueError, match="outside the selected repository revision"):
+            catalog.repo_files_page("org/model", "abc123", cursor=cursor)
+
+
 def test_download_uses_auth_header_pins_revision_and_reports_progress(tmp_path):
     catalog = HuggingFaceCatalog(tmp_path, token="hf-secret")
     response = FakeResponse(b"gguf-data")

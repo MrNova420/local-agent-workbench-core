@@ -121,13 +121,22 @@ class HuggingFaceCatalog:
             raise ValueError("Repository file path is invalid.")
         return "/".join(urllib.parse.quote(part, safe="") for part in path.parts)
 
-    def repo_files(self, repo: str, revision: str) -> list[dict[str, Any]]:
+    def repo_files_page(self, repo: str, revision: str, cursor: str | None = None) -> dict[str, Any]:
         repo_path = self._repo_path(repo)
         revision = revision.strip()
         if not revision or revision in {".", ".."}:
             raise ValueError("Repository revision is required.")
-        url = f"{self.endpoint}/api/models/{repo_path}/tree/{urllib.parse.quote(revision, safe='')}?recursive=true&expand=true"
-        rows = self._json(url)
+        expected_path = f"/api/models/{repo_path}/tree/{urllib.parse.quote(revision, safe='')}"
+        if cursor is None:
+            url = f"{self.endpoint}{expected_path}?recursive=true&expand=true"
+        else:
+            parsed = urllib.parse.urlsplit(cursor)
+            endpoint = urllib.parse.urlsplit(self.endpoint)
+            if ((parsed.scheme.casefold(), parsed.netloc.casefold()) !=
+                    (endpoint.scheme.casefold(), endpoint.netloc.casefold()) or parsed.path != expected_path):
+                raise ValueError("Hugging Face continuation link is outside the selected repository revision.")
+            url = cursor
+        rows, headers = self._json_with_headers(url)
         if not isinstance(rows, list):
             raise RuntimeError("Hugging Face returned an unexpected repository file list.")
         files = []
@@ -141,7 +150,22 @@ class HuggingFaceCatalog:
             size = row.get("size", lfs.get("size"))
             files.append({"path": name, "format": fmt, "size": int(size) if isinstance(size, int) else None,
                           "is_lfs": bool(lfs), "revision": revision})
-        return files
+        next_url = None
+        link_header = headers.get("Link", "") if headers is not None else ""
+        for match in re.finditer(r"<([^>]+)>\s*((?:;[^,]*)+)", link_header):
+            if re.search(r"(?:^|;)\s*rel\s*=\s*\"?next\"?(?:\s*;|$)", match.group(2), re.IGNORECASE):
+                candidate = urllib.parse.urljoin(self.endpoint + "/", match.group(1))
+                parsed = urllib.parse.urlsplit(candidate)
+                endpoint = urllib.parse.urlsplit(self.endpoint)
+                if ((parsed.scheme.casefold(), parsed.netloc.casefold()) ==
+                        (endpoint.scheme.casefold(), endpoint.netloc.casefold()) and parsed.path == expected_path):
+                    next_url = candidate
+                break
+        return {"files": files, "next_cursor": next_url}
+
+    def repo_files(self, repo: str, revision: str) -> list[dict[str, Any]]:
+        """Compatibility helper for callers that only need the first tree page."""
+        return self.repo_files_page(repo, revision)["files"]
 
     def download(self, repo: str, revision: str, filename: str, cancel: threading.Event,
                  emit: Callable[[dict[str, Any]], None]) -> Path:
