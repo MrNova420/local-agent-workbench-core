@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-04 adaptive no-progress continuation (verification queued)
+
+- Changed implementation continuation from a state-only signature—which stopped after one no-progress response regardless of new assistant content—to a signature combining durable host/project evidence with the complete user-facing response and emitted reasoning. Different responses can continue toward a structured action with no fixed retry or runtime ceiling; an exact repeated response at unchanged saved state ends as implementation-incomplete instead of cycling indefinitely. Plan expansion still cannot masquerade as project progress, and the separate plan-only loop handling is unchanged.
+- Updated regressions for multi-response reasoning leading into write, inspection, and completion, exact repeated-response cycles, and repeated planning prose after plan expansion. Added direct signature coverage for identical response/state, distinct reasoning, and changed host evidence. These tests are authored and queued; no tests, typecheck, package, or model run has been performed for this change.
+- Next integration steps: commit and push the engine source, update the paired Electron engine pin and synchronized readiness/backlog records, then continue the core implementation before the grouped verification batch.
+
 ## 2026-11-03 Automatic task classification handoff
 
 - A fresh Automatic task that receives prose without any structured operation now gets one state-based prompt to classify the request as discussion, explicit `plan_only`, or expandable intermediate plan/implementation. Identical unchanged state then ends with the existing saved no-action result; emitted response/reasoning remains in history and cannot keep the task looping. The classification trigger is limited to before any tool operation, so it cannot add extra model requests after denied, failed, or successful tools.

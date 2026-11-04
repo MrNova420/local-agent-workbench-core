@@ -429,7 +429,7 @@ def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str,
                 or _plan_requests_implementation(task_mode, plan_source, plan))
 
 def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]]) -> str:
-    """Compare observable progress, not elapsed time or a fixed continuation count."""
+    """Identify durable host/project progress, excluding plan wording and elapsed time."""
     result_driven_reads = {
         "list_files", "search_files", "read_file", "read_operation_result",
         "read_task_checkpoint", "read_conversation_history", "git_status", "git_diff", "git_log",
@@ -467,11 +467,6 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
         {key: copy.deepcopy(item[key]) for key in ("id", "instruction", "status") if key in item}
         for item in user_updates if isinstance(item, dict)
     ] if isinstance(user_updates, list) else []
-    # Assistant prose and reasoning are saved in the canonical transcript, but
-    # they do not prove that task state advanced. Counting each new thought as
-    # progress let reasoning-only responses perpetually renew the continuation
-    # loop without updating the plan, inspecting results, or using a project
-    # tool. Durable progress is represented by the checkpoint and host events.
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
         "plan_source": task.get("plan_source", "workbench"),
@@ -484,6 +479,22 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
     }
     serialized = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(serialized.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _no_progress_response_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]],
+                                    message: dict[str, Any]) -> str:
+    """Detect an exact response cycle only while durable project/host state is unchanged.
+
+    Distinct model reasoning can take multiple response boundaries before it forms
+    a structured action. Repeated identical responses at the same saved state are
+    the observable cycle signal; prose alone never counts as completed work.
+    """
+    response = json.dumps({
+        "content": message.get("content", ""),
+        "thinking": message.get("thinking", ""),
+    }, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+    material = f"{_continuation_progress_signature(task, verification_steps)}\0{response}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _provider_response_was_truncated(result: dict[str, Any]) -> bool:
@@ -2193,7 +2204,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;seen_continuation_signatures=set();last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        start=time.monotonic();request_index=0;seen_no_progress_responses=set();last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
         implementation_requested=(
             True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
             bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
@@ -2359,13 +2370,12 @@ class AgentEngine:
                         and not implementation_requested
                         and not mutation_attempted and not completed_project_change and not command_side_effects_possible
                     )
-                    # New prose or private reasoning alone cannot keep an
-                    # unclassified Automatic task cycling. Those messages are
-                    # still saved; only a structured mode/operation change
-                    # advances this classification state.
-                    progress_signature=_continuation_progress_signature(checkpoint_state, verification_steps)
-                    if (unfinished or missing_final_response or auto_intent_unclassified) and progress_signature not in seen_continuation_signatures:
-                        seen_continuation_signatures.add(progress_signature)
+                    # Keep the task moving across distinct reasoning/final
+                    # responses. A repeat is only considered a cycle when both
+                    # the complete response and saved host/project state match.
+                    response_signature=_no_progress_response_signature(checkpoint_state,verification_steps,msg)
+                    if (unfinished or missing_final_response or auto_intent_unclassified) and response_signature not in seen_no_progress_responses:
+                        seen_no_progress_responses.add(response_signature)
                         if auto_intent_unclassified:
                             continuation=(
                                 "Automatic task intent is not classified in saved task state yet. Use update_plan to mark "
@@ -2400,7 +2410,7 @@ class AgentEngine:
                         self.event({"type":"phase","phase":"continuing","elapsed":time.monotonic()-start,"reason":reason})
                         continue
                     if unfinished:
-                        blocker="The model returned without completing the implementation and made no new observable tool, plan, or verification progress after the continuation request. Review the saved plan and resume from the next action; no runtime deadline or token setting was changed."
+                        blocker="The model repeated the same response without completing the implementation or adding saved project/host progress. Review the saved plan and resume from the next action; no runtime deadline or token setting was changed."
                         record_blocker(checkpoint,blocker)
                         verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
                             command_side_effects_possible,post_change_inspection)

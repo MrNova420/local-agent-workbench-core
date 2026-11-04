@@ -1,5 +1,5 @@
 import desktop_engine
-from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _plan_has_open_work, _plan_requests_implementation, _restored_plan_requests_implementation, _saved_plan_source, _verification_report, _workflow_outcome, agent_system_prompt
+from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _no_progress_response_signature, _plan_has_open_work, _plan_requests_implementation, _restored_plan_requests_implementation, _saved_plan_source, _verification_report, _workflow_outcome, agent_system_prompt
 from task_checkpoint import begin_task, initial_task_plan
 
 
@@ -266,6 +266,21 @@ def test_replanning_without_new_evidence_does_not_count_as_progress():
                                                          "result_fingerprint": "source changed"}]}
     assert _continuation_progress_signature({"task_mode": "implement"}, []) != _continuation_progress_signature(
         read, [])
+
+
+def test_no_progress_response_signature_distinguishes_new_reasoning_and_host_state():
+    state = {"task_mode": "implement", "operations": []}
+    first = {"role": "assistant", "content": "I will inspect the package layout.", "thinking": "First thought."}
+    same = {"role": "assistant", "content": "I will inspect the package layout.", "thinking": "First thought."}
+    next_response = {"role": "assistant", "content": "The entry point belongs in src.", "thinking": "Second thought."}
+    changed_state = {"task_mode": "implement", "operations": [{
+        "name": "read_file", "status": "completed", "result_fingerprint": "package contents",
+    }]}
+
+    first_signature = _no_progress_response_signature(state, [], first)
+    assert first_signature == _no_progress_response_signature(state, [], same)
+    assert first_signature != _no_progress_response_signature(state, [], next_response)
+    assert first_signature != _no_progress_response_signature(changed_state, [], first)
 
 
 def test_identical_read_results_do_not_count_as_new_progress_from_changed_arguments():

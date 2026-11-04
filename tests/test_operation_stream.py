@@ -1048,7 +1048,7 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
             self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])
 
-    def test_reasoning_only_responses_are_saved_but_do_not_keep_implementation_looping(self):
+    def test_distinct_reasoning_responses_can_reach_implementation_without_a_retry_cap(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
             engine = AgentEngine(root, access="edit", event=events.append)
@@ -1078,16 +1078,15 @@ class OperationStreamTests(unittest.TestCase):
             engine.run("Implement a small project file.")
 
             completion = next(event for event in events if event.get("type") == "complete")
-            self.assertEqual(len(calls), 3)
-            self.assertFalse((Path(root) / "app.py").exists())
+            self.assertEqual(len(calls), 7)
+            self.assertTrue((Path(root) / "app.py").is_file())
             saved = engine.state["registry"].conversation_messages
             self.assertEqual([message["content"] for message in saved if message.get("role") == "assistant"], [
                 "", "The entry point must match the existing package layout.",
-                "I found the package layout; now I can write its entry point.",
+                "I found the package layout; now I can write its entry point.", "", "", "", "The file is implemented and inspected.",
             ])
-            self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
-            self.assertIn("no new observable tool, plan, or verification progress",
-                          completion["verification"]["incomplete_reason"])
+            self.assertEqual(completion["workflowOutcome"], "inspected")
+            self.assertEqual(completion["verification"]["status"], "inspected")
 
     def test_repeated_response_cycle_is_detected_across_intervening_reasoning(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1105,8 +1104,9 @@ class OperationStreamTests(unittest.TestCase):
             engine.run("Implement the requested project change.")
 
             completion = next(event for event in events if event.get("type") == "complete")
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 3)
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
+            self.assertIn("repeated the same response", completion["verification"]["incomplete_reason"])
 
     def test_repeated_empty_searches_with_different_queries_do_not_fake_progress(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1159,10 +1159,10 @@ class OperationStreamTests(unittest.TestCase):
             engine.run("Implement a small project change.")
 
             completion = next(event for event in events if event.get("type") == "complete")
-            self.assertEqual(len(calls), 4)
+            self.assertEqual(len(calls), 5)
             self.assertEqual(len(engine.state["registry"].plan), 2)
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
-            self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])
+            self.assertIn("repeated the same response", completion["verification"]["incomplete_reason"])
 
     def test_repeated_plan_only_tool_calls_return_to_implementation_then_stop_if_unchanged(self):
         with tempfile.TemporaryDirectory() as root:
