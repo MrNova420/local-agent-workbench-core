@@ -549,6 +549,6 @@ The linked [source audit and redesign plan](docs/AUDIT_AND_REDESIGN_PLAN.md) is 
 
 # Cancellable large-file writes (2026-11-04)
 
-- `write_file` and `edit_file` now stream replacement bytes to a same-directory temporary file in bounded I/O chunks, checking the active request cancellation between chunks and before atomic replace. Cancellation removes the temporary file and leaves the prior destination intact.
-- `append_file` uses the same internal chunk size and rolls back the appended bytes if cancellation arrives before the append is committed. The chunk size only controls cancellation responsiveness and I/O; it is not a file-size, line-count, model-context, output, or runtime limit.
+- `write_file` and `edit_file` now incrementally encode replacement text into a same-directory temporary file, checking active request cancellation between I/O chunks and before atomic replace. Cancellation removes the temporary file and leaves the prior destination intact; large content no longer needs a second full-size UTF-8 byte buffer.
+- `append_file` incrementally encodes text and rolls back the appended bytes if cancellation arrives before the append is committed. The internal chunk size only controls memory use, cancellation responsiveness, and I/O; it is not a file-size, line-count, model-context, output, or runtime limit.
 - Added queued regressions for cancellation after partial replacement and partial append, asserting preservation of the original file and cleanup/rollback. Tests were intentionally not run as part of the current implementation batch; include them in final grouped engine/sidecar/app verification.

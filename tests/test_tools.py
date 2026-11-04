@@ -501,7 +501,7 @@ class ToolTests(unittest.TestCase):
      self.assertIn('scan capped',incomplete.casefold())
  def test_write_file_accepts_files_over_old_cap(self):
   with tempfile.TemporaryDirectory() as t:
-   content='x'*600000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
+   content='雪🙂'*300000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
    self.assertEqual(tools.run('write_file',{'path':'large.txt','content':content}),'Wrote large.txt')
    self.assertEqual((Path(t)/'large.txt').read_text(),content)
  def test_cancelled_chunked_file_replacement_preserves_old_file_and_removes_temporary_file(self):

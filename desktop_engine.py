@@ -26,7 +26,7 @@ CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 PROJECT_LIST_SCAN_LIMIT = None
-_FILE_IO_CHUNK_BYTES = 1024 * 1024
+_FILE_IO_CHUNK_SIZE = 1024 * 1024
 _APPEND_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 _APPEND_LOCKS_GUARD = threading.Lock()
 _CONTINUATION_GUIDANCE_MARKER = "\n\n[Current Workbench continuation]\n"
@@ -1185,14 +1185,14 @@ class ToolRegistry:
             if name == "write_file":
                 content=args["content"]
                 if not isinstance(content,str):return "Invalid content: expected text."
-                self._atomic_write(path,content.encode("utf-8"),self.cancel_event)
+                self._atomic_write(path,content,self.cancel_event)
                 return "Wrote " + args["path"]
             if name == "append_file":
                 content=args["content"]
                 if not isinstance(content,str):return "Invalid content: expected text."
                 if not path.is_file():return f"Cannot append to {args['path']}: the project file does not exist. Create it with write_file first."
                 if not content:return "No change: append content is empty."
-                self._append_with_rollback(path,content.encode("utf-8"),self.cancel_event)
+                self._append_with_rollback(path,content,self.cancel_event)
                 return "Appended " + args["path"]
             old_text=args.get("old_text");new_text=args.get("new_text");replace_all=args.get("replace_all",False)
             if not isinstance(old_text,str) or not old_text:return "Invalid old_text: provide a non-empty exact string to replace."
@@ -1332,21 +1332,29 @@ class ToolRegistry:
             if process_job is not None:
                 process_job.close()
     @staticmethod
-    def _atomic_write(path:Path,data:bytes,cancel_event:threading.Event|None=None)->None:
+    def _encoded_file_chunks(data:bytes|str):
+        """Encode text incrementally so large model-produced files need no duplicate full-size byte buffer."""
+        for offset in range(0,len(data),_FILE_IO_CHUNK_SIZE):
+            chunk=data[offset:offset+_FILE_IO_CHUNK_SIZE]
+            yield chunk if isinstance(chunk,bytes) else chunk.encode("utf-8")
+    @staticmethod
+    def _atomic_write(path:Path,data:bytes|str,cancel_event:threading.Event|None=None)->None:
         path.parent.mkdir(parents=True,exist_ok=True)
         temp_path=None
         try:
             with tempfile.NamedTemporaryFile(mode="wb",dir=path.parent,prefix=f".{path.name}.",suffix=".tmp",delete=False) as handle:
                 temp_path=Path(handle.name)
-                offset=0
-                while offset<len(data):
+                for chunk in ToolRegistry._encoded_file_chunks(data):
                     if cancel_event is not None and cancel_event.is_set():
                         raise RequestCancelled("File replacement cancelled before it was committed.")
-                    end=min(offset+_FILE_IO_CHUNK_BYTES,len(data))
-                    written=handle.write(data[offset:end])
-                    if written is None or written<=0:
-                        raise OSError("The file system accepted zero bytes for a replacement write.")
-                    offset+=written
+                    offset=0
+                    while offset<len(chunk):
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise RequestCancelled("File replacement cancelled before it was committed.")
+                        written=handle.write(chunk[offset:offset+_FILE_IO_CHUNK_SIZE])
+                        if written is None or written<=0:
+                            raise OSError("The file system accepted zero bytes for a replacement write.")
+                        offset+=written
                 if cancel_event is not None and cancel_event.is_set():
                     raise RequestCancelled("File replacement cancelled before it was committed.")
                 handle.flush();os.fsync(handle.fileno())
@@ -1356,7 +1364,7 @@ class ToolRegistry:
                 try:temp_path.unlink(missing_ok=True)
                 except OSError:pass
     @staticmethod
-    def _append_with_rollback(path:Path,data:bytes,cancel_event:threading.Event|None=None)->None:
+    def _append_with_rollback(path:Path,data:bytes|str,cancel_event:threading.Event|None=None)->None:
         # Appending a chunk by copying/replacing the whole file turns repeated
         # model writes into quadratic disk I/O and invalidates readers/watchers.
         # Serialize in-process appends, verify the target did not change between
@@ -1375,12 +1383,17 @@ class ToolRegistry:
                     raise RuntimeError(f"{path.name} changed before the append began; reread it before retrying.")
                 original_size=after.st_size
                 try:
-                    while written<len(data):
+                    for chunk in ToolRegistry._encoded_file_chunks(data):
                         if cancel_event is not None and cancel_event.is_set():
                             raise RequestCancelled("Append cancelled before the complete chunk was written.")
-                        count=os.write(descriptor,data[written:written+_FILE_IO_CHUNK_BYTES])
-                        if count<=0:raise OSError("The file system accepted zero bytes for an append write.")
-                        written+=count
+                        chunk_offset=0
+                        while chunk_offset<len(chunk):
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise RequestCancelled("Append cancelled before the complete chunk was written.")
+                            end=min(chunk_offset+_FILE_IO_CHUNK_SIZE,len(chunk))
+                            count=os.write(descriptor,chunk[chunk_offset:end])
+                            if count<=0:raise OSError("The file system accepted zero bytes for an append write.")
+                            written+=count;chunk_offset+=count
                     if cancel_event is not None and cancel_event.is_set():
                         raise RequestCancelled("Append cancelled before the complete chunk was committed.")
                     os.fsync(descriptor)
