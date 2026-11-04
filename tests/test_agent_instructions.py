@@ -116,6 +116,8 @@ def test_engine_injects_selected_approval_mode_and_truthful_command_schemas(tmp_
 
     system = requests[0][0]["content"]
     schemas = engine.state["registry"].schemas
+    update_plan = next(schema["function"]["parameters"] for schema in schemas
+                       if schema["function"]["name"] == "update_plan")
     command_descriptions = " ".join(
         schema["function"]["description"] for schema in schemas
         if schema["function"]["name"] in {"run_command", "run_shell"}
@@ -124,3 +126,4 @@ def test_engine_injects_selected_approval_mode_and_truthful_command_schemas(tmp_
     assert "eligible actions run automatically" in system.casefold()
     assert "subject to the configured host approval mode" in command_descriptions
     assert "always requires approval" not in command_descriptions.casefold()
+    assert update_plan["properties"]["progress_checkpoint"]["additionalProperties"] is False

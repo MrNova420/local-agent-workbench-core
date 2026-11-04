@@ -54,7 +54,7 @@ class TelemetryWindowsTests(unittest.TestCase):
     @patch("subprocess.Popen", wraps=subprocess.Popen)
     def test_approved_command_suppresses_console_window(self, popen):
         with tempfile.TemporaryDirectory() as root:
-            registry = ToolRegistry(Workspace(Path(root)), lambda *_: True)
+            registry = ToolRegistry(Workspace(Path(root)), lambda *_: True, skills_enabled=False)
             registry.run(
                 "run_command",
                 {"argv": [sys.executable, "-c", "pass"], "timeout_seconds": 10},
@@ -82,7 +82,7 @@ class TelemetryWindowsTests(unittest.TestCase):
             def start(argv, **kwargs):
                 return Process(str(Path(root).resolve()).encode() if "--show-toplevel" in argv else b"")
             popen.side_effect = start
-            registry = ToolRegistry(Workspace(Path(root)), lambda *_: True)
+            registry = ToolRegistry(Workspace(Path(root)), lambda *_: True, skills_enabled=False)
             registry.run("git_diff", {})
 
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | (0x00000004 if os.name == "nt" else 0)

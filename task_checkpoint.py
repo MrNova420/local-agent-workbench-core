@@ -245,7 +245,8 @@ def record_operation(checkpoint: dict[str, Any], event: dict[str, Any], argument
     )
     operation_arguments = arguments if arguments is not None else event.get("arguments")
     if operation_arguments is not None:
-        encoded_arguments = json.dumps(operation_arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        encoded_arguments = json.dumps({"name": row["name"], "arguments": operation_arguments},
+                                       ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
         row["arguments_fingerprint"] = hashlib.sha256(encoded_arguments.encode("utf-8", errors="surrogatepass")).hexdigest()
     if "result" in event:
         row["result_fingerprint"] = hashlib.sha256(str(event["result"]).encode("utf-8", errors="surrogatepass")).hexdigest()

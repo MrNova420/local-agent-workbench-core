@@ -48,7 +48,7 @@ def test_openai_stream_preserves_usage_reasoning_and_tool_call_deltas():
     assert result["eval_duration"] == 4_000_000_000
     assert result["done_reason"] == "tool_calls"
     assert next(event for event in events if event["type"] == "request_complete")["provider_done_reason"] == "tool_calls"
-    progress = next(event for event in events if event["type"] == "tool_call_progress")
+    progress = [event for event in events if event["type"] == "tool_call_progress"][-1]
     assert progress["tool_name"] == "read_file"
     assert progress["argument_characters"] > 0
     assert progress["argument_preview"] == '{"path":"a.py"}'

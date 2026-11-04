@@ -12,9 +12,11 @@ def test_retry_metadata_uses_http_status_and_retry_after_not_error_wording():
 
     assert _inference_retry_metadata(error) == (503, 2.0, True)
 
-    headers["Retry-After"] = "NaN"
-    assert _inference_retry_metadata(HTTPError("http://localhost/api/chat", 503, "different wording", headers, None)) == (503, None, True)
-    assert _inference_retry_metadata(HTTPError("http://localhost/api/chat", 500, "context allocation failed", headers, None)) == (500, None, False)
+    invalid_headers = Message()
+    invalid_headers["Retry-After"] = "NaN"
+    assert _inference_retry_metadata(HTTPError("http://localhost/api/chat", 503, "different wording", invalid_headers, None)) == (503, None, True)
+    context_headers = Message()
+    assert _inference_retry_metadata(HTTPError("http://localhost/api/chat", 500, "context allocation failed", context_headers, None)) == (500, None, False)
 
 
 def test_transient_provider_failure_retries_same_request_until_response(tmp_path: Path):

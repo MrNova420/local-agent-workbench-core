@@ -377,7 +377,7 @@ class ToolTests(unittest.TestCase):
     calls.append(argv)
     return (0,str(root),'') if '--show-toplevel' in argv else (0,'commit page\n','')
    tools._git_capture=capture
-   self.assertEqual(tools.run('git_log',{'limit':2500,'offset':320}), 'commit page\n')
+   self.assertEqual(tools.run('git_log',{'limit':2500,'offset':320}).strip(), 'commit page')
    self.assertEqual(calls[1],['git','log','--max-count=2501','--skip=320','--oneline','--decorate'])
 
  def test_git_log_page_reports_next_offset_only_when_more_history_exists(self):
@@ -509,7 +509,7 @@ class ToolTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as t:
    content='雪🙂'*300000;tools=ToolRegistry(Workspace(t,'edit'),lambda *_:True)
    self.assertEqual(tools.run('write_file',{'path':'large.txt','content':content}),'Wrote large.txt')
-   self.assertEqual((Path(t)/'large.txt').read_text(),content)
+   self.assertEqual((Path(t)/'large.txt').read_text(encoding='utf-8'),content)
  def test_large_file_write_and_append_emit_cumulative_utf8_progress(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t);content='雪🙂'*300000;events=[]

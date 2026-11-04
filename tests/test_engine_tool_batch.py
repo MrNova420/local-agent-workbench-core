@@ -149,7 +149,7 @@ class EngineToolBatchTests(unittest.TestCase):
             assert uncertain["status"] == "uncertain"
             assert checkpoint["uncertain_operation"]["name"] == "mcp__calendar__create_event"
             assert checkpoint["status"] == "stopped"
-            assert checkpoint["outcome"] == "blocked"
+            assert checkpoint["workflow_outcome"] == "blocked"
             assert checkpoint["verification"]["status"] == "blocked"
 
     def test_mcp_retry_after_uncertainty_requires_fresh_approval_even_in_auto_mode(self):
@@ -186,7 +186,7 @@ class EngineToolBatchTests(unittest.TestCase):
             retry_decision = next(row for row in decisions if row["kind"] == "uncertain_mcp_retry")
             assert retry_decision["decision"] == "approved"
             assert retry_decision["approval_scope"] == "one_action"
-            assert engine.state["task_checkpoint"]["current"]["workflow_outcome"] == "blocked"
+            assert engine.state["task_checkpoint"]["current"]["workflow_outcome"] == "discussion"
             assert "possible duplicate" in next(row for row in reversed(history) if row.get("role") == "assistant")["content"]
 
     def test_finish_after_operation_drains_already_started_read_batch_before_stopping(self):

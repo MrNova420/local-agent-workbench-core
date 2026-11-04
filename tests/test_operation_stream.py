@@ -973,17 +973,21 @@ class OperationStreamTests(unittest.TestCase):
             responses = [
                 {"message": {"role": "assistant", "content": "I can explain the project."}},
                 {"message": {"role": "assistant", "content": "It contains application code and configuration."}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "classify", "function": {"name": "update_plan", "arguments": {"task_mode": "discussion"}}}
+                ]}},
+                {"message": {"role": "assistant", "content": "The project contains application code and configuration."}},
             ]
             engine = AgentEngine(root, access="edit", task_intent="auto", event=events.append)
             engine.runtime.stream = lambda _state, messages, *_args: (requests.append(copy.deepcopy(messages)) or responses.pop(0))
 
             engine.run("What does this project do?")
 
-            self.assertEqual(len(requests), 2)
+            self.assertEqual(len(requests), 4)
             self.assertIn("Automatic task intent is not classified", requests[1][0]["content"])
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(completion["workflowOutcome"], "no_action")
-            self.assertFalse(any(event.get("type") == "tool_start" for event in events))
+            self.assertEqual([event.get("name") for event in events if event.get("type") == "tool_start"], ["update_plan"])
 
     def test_automatic_prose_plan_must_classify_then_implement_before_completion(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1046,7 +1050,7 @@ class OperationStreamTests(unittest.TestCase):
             completion = next(event for event in events if event.get("type") == "complete")
             self.assertEqual(len(calls), 3)
             self.assertEqual(completion["workflowOutcome"], "implementation_incomplete")
-            self.assertIn("no new observable tool, plan, or verification progress", completion["verification"]["incomplete_reason"])
+            self.assertIn("repeated the same response without completing the implementation", completion["verification"]["incomplete_reason"])
 
     def test_distinct_reasoning_responses_can_reach_implementation_without_a_retry_cap(self):
         with tempfile.TemporaryDirectory() as root:

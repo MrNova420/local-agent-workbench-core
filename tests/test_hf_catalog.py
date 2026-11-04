@@ -33,7 +33,7 @@ def test_search_and_repo_files_keep_revision_and_format_metadata(tmp_path):
         {"path": "config.json", "size": 20},
         {"path": "model-00001-of-00002.safetensors", "size": 200},
     ]
-    with patch.object(catalog, "_json", side_effect=[search, tree]):
+    with patch.object(catalog, "_json_with_headers", side_effect=[(search, {}), (tree, {})]):
         rows = catalog.search("model")
         files = catalog.repo_files("org/model", "abc123")
     assert rows[0]["revision"] == "abc123"
