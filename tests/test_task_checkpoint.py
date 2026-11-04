@@ -327,7 +327,7 @@ def test_update_plan_schema_accepts_task_specific_criteria_without_making_them_r
     assert registry.plan == []
     assert "acceptance_criteria" not in schema["required"]
     assert "task_mode" not in schema["required"]
-    assert schema["properties"]["task_mode"]["enum"] == ["discussion", "plan_only", "plan", "implement"]
+    assert schema["properties"]["task_mode"]["enum"] == ["plan_only", "plan", "implement"]
     assert schema["properties"]["acceptance_criteria"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["decisions"] == {"type": "array", "items": {"type": "string"}}
     assert schema["properties"]["add_items"]["type"] == "array"
