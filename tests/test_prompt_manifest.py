@@ -135,6 +135,21 @@ def test_exact_provider_prompt_count_is_saved_for_the_next_adaptive_estimate(tmp
     assert "exact Ollama prompt count" in engine.context.request_estimate_method
 
 
+def test_provider_token_calibration_uses_the_selected_provider_identity(tmp_path):
+    checkpoint = {}
+    engine = AgentEngine(tmp_path, model="flint-local", task_checkpoint=checkpoint,
+                         task_intent="discuss", provider_id="llama.cpp")
+    engine.runtime.stream = lambda *_args: {
+        "message": {"role": "assistant", "content": "Hello."}, "prompt_eval_count": 120,
+    }
+
+    engine.run("Say hello.")
+
+    calibrations = engine.state["task_checkpoint"]["provider_token_calibrations"]
+    assert "llama.cpp|flint-local" in calibrations
+    assert "ollama|flint-local" not in calibrations
+
+
 def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tmp_path, monkeypatch):
     import desktop_engine
 

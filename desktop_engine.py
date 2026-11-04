@@ -1810,8 +1810,9 @@ class ContextManager:
     @property
     def request_estimate_method(self)->str:
         if self._provider_calibration_scale is None:return "conservative UTF-8 byte estimate; provider count replaces this after response"
+        provider = self._provider_calibration_key.partition("|")[0].capitalize()
         return (f"model-calibrated UTF-8 estimate using the highest ratio from {self._provider_calibration_observations} "
-                "exact Ollama prompt count(s); provider response remains authoritative")
+                f"exact {provider} prompt count(s); provider response remains authoritative")
     def estimate_request(self,text:str)->int:
         estimate=self.estimate(text)
         if self._provider_calibration_scale is None:return estimate
@@ -2148,9 +2149,9 @@ class OllamaRuntime:
             interrupt_connection(connection,active_response)
 
 class AgentEngine:
-    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None,steering_interrupt_event:threading.Event|None=None,approve_repeated_action:Callable[[str,Any],bool]|None=None):
+    def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None,steering_interrupt_event:threading.Event|None=None,approve_repeated_action:Callable[[str,Any],bool]|None=None,provider_id:str="ollama"):
         checkpoint=task_checkpoint if isinstance(task_checkpoint,dict) else {}
-        self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.context.configure_provider_calibration(checkpoint,"ollama",model);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
+        self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.provider_id=str(provider_id or "ollama");self.context=ContextManager(context);self.context.configure_provider_calibration(checkpoint,self.provider_id,model);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
         self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.approve_repeated_action=approve_repeated_action or self.approve;self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event();self._approval_lock=threading.RLock()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
@@ -2619,7 +2620,7 @@ class AgentEngine:
                     continue
                 provider_retry_attempt=0
                 self.context.observe_provider_prompt(
-                    checkpoint,"ollama",self.model,manifest["estimated_request_input_tokens"],
+                    checkpoint,self.provider_id,self.model,manifest["estimated_request_input_tokens"],
                     result.get("prompt_eval_count"))
                 msg=result["message"]
                 calls=msg.get("tool_calls") or []
