@@ -180,7 +180,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "After a successful tool result, continue with the requested work and verification; finish only when complete or when a real blocker remains.\n\n"
         "Tool failure recovery: inspect the reported error and current project state, identify its cause, and correct the cause before retrying. A retry may adjust arguments, paths, command steps, or the implementation based on new evidence; do not repeat the same failed action without a reason. If an operation's outcome is uncertain, inspect for partial effects before retrying to avoid duplicate changes. Do not retry denied actions or route around a denial. Preserve completed work and continue the task after recoverable failures; report a concrete blocker when recovery is not possible. There is no fixed retry or iteration cap, and each retry must respond to observed evidence.\n\n"
         "For implementation work, after making edits inspect the resulting file or diff and run the relevant project check when one exists and is approved. A successful write alone is not verification. Report exactly which inspections/checks ran and whether they passed; do not claim unrun checks passed.\n\n"
-        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revise the plan when new evidence or user direction changes scope or priorities; do not keep reworking a plan for speculative improvements. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Record concise user-relevant design decisions and assumptions in update_plan decisions when they should survive compaction; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When checkpoint omissions are reported, use read_task_checkpoint to recover omitted plan, decisions, updates, operation references, or verification; use read_conversation_history for omitted user/assistant transcript and emitted reasoning; use read_operation_result for full tool output and exact ranges. The complete transcript, emitted reasoning text, checkpoint, and operation results remain in saved session history.\n\n"
+        "For substantial or multi-file implementation work, create a visible update_plan checklist before editing and update it as phases finish. The plan is expandable: use add_items to add discovered tasks or independent workstreams without replacing existing items, and use items when intentionally revising the full checklist. Revise the plan when new evidence or user direction changes scope or priorities; do not keep reworking a plan for speculative improvements. Include task-specific acceptance_criteria as concrete, observable conditions for completion; do not claim them satisfied without evidence. Keep the durable plan/checkpoint current at meaningful work transitions, especially when a decision, verified finding, user update, completed operation, or next action must survive compaction. Record concise user-relevant design decisions and assumptions as conclusions and evidence in update_plan decisions; summarize conclusions and evidence, not private chain-of-thought. After compaction or a user follow-up, retain prior plans and progress, then continue or re-plan from that saved state rather than treating prior work as forgotten. When a compacted request reports checkpoint omissions, first retrieve the omitted checkpoint sections relevant to the next action, then continue from the recovered state; do not restart planning or reread the whole transcript by default. Use read_conversation_history for omitted user/assistant transcript or emitted reasoning only when needed to resolve missing constraints or decisions; use read_operation_result for full tool output and exact ranges. The complete transcript, emitted reasoning text, checkpoint, and operation results remain in saved session history.\n\n"
         + intent_guidance + "\n\n"
         "If the user denies an action, do not repeat or work around that denial; explain what was denied and stop dependent work unless the user asks to continue another way.\n\n"
         + profile_guidance + "Access policy: " + access_policy + "\n\n" + (approval_guidance or approval_policy_guidance("per-action")) + "\n\nProject instructions:\n" + project_instructions
@@ -428,8 +428,7 @@ def _implementation_evidence(task_intent: str, task_mode: str, plan_source: str,
     return bool(project_changed or command_side_effects_possible or mutation_attempted
                 or _plan_requests_implementation(task_mode, plan_source, plan))
 
-def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]],
-                                     assistant_message: dict[str, Any] | None = None) -> str:
+def _continuation_progress_signature(task: dict[str, Any], verification_steps: list[dict[str, Any]]) -> str:
     """Compare observable progress, not elapsed time or a fixed continuation count."""
     result_driven_reads = {
         "list_files", "search_files", "read_file", "read_operation_result",
@@ -468,19 +467,11 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
         {key: copy.deepcopy(item[key]) for key in ("id", "instruction", "status") if key in item}
         for item in user_updates if isinstance(item, dict)
     ] if isinstance(user_updates, list) else []
-    # A second implementation-focused response may contain newly emitted
-    # reasoning even when the host has not observed an operation yet. Preserve
-    # that as continuity progress so a long reasoning run is not ended solely
-    # because its project/plan state is unchanged. Hash it locally instead of
-    # copying potentially large reasoning text into the signature.
-    response_text = {
-        key: assistant_message.get(key)
-        for key in ("content", "thinking")
-        if isinstance(assistant_message, dict) and isinstance(assistant_message.get(key), str)
-    }
-    response_fingerprint = hashlib.sha256(json.dumps(
-        response_text, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")).hexdigest() if response_text else ""
+    # Assistant prose and reasoning are saved in the canonical transcript, but
+    # they do not prove that task state advanced. Counting each new thought as
+    # progress let reasoning-only responses perpetually renew the continuation
+    # loop without updating the plan, inspecting results, or using a project
+    # tool. Durable progress is represented by the checkpoint and host events.
     evidence = {
         "task_mode": task.get("task_mode", "auto"),
         "plan_source": task.get("plan_source", "workbench"),
@@ -490,10 +481,9 @@ def _continuation_progress_signature(task: dict[str, Any], verification_steps: l
         "operations": operation_state,
         "verification": verification_steps,
         "changed_files": task.get("changed_files", []),
-        "assistant_response_fingerprint": response_fingerprint,
     }
     serialized = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(serialized.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
 def _provider_response_was_truncated(result: dict[str, Any]) -> bool:
@@ -1520,7 +1510,7 @@ class ContextManager:
     def estimate(text:str)->int:
         # UTF-8 bytes are not tokens. Two bytes per token is deliberately
         # conservative for prose and compact JSON tool schemas.
-        return max(1,(len(text.encode("utf8"))+1)//2)
+        return max(1,(len(text.encode("utf8",errors="surrogatepass"))+1)//2)
     def retrieve(self,root:Path,prompt:str,limit:int|None=None,cancel_event:threading.Event|None=None)->str:
         limit=self.budget() if limit is None else max(0,limit)
         stop_words={"about","after","also","and","are","but","can","could","does","from","have","into","like","make","need","please","that","the","this","want","with","would"}
@@ -2286,8 +2276,7 @@ class AgentEngine:
                     # unclassified Automatic task cycling. Those messages are
                     # still saved; only a structured mode/operation change
                     # advances this classification state.
-                    progress_signature=_continuation_progress_signature(
-                        checkpoint_state,verification_steps,None if auto_intent_unclassified else msg)
+                    progress_signature=_continuation_progress_signature(checkpoint_state, verification_steps)
                     if (unfinished or missing_final_response or auto_intent_unclassified) and progress_signature not in seen_continuation_signatures:
                         seen_continuation_signatures.add(progress_signature)
                         if auto_intent_unclassified:

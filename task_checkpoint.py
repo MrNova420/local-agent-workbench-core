@@ -201,9 +201,9 @@ def record_operation(checkpoint: dict[str, Any], event: dict[str, Any], argument
     operation_arguments = arguments if arguments is not None else event.get("arguments")
     if operation_arguments is not None:
         encoded_arguments = json.dumps(operation_arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-        row["arguments_fingerprint"] = hashlib.sha256(encoded_arguments.encode("utf-8")).hexdigest()
+        row["arguments_fingerprint"] = hashlib.sha256(encoded_arguments.encode("utf-8", errors="surrogatepass")).hexdigest()
     if "result" in event:
-        row["result_fingerprint"] = hashlib.sha256(str(event["result"]).encode("utf-8")).hexdigest()
+        row["result_fingerprint"] = hashlib.sha256(str(event["result"]).encode("utf-8", errors="surrogatepass")).hexdigest()
     changed = checkpoint.setdefault("changed_files", [])
     for path in row["affected_files"]:
         if path and path not in changed and row["name"] in {"write_file", "append_file", "edit_file", "apply_patch"} and row["status"] == "completed":
@@ -289,7 +289,7 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
         return header + json.dumps(visible, ensure_ascii=False, separators=(",", ":")) + footer
 
     def token_estimate(value: str) -> int:
-        return max(1, (len(value.encode("utf-8")) + 1) // 2)
+        return max(1, (len(value.encode("utf-8", errors="surrogatepass")) + 1) // 2)
 
     if token_budget is None or token_estimate(encode()) <= max(1, int(token_budget)):
         return encode()

@@ -59,6 +59,8 @@ def test_small_model_workflow_allows_iterative_planning_and_plan_expansion():
     assert "do not limit the number of planning passes" not in prompt.casefold()
     assert "plan once" not in prompt.casefold()
     assert "after compaction or a user follow-up, retain prior plans and progress" in prompt.casefold()
+    assert "first retrieve the omitted checkpoint sections relevant to the next action" in prompt.casefold()
+    assert "summarize conclusions and evidence, not private chain-of-thought" in prompt.casefold()
 
 
 def test_small_model_continuity_guidance_preserves_discussion_and_plan_intents():

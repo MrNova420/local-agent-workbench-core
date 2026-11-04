@@ -102,6 +102,12 @@ class ContextTests(unittest.TestCase):
         system_content=compacted[0]['content']
         self.assertIn(goal,system_content)
         self.assertEqual(events,[])
+    def test_context_estimation_handles_unpaired_surrogates_from_model_output(self):
+        manager=ContextManager(context=4096,reserve=512)
+
+        estimate=manager.estimate("model output before\udc9dafter")
+
+        self.assertGreater(estimate,0)
     def test_compaction_preserves_tool_call_and_result_pairs(self):
         manager=ContextManager(context=4096,reserve=1024)
         messages=[{'role':'system','content':'SYSTEM'}]

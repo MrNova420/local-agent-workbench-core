@@ -78,6 +78,19 @@ def test_next_action_tracks_unknown_open_plan_statuses():
     assert checkpoint["current"]["next_action"] == "Continue building"
 
 
+def test_checkpoint_and_operation_fingerprints_accept_unpaired_surrogates():
+    checkpoint = begin_task(None, prompt="Continue safely", turn_id="t-unicode", workspace="C:/p", settings={})
+    record_operation(checkpoint, {
+        "operationId": "op-unicode", "name": "read_file", "status": "completed",
+        "result": "before\udc9dafter",
+    }, arguments={"path": "before\udc9dafter"})
+
+    rendered = render_checkpoint(checkpoint, token_budget=256)
+
+    assert "op-unicode" in rendered
+    assert checkpoint["current"]["operations"][0]["result_fingerprint"]
+
+
 def test_completed_operation_does_not_overwrite_the_open_plan_next_action():
     checkpoint = begin_task(None, prompt="Build", turn_id="t1", workspace="C:/p", settings={})
     record_plan(checkpoint, [
