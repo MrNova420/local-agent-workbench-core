@@ -25,13 +25,14 @@ class EngineToolBatchTests(unittest.TestCase):
                 {"message": {"role": "assistant", "content": "", "tool_calls": [call]}},
                 {"message": {"role": "assistant", "content": "", "tool_calls": [call]}},
                 {"message": {"role": "assistant", "content": "", "tool_calls": [call]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [call]}},
                 {"message": {"role": "assistant", "content": "I reviewed the unchanged result and finished."}},
             ]
             engine.runtime.stream = lambda *_args: responses.pop(0)
 
             history = engine.run("Inspect the README")
 
-            assert len(executed) == 3
+            assert len(executed) == 4
             assert reviews == [("read_file", {"path": "README.md"})]
             decision = next(row for row in engine.state["task_checkpoint"]["current"]["decisions"]
                             if row["kind"] == "repeated_action_review")
@@ -59,6 +60,7 @@ class EngineToolBatchTests(unittest.TestCase):
                 {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
                 {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
                 {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
+                {"message": {"role": "assistant", "content": "", "tool_calls": [repeated]}},
                 {"message": {"role": "assistant", "content": "", "tool_calls": [different]}},
                 {"message": {"role": "assistant", "content": "I used the other operation and finished."}},
             ]
@@ -67,9 +69,9 @@ class EngineToolBatchTests(unittest.TestCase):
             history = engine.run("Inspect the project")
 
             assert len(reviews) == 1
-            assert executed.count(("read_file", {"path": "README.md"})) == 2
+            assert executed.count(("read_file", {"path": "README.md"})) == 3
             assert ("git_status", {}) in executed
-            blocked = [row for row in history if row.get("role") == "tool" and "repeat review was declined" in row.get("content", "").casefold()]
+            blocked = [row for row in history if row.get("role") == "tool" and "user declined this repeated identical action" in row.get("content", "").casefold()]
             assert blocked
             assert engine.state["task_checkpoint"]["current"]["status"] == "completed"
 

@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 MODEL = "hf.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF:Q4_K_M"
 CONTEXT_MAX = 262_144
+IDENTICAL_ACTION_REVIEW_THRESHOLD = 3
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 PROJECT_LIST_SCAN_LIMIT = None
@@ -2773,7 +2774,8 @@ class AgentEngine:
                                 repeated_action_fingerprint=_operation_arguments_fingerprint(name,args)
                                 repeated_streak=_identical_operation_streak(current_task(checkpoint),name,args)
                                 repeat_denied=_repeat_action_denied_since_last_user_update(current_task(checkpoint),repeated_action_fingerprint)
-                                repeat_review_required=(repeated_streak>=2 and permission_decision(name,args,self.permission_rules)!="deny")
+                                repeat_review_required=(repeated_streak>=IDENTICAL_ACTION_REVIEW_THRESHOLD
+                                                        and permission_decision(name,args,self.permission_rules)!="deny")
                                 repeat_blocked=False
                                 if repeat_denied:
                                     out=("Blocked: this exact repeated action was declined. Use the previous operation result or choose a different safe approach. "
