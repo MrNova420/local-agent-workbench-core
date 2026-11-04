@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-04 project browser page cursor
+
+- Added `ProjectFilePageCursor` for the project's own file-browser pages. It retains a lazy walk between adjacent pages, preserves lookahead and empty/stat-race offset behavior, and restarts on backward offsets or changed directory/`.gitignore` metadata. It follows the existing project walker, so ignored folders and links remain excluded and no project-size/page ceiling is introduced.
+- Focused `tests/test_project_view.py` and `tests/test_project_walk.py`: **8 passed**; Python compile and `git diff --check` passed. Sidecar wiring and its paired regression are in progress on the app branch.
+
 ## 2026-11-04 sequential project-list cursor
 
 - Repeated `list_files` offset pages within one agent task now continue one lazy traversal rather than restarting at the project root. The cursor is held by that task's `ToolRegistry`, covers only the current resolved directory/pattern query, and retains a matching lookahead when the request output budget ends a page. Backward offsets, changed queries, cancellation, or changed directory/`.gitignore` metadata restart traversal, preserving filtering and current-workspace isolation. Read-only tools between pages do not discard the cursor. It adds no file, page, context, or duration ceiling; the existing optional scan ceiling remains unset in production.
