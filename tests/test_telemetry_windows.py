@@ -65,19 +65,28 @@ class TelemetryWindowsTests(unittest.TestCase):
             getattr(subprocess, "CREATE_NO_WINDOW", 0) | (0x00000004 if os.name == "nt" else 0),
         )
 
-    @patch(
-        "subprocess.run",
-        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
-    def test_git_diff_suppresses_console_window(self, run):
+    @patch("subprocess.Popen")
+    @patch("desktop_engine.WindowsProcessJob.attach", return_value=None)
+    @patch("desktop_engine.WindowsProcessJob.resume_primary_thread", return_value=True)
+    def test_git_diff_suppresses_console_window(self, resume, attach, popen):
         with tempfile.TemporaryDirectory() as root:
+            class Process:
+                pid = 4321
+                returncode = 0
+                def __init__(self, output=b""):
+                    self.output = output
+                def communicate(self, timeout=None):
+                    return self.output, b""
+                def poll(self):
+                    return self.returncode
+            def start(argv, **kwargs):
+                return Process(str(Path(root).resolve()).encode() if "--show-toplevel" in argv else b"")
+            popen.side_effect = start
             registry = ToolRegistry(Workspace(Path(root)), lambda *_: True)
             registry.run("git_diff", {})
 
-        self.assertEqual(
-            run.call_args.kwargs.get("creationflags"),
-            getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | (0x00000004 if os.name == "nt" else 0)
+        self.assertEqual([call.kwargs.get("creationflags") for call in popen.call_args_list], [flags, flags])
 
 
 if __name__ == "__main__":

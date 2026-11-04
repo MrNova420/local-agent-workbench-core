@@ -9,6 +9,9 @@ class ToolTests(unittest.TestCase):
    tools=ToolRegistry(Workspace(t),lambda *_:True)
    names={schema['function']['name'] for schema in tools.schemas}
    self.assertIn('git_diff',names)
+   git_log=next(schema for schema in tools.schemas if schema['function']['name']=='git_log')['function']['parameters']['properties']
+   self.assertNotIn('maximum',git_log['limit'])
+   self.assertEqual(git_log['offset']['minimum'],0)
  def test_file_listing_pages_at_requested_page_size_without_a_hard_maximum(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t)
@@ -364,6 +367,62 @@ class ToolTests(unittest.TestCase):
    tools=ToolRegistry(Workspace(root),lambda *_:True)
    self.assertIn('## ',tools.run('git_status',{}))
    self.assertIn('initial',tools.run('git_log',{'limit':10}))
+
+ def test_git_log_supports_large_requested_pages_and_offsets(self):
+  with tempfile.TemporaryDirectory() as directory:
+   root=Path(directory).resolve();tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True);calls=[]
+   def capture(argv):
+    calls.append(argv)
+    return (0,str(root),'') if '--show-toplevel' in argv else (0,'commit page\n','')
+   tools._git_capture=capture
+   self.assertEqual(tools.run('git_log',{'limit':2500,'offset':320}), 'commit page\n')
+   self.assertEqual(calls[1],['git','log','--max-count=2500','--skip=320','--oneline','--decorate'])
+
+ def test_git_capture_keeps_waiting_after_initial_poll_until_process_finishes(self):
+  import subprocess
+  from unittest.mock import patch
+  class DelayedProcess:
+   pid=1234
+   returncode=None
+   def __init__(self):self.polls=0
+   def poll(self):return self.returncode
+   def communicate(self,timeout=None):
+    self.polls+=1
+    if self.polls==1:raise subprocess.TimeoutExpired(['git','status'],timeout)
+    self.returncode=0
+    return b'complete output',b''
+   def kill(self):self.returncode=-9
+   def terminate(self):self.returncode=-15
+  with tempfile.TemporaryDirectory() as root:
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True);process=DelayedProcess()
+   with patch('subprocess.Popen',return_value=process), \
+        patch('desktop_engine.WindowsProcessJob.attach',return_value=None), \
+        patch('desktop_engine.WindowsProcessJob.resume_primary_thread',return_value=True):
+    code,stdout,stderr=tools._git_capture(['git','status'])
+   self.assertEqual(code,0)
+   self.assertEqual(stdout,'complete output')
+   self.assertEqual(stderr,'')
+   self.assertEqual(process.polls,2)
+
+ def test_git_capture_returns_partial_output_when_cancelled(self):
+  from unittest.mock import patch
+  class CancelledProcess:
+   pid=987654
+   returncode=None
+   def communicate(self,timeout=None):return b'partial status',b''
+   def poll(self):return self.returncode
+   def terminate(self):self.returncode=-15
+   def kill(self):self.returncode=-9
+  with tempfile.TemporaryDirectory() as root:
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True);process=CancelledProcess()
+   tools.cancel_event.set()
+   with patch('subprocess.Popen',return_value=process), \
+        patch('desktop_engine.WindowsProcessJob.attach',return_value=None), \
+        patch('desktop_engine.WindowsProcessJob.resume_primary_thread',return_value=True):
+    code,stdout,stderr=tools._git_capture(['git','status'])
+   self.assertEqual(code,-15)
+   self.assertEqual(stdout,'partial status')
+   self.assertEqual(stderr,'')
  def test_read_file_supports_line_ranges_and_files_over_old_cap(self):
   with tempfile.TemporaryDirectory() as t:
    content=''.join(f'{i:06}\n' for i in range(60000));(Path(t)/'large.txt').write_text(content)

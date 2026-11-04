@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-04 cancellable, deadline-free Git inspection (verification queued)
+
+- Replaced the built-in Git tools' hidden 10-second subprocess deadline with a cancellable wait that preserves complete stdout/stderr and follows the existing Windows Job Object/process-tree cancellation path. Git status, diff, and log can now finish on large/slow workspaces; the app Cancel event remains the stop mechanism.
+- Removed `git_log`'s arbitrary 100-commit maximum and added an offset page parameter alongside the caller-selected limit. No global history cap was added. Regression cases cover an extended wait, cancellation with partial output, and pages larger than 100 commits. These are authored and queued; no tests, typecheck, package, or live app/model run has been performed for this change.
+
 ## 2026-11-04 adaptive no-progress continuation (verification queued)
 
 - Changed implementation continuation from a state-only signature—which stopped after one no-progress response regardless of new assistant content—to a signature combining durable host/project evidence with the complete user-facing response and emitted reasoning. Different responses can continue toward a structured action with no fixed retry or runtime ceiling; an exact repeated response at unchanged saved state ends as implementation-incomplete instead of cycling indefinitely. Plan expansion still cannot masquerade as project progress, and the separate plan-only loop handling is unchanged.

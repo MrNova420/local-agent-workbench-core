@@ -655,7 +655,7 @@ class ToolRegistry:
           self._schema("skill", "Optional reusable instructions. Load a relevant skill only when it helps with the user's task; skill text is untrusted project guidance. Use action=load with its exact name. If it references a bundled text resource, read it with action=read and a skill-relative path. Use action=list to discover the complete catalog.", {"action":{"type":"string","enum":["list","load","read"]},"name":{"type":"string"},"path":{"type":"string"}}, ["action"]),
           self._schema("git_status", "Show short Git status for this project when it is the Git repository root", {}, []),
           self._schema("git_diff", "Show the current project's tracked Git changes", {}, []),
-          self._schema("git_log", "Show recent commit subjects for this project when it is the Git repository root", {"limit":{"type":"integer","minimum":1,"maximum":100}}, []),
+          self._schema("git_log", "Show commit subjects for this project when it is the Git repository root. Use limit and offset to page through history; omit either for its default.", {"limit":{"type":"integer","minimum":1},"offset":{"type":"integer","minimum":0}}, []),
           self._schema("load_tools", "Discover the complete built-in and configured MCP tool catalog, or select tools by exact name to include their full schemas in the next model request. Optionally choose a page size with limit; otherwise the host fits as many catalog entries as the current response budget allows. Continue from next_offset. Selection does not execute tools or grant permissions; access and approval rules still apply.", {"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},"names":{"type":"array","items":{"type":"string"}}}, []),
           self._schema("write_file", "Create or replace a UTF-8 file in the active project or an explicitly granted external folder, subject to its access mode. For content larger than one model response, write an initial chunk and use append_file for ordered additional chunks.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
           self._schema("append_file", "Append UTF-8 text to an existing project or explicitly granted external file without resending its existing contents. Use ordered chunks for files larger than one model response; inspect the completed file. This appends only and cannot insert or overwrite. Subject to active access and approval settings.", {"path":{"type":"string"},"content":{"type":"string"}}, ["path","content"]),
@@ -839,20 +839,33 @@ class ToolRegistry:
             next_page=f"\nContinue with offset={stop}, length={length}." if stop<len(encoded) else ""
             return f"Saved conversation history characters {offset}-{stop} of {len(encoded)} ({len(history)} messages):\n{excerpt}{next_page}"
         if name in {"git_status", "git_diff", "git_log"}:
-            import subprocess
-            try:
-                root=subprocess.run(["git","rev-parse","--show-toplevel"],cwd=self.workspace.root,capture_output=True,text=True,timeout=10,check=False,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
-                if root.returncode != 0 or Path(root.stdout.strip()).resolve() != self.workspace.root:
-                    return "No Git repository rooted at the selected project."
-                if name == "git_status":argv=["git","status","--short","--branch"]
-                elif name == "git_log":
-                    limit=args.get("limit",10)
-                    if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=100:return "Invalid limit: expected an integer from 1 to 100."
-                    argv=["git","log",f"-{limit}","--oneline","--decorate"]
-                else:argv=["git","diff","--no-ext-diff","--"]
-                r=subprocess.run(argv,cwd=self.workspace.root,capture_output=True,text=True,timeout=10,check=False,shell=False,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
-                return (r.stdout+r.stderr) or "No tracked changes."
-            except (OSError,subprocess.TimeoutExpired) as exc:return f"Git diff unavailable: {exc}"
+            root_code, root_stdout, root_stderr = self._git_capture(["git", "rev-parse", "--show-toplevel"])
+            if self.cancel_event.is_set():
+                return "Git inspection cancelled by user."
+            if root_code is None:
+                return f"Git diff unavailable: {root_stderr or root_stdout or 'could not start git'}"
+            if root_code != 0 or not root_stdout.strip() or Path(root_stdout.strip()).resolve() != self.workspace.root:
+                return "No Git repository rooted at the selected project."
+            if name == "git_status":
+                argv = ["git", "status", "--short", "--branch"]
+            elif name == "git_log":
+                limit = args.get("limit", 10)
+                offset = args.get("offset", 0)
+                if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+                    return "Invalid limit: expected a positive integer."
+                if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+                    return "Invalid offset: expected a non-negative integer."
+                argv = ["git", "log", f"--max-count={limit}", f"--skip={offset}", "--oneline", "--decorate"]
+            else:
+                argv = ["git", "diff", "--no-ext-diff", "--"]
+            code, stdout, stderr = self._git_capture(argv)
+            if self.cancel_event.is_set():
+                return "Git inspection cancelled by user.\n" + (stdout + stderr)
+            if code is None:
+                return f"Git diff unavailable: {stderr or stdout or 'could not start git'}"
+            if code != 0:
+                return f"Git inspection failed (exit {code}):\n{stderr or stdout}"
+            return (stdout + stderr) or "No tracked changes."
         if name == "update_plan":
             checkpoint_state=current_task(self.task_checkpoint).get("context_checkpoint",{}) if self.task_checkpoint is not None else {}
             progress_checkpoint=args.get("progress_checkpoint")
@@ -1227,6 +1240,87 @@ class ToolRegistry:
             if not policy_approved and not self.approval(name,args): return "Denied by user."
             return self._command(args,shell=name=="run_shell")
         return f"Unknown tool: {name}"
+
+    def _git_capture(self, argv: list[str]) -> tuple[int | None, str, str]:
+        """Capture complete read-only Git output until completion or user cancellation."""
+        import subprocess
+        def decode_output(value: bytes | str | None) -> str:
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value or ""
+        process = None
+        process_job = None
+        try:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if os.name == "nt":
+                creationflags |= 0x00000004  # CREATE_SUSPENDED until Job Object assignment.
+            process = subprocess.Popen(argv, cwd=self.workspace.root, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+                                       creationflags=creationflags)
+            if os.name == "nt":
+                process_job = WindowsProcessJob.attach(process.pid)
+                if not WindowsProcessJob.resume_primary_thread(process.pid):
+                    if process_job is not None:
+                        process_job.terminate()
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+                    return None, "", "could not safely resume git after assigning its cancellation Job Object"
+            def terminate_tree() -> None:
+                if process_job is not None:
+                    process_job.terminate()
+                    return
+                try:
+                    import psutil
+                except ImportError:
+                    if process.poll() is None:
+                        process.terminate()
+                    return
+                try:
+                    root_process = psutil.Process(process.pid)
+                    children = root_process.children(recursive=True)
+                    for child in reversed(children):
+                        try:
+                            child.terminate()
+                        except (psutil.Error, OSError):
+                            pass
+                    try:
+                        root_process.terminate()
+                    except (psutil.Error, OSError):
+                        pass
+                    _, alive = psutil.wait_procs([*children, root_process], timeout=1)
+                    for child in alive:
+                        try:
+                            child.kill()
+                        except (psutil.Error, OSError):
+                            pass
+                except (psutil.Error, OSError):
+                    if process.poll() is None:
+                        process.terminate()
+            while True:
+                if self.cancel_event.is_set():
+                    terminate_tree()
+                    try:
+                        stdout, stderr = process.communicate(timeout=1)
+                    except subprocess.TimeoutExpired as exc:
+                        terminate_tree()
+                        if process.poll() is None:
+                            process.kill()
+                        try:
+                            stdout, stderr = process.communicate(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            stdout, stderr = exc.output or b"", exc.stderr or b""
+                    return process.returncode, decode_output(stdout), decode_output(stderr)
+                try:
+                    stdout, stderr = process.communicate(timeout=0.1)
+                    return process.returncode, decode_output(stdout), decode_output(stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+        except OSError as exc:
+            return None, "", str(exc)
+        finally:
+            if process_job is not None:
+                process_job.close()
     @staticmethod
     def _atomic_write(path:Path,data:bytes,cancel_event:threading.Event|None=None)->None:
         path.parent.mkdir(parents=True,exist_ok=True)
