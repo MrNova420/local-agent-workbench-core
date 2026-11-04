@@ -1,4 +1,5 @@
-import unittest,tempfile
+import unittest,tempfile,threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from pathlib import Path
 from desktop_engine import Workspace,ToolRegistry
@@ -305,6 +306,23 @@ class ToolTests(unittest.TestCase):
    self.assertEqual(os.stat(target).st_ino,original_identity,
                     'appending a chunk must extend the existing file instead of copying/replacing all prior content')
    self.assertEqual(target.read_text(encoding='utf-8'),'first chunk\nsecond chunk\n')
+ def test_appends_to_independent_files_can_write_concurrently(self):
+  import os
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);first=root/'first.txt';second=root/'second.txt'
+   first.write_text('first prefix\n',encoding='utf-8');second.write_text('second prefix\n',encoding='utf-8')
+   tools=ToolRegistry(Workspace(root,'edit'),lambda *_:True)
+   both_writing=threading.Barrier(2);real_write=os.write
+   def wait_for_other_file(fd,data):
+    both_writing.wait(timeout=0.5)
+    return real_write(fd,data)
+   with patch('desktop_engine.os.write',side_effect=wait_for_other_file):
+    with ThreadPoolExecutor(max_workers=2) as executor:
+     results=list(executor.map(lambda row:tools.run('append_file',{'path':row[0],'content':row[1]}),
+                               [('first.txt',' first suffix'),('second.txt',' second suffix')]))
+   self.assertEqual(results,['Appended first.txt','Appended second.txt'])
+   self.assertEqual(first.read_text(encoding='utf-8'),'first prefix\n first suffix')
+   self.assertEqual(second.read_text(encoding='utf-8'),'second prefix\n second suffix')
  def test_append_file_rolls_back_a_partially_written_chunk_on_io_failure(self):
   import os
   from unittest.mock import patch

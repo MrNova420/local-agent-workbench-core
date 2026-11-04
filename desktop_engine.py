@@ -2,6 +2,7 @@
 from __future__ import annotations
 import codecs, copy, hashlib, json, os, queue, re, tempfile, threading, time, urllib.request, uuid
 import stat
+import weakref
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonschema.exceptions import SchemaError
 from referencing import Registry
@@ -25,7 +26,8 @@ CONTEXT_MAX = 262_144
 IGNORED = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".agent-workbench", "dist", "build", "target", "Library", "Temp"}
 TEXT_EXT = {".py", ".md", ".toml", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".js", ".jsx", ".cs", ".gd", ".rs", ".go", ".html", ".css", ".cpp", ".h", ".xml"}
 PROJECT_LIST_SCAN_LIMIT = None
-_APPEND_LOCK = threading.Lock()
+_APPEND_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+_APPEND_LOCKS_GUARD = threading.Lock()
 _CONTINUATION_GUIDANCE_MARKER = "\n\n[Current Workbench continuation]\n"
 
 def approval_policy_guidance(mode: str) -> str:
@@ -72,6 +74,18 @@ def _project_directory_listing_state(path:Path)->tuple[Any,...]|None:
         return (directory.st_dev,directory.st_ino,directory.st_mtime_ns,directory.st_ctime_ns,directory.st_size,ignore_state)
     except (OSError,RuntimeError):
         return None
+
+def _append_path_lock(path:Path)->threading.Lock:
+    try:
+        identity=path.stat()
+        key=f"inode:{identity.st_dev}:{identity.st_ino}"
+    except OSError:
+        key=os.path.normcase(str(path.resolve(strict=True)))
+    with _APPEND_LOCKS_GUARD:
+        lock=_APPEND_LOCKS.get(key)
+        if lock is None:
+            lock=threading.Lock();_APPEND_LOCKS[key]=lock
+        return lock
 
 class _ProjectListCursor:
     """One lazy project listing continuation, scoped to one ToolRegistry run."""
@@ -1200,7 +1214,7 @@ class ToolRegistry:
         # inspection and open, then append only the new bytes with rollback for
         # synchronous failures. A process crash mid-write remains an uncertain
         # in-flight write and is handled by session recovery for user review.
-        with _APPEND_LOCK:
+        with _append_path_lock(path):
             before=path.stat()
             descriptor=os.open(path,os.O_RDWR|os.O_APPEND|getattr(os,"O_BINARY",0))
             written=0
@@ -1806,7 +1820,7 @@ class OllamaRuntime:
 class AgentEngine:
     def __init__(self,root:Path,model:str=MODEL,context:int=CONTEXT_MAX,access:str="ask",approval_mode:str="per-action",event:Callable[[dict],None]|None=None,approve:Callable[[str,Any],bool]|None=None,base_url:str="http://127.0.0.1:11434",runtime_options:dict|None=None,max_tokens:int=4096,temperature:float=0.2,project_instructions:str="",mcp_tools:list[dict]|None=None,mcp_call:Callable|None=None,harness_profile:str="standard",task_checkpoint:dict[str,Any]|None=None,skills_enabled:bool=True,skill_sources:set[str]|list[str]|tuple[str,...]|None=None,task_intent:str="auto",operation_result_lookup:Callable[[str],str|None]|None=None,permission_rules:list[dict[str,Any]]|None=None,ask_user:Callable[[dict[str,Any]],str]|None=None,session_approval_granted:bool=False,steering_handler:Callable[[list[dict],bool],bool]|None=None,permission_workspace_root:Path|str|None=None,steering_interrupt_event:threading.Event|None=None):
         self.workspace=Workspace(root,access);self.knowledge=ProjectKnowledge(root);self.project_instructions=project_instructions or self.knowledge.instructions();self.model=model;self.context=ContextManager(context);self.approval_mode=approval_mode;self.approved_task=False;self.approved_session=bool(session_approval_granted);self.mcp_tools=[] if access=="plan" else (mcp_tools or []);self.mcp_call=mcp_call
-        self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event()
+        self.event=event or (lambda e:None);self.approve=approve or (lambda n,a:False);self.runtime=OllamaRuntime(base_url);self.cancel_event=threading.Event();self.stop_after_operation=threading.Event();self._approval_lock=threading.RLock()
         self.harness_profile=harness_profile if harness_profile in {"standard","small-model"} else "standard"
         self.task_intent=task_intent if task_intent in {"auto","discuss","plan","implement"} else "auto"
         self.steering_handler=steering_handler
@@ -1883,6 +1897,9 @@ class AgentEngine:
                                     if pending else "")
             self.event({"type":"plan","items":copy.deepcopy(plan),"acceptanceCriteria":copy.deepcopy(current.get("acceptance_criteria",[])),"source":"workbench"})
     def _approval(self,name:str,args:Any)->bool:
+        with self._approval_lock:
+            return self._approval_locked(name,args)
+    def _approval_locked(self,name:str,args:Any)->bool:
         checkpoint=self.state["task_checkpoint"]
         policy=permission_decision(name,args,self.permission_rules)
         if policy=="deny":
@@ -2044,6 +2061,46 @@ class AgentEngine:
         # the actual remaining request budget among calls still pending.
         envelope_reserve=min(256,available*2)
         return max(0,(available//max(1,remaining_calls))*2-envelope_reserve)
+    def _can_parallelize_file_writes(self,parsed_batch:list[tuple[int,dict,str,dict[str,Any]]])->bool:
+        """Only parallelize separate file targets after their approval path is non-interactive."""
+        if len(parsed_batch)<2:return False
+        registry=self.state["registry"]
+        # ``ask`` access invokes the interactive approval callback even when
+        # the task/session approval mode is otherwise granted. Keep those
+        # calls ordered so the user sees one approval at a time.
+        if self.workspace.access in {"plan","copy","ask"}:return False
+        approved_mode=(self.approval_mode=="auto" or
+                       (self.approval_mode=="per-task" and self.approved_task) or
+                       (self.approval_mode=="per-session" and self.approved_session))
+        if not approved_mode:return False
+        targets=[];identities=set()
+        for _,_,name,args in parsed_batch:
+            if name not in {"write_file","append_file","edit_file"}:return False
+            if permission_decision(name,args,self.permission_rules) in {"ask","deny"}:return False
+            raw=args.get("path")
+            if not isinstance(raw,str) or not raw:return False
+            try:path=registry.workspace.resolve(raw)
+            except (OSError,ValueError,RuntimeError):return False
+            # External scopes can have an independent approval decision; keep
+            # those operations ordered even when their final path is distinct.
+            if path!=registry.workspace.root and registry.workspace.root not in path.parents:return False
+            key=os.path.normcase(str(path))
+            for prior_key,prior_path,prior_identity in targets:
+                if key==prior_key or prior_path in path.parents or path in prior_path.parents:return False
+                if prior_identity is not None:
+                    try:current=path.stat();identity=(current.st_dev,current.st_ino)
+                    except OSError:identity=None
+                    if identity==prior_identity:return False
+            try:
+                current=path.stat();identity=(current.st_dev,current.st_ino)
+            except OSError:
+                identity=None
+            if identity is not None:
+                if identity in identities:return False
+                identities.add(identity)
+            targets.append((key,path,identity))
+        return True
+
     def run(self,prompt:str,messages:list[dict]|None=None)->list[dict]:
         access_policy={
             "plan":"Read-only: do not request project writes or commands.",
@@ -2279,7 +2336,7 @@ class AgentEngine:
                 readonly_names={"list_files","search_files","read_file","read_operation_result","read_task_checkpoint","read_conversation_history","git_status","git_diff","git_log"}
                 prepared_batch:dict[int,dict[str,Any]]={}
                 if len(calls)>1:
-                    parsed_batch=[];batch_is_readonly=True
+                    parsed_batch=[];batch_is_readonly=True;batch_write_candidate=True
                     available_schemas=tools
                     for batch_index,batch_call in enumerate(calls):
                         batch_fn=batch_call.get("function") or {};batch_name=batch_fn.get("name","");batch_raw=batch_fn.get("arguments",{})
@@ -2289,8 +2346,18 @@ class AgentEngine:
                         batch_invalid=not isinstance(batch_args,dict) or batch_schema is None or bool(_validate_tool_arguments(batch_args,batch_schema))
                         if batch_name not in readonly_names or batch_invalid or permission_decision(batch_name,batch_args if isinstance(batch_args,dict) else {},self.permission_rules) is not None:
                             batch_is_readonly=False
+                        if batch_name not in {"write_file","append_file","edit_file"} or batch_invalid:
+                            batch_write_candidate=False
                         parsed_batch.append((batch_index,batch_call,batch_name,batch_args if isinstance(batch_args,dict) else {}))
-                    if batch_is_readonly and not self.cancel_event.is_set():
+                    batch_is_parallel_write=batch_write_candidate and self._can_parallelize_file_writes(parsed_batch)
+                    if (batch_is_readonly or batch_is_parallel_write) and not self.cancel_event.is_set():
+                        if batch_is_parallel_write and self.task_intent=="auto" and not self.state["registry"].plan:
+                            registry=self.state["registry"]
+                            registry.plan=initial_task_plan(prompt,"implement")
+                            registry.plan_source="workbench";registry.task_mode="implement"
+                            record_plan(checkpoint,registry.plan,[],task_mode="implement",plan_source="workbench")
+                            self.event({"type":"plan","items":copy.deepcopy(registry.plan),
+                                        "acceptanceCriteria":[],"source":"workbench","taskMode":"implement"})
                         futures={}
                         with ThreadPoolExecutor() as executor:
                             for batch_index,batch_call,batch_name,batch_args in parsed_batch:
@@ -2305,7 +2372,8 @@ class AgentEngine:
                                 except Exception as exc:out=f"Tool error: {type(exc).__name__}: {exc}"
                                 batch_name=parsed_batch[batch_index][2]
                                 completed_at=time.time();status=_tool_activity_status(batch_name,str(out))
-                                operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":parsed_batch[batch_index][1].get("id",f"call-{batch_index}"),"name":batch_name,"result":str(out),"status":status,"affectedFiles":[],"startedAt":operation_started,"completedAt":completed_at}
+                                affected=[parsed_batch[batch_index][3]["path"]] if batch_name in {"write_file","append_file","edit_file"} else []
+                                operation_event={"type":"tool_done","operationId":operation_id,"toolCallId":parsed_batch[batch_index][1].get("id",f"call-{batch_index}"),"name":batch_name,"result":str(out),"status":status,"affectedFiles":affected,"startedAt":operation_started,"completedAt":completed_at}
                                 self.operation_results[operation_id]=str(out);record_operation(checkpoint,operation_event,parsed_batch[batch_index][3]);self.event(operation_event)
                                 prepared_batch[batch_index]={"operation_id":operation_id,"started":operation_started,"output":str(out),"budget":output_budget,"completed_event":True}
                 for index,call in enumerate(calls):
@@ -2322,7 +2390,7 @@ class AgentEngine:
                     if not name:args_error=args_error or "Tool call is missing its function name."
                     elif schema is None:args_error=args_error or f"Unknown tool: {name}. Use only a tool listed in the current request."
                     elif not args_error:args_error=_validate_tool_arguments(args,schema)
-                    if self.cancel_event.is_set():
+                    if self.cancel_event.is_set() and not prepared:
                         status="cancelled"
                         out="Cancelled before this tool action ran."
                         operation_id=uuid.uuid4().hex;operation_started=time.time()
@@ -2473,10 +2541,15 @@ class AgentEngine:
                             pending_fn=pending.get("function") or {};msgs.append({"role":"tool","tool_name":pending_fn.get("name","unknown_tool"),"content":"Not executed: the user chose to stop after the active operation."})
                         finish_task(checkpoint,"stopped")
                         self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs
-                    if self.cancel_event.is_set():
+                    if self.cancel_event.is_set() and not prepared:
                         for pending_index,pending in enumerate(calls[index+1:],start=index+1):
                             pending_fn=pending.get("function") or {};msgs.append({"role":"tool","tool_name":pending_fn.get("name","unknown_tool"),"content":"Cancelled before this tool action ran."})
                         raise RequestCancelled()
+                # A parallel batch was fully submitted before cancellation was
+                # observed. Preserve every submitted operation's actual result
+                # and checkpoint, then stop before requesting another response.
+                if self.cancel_event.is_set():
+                    raise RequestCancelled()
                 plan_only_batch=bool(calls) and all(
                     ((call.get("function") or {}).get("name") == "update_plan") for call in calls
                 )

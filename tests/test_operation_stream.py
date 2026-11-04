@@ -507,6 +507,111 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(started["toolCallId"], "call-1")
             self.assertEqual(batch["calls"], [{"id": "call-1", "name": "read_file"}])
 
+    def test_independent_file_writes_in_one_model_batch_run_concurrently(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", approval_mode="auto", task_intent="implement", event=events.append)
+            registry = engine.state["registry"]
+            original_run = registry.run
+            both_started = threading.Barrier(2)
+
+            def wait_for_independent_write(name, args, **kwargs):
+                both_started.wait(timeout=1)
+                return original_run(name, args, **kwargs)
+
+            registry.run = wait_for_independent_write
+            responses = [
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "write-a", "function": {"name": "write_file", "arguments": {"path": "a.txt", "content": "alpha"}}},
+                    {"id": "write-b", "function": {"name": "write_file", "arguments": {"path": "b.txt", "content": "beta"}}},
+                ]}},
+                {"message": {"role": "assistant", "content": "Both files are written."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            messages = engine.run("Create two independent files")
+
+            self.assertEqual(Path(root, "a.txt").read_text(encoding="utf-8"), "alpha")
+            self.assertEqual(Path(root, "b.txt").read_text(encoding="utf-8"), "beta")
+            completed = [event for event in events if event.get("type") == "tool_done"]
+            self.assertEqual([event["status"] for event in completed], ["completed", "completed"])
+            self.assertEqual(sorted(event["affectedFiles"][0] for event in completed), ["a.txt", "b.txt"])
+            self.assertEqual([message["content"] for message in messages if message.get("role") == "tool"],
+                             ["Wrote a.txt", "Wrote b.txt"])
+
+    def test_ask_access_never_qualifies_for_parallel_writes_even_when_task_was_approved(self):
+        with tempfile.TemporaryDirectory() as root:
+            engine = AgentEngine(root, access="ask", approval_mode="per-task", task_intent="implement")
+            engine.approved_task = True
+            parsed = [
+                (0, {}, "write_file", {"path": "a.txt", "content": "alpha"}),
+                (1, {}, "write_file", {"path": "b.txt", "content": "beta"}),
+            ]
+
+            self.assertFalse(engine._can_parallelize_file_writes(parsed))
+
+    def test_cancel_during_parallel_write_batch_preserves_submitted_results_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            engine = AgentEngine(root, access="edit", approval_mode="auto", task_intent="implement", event=events.append)
+            barrier = threading.Barrier(2)
+
+            def complete_then_cancel(_name, args, **_kwargs):
+                barrier.wait(timeout=1)
+                engine.cancel_event.set()
+                return f"Saved {args['path']}"
+
+            engine.state["registry"].run = complete_then_cancel
+            response = {"message": {"role": "assistant", "tool_calls": [
+                {"id": "write-a", "function": {"name": "write_file", "arguments": {"path": "a.txt", "content": "alpha"}}},
+                {"id": "write-b", "function": {"name": "write_file", "arguments": {"path": "b.txt", "content": "beta"}}},
+            ]}}
+            engine.runtime.stream = lambda *_args: response
+
+            messages = engine.run("Create two independent files")
+
+            completed = [event for event in events if event.get("type") == "tool_done"]
+            self.assertEqual(len(completed), 2)
+            self.assertEqual({event["result"] for event in completed}, {"Saved a.txt", "Saved b.txt"})
+            self.assertEqual([message["content"] for message in messages if message.get("role") == "tool"],
+                             ["Saved a.txt", "Saved b.txt"])
+            self.assertEqual(len({event["operationId"] for event in completed}), 2)
+            self.assertEqual(events[-1]["type"], "cancelled")
+
+    def test_per_action_approval_stays_in_call_order_for_independent_writes(self):
+        with tempfile.TemporaryDirectory() as root:
+            approvals = []
+            engine = AgentEngine(root, access="ask", approval_mode="per-action", task_intent="implement",
+                                 approve=lambda _name, args: approvals.append(args["path"]) or True)
+            responses = [
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "write-a", "function": {"name": "write_file", "arguments": {"path": "a.txt", "content": "alpha"}}},
+                    {"id": "write-b", "function": {"name": "write_file", "arguments": {"path": "b.txt", "content": "beta"}}},
+                ]}},
+                {"message": {"role": "assistant", "content": "Both files are written."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Create two independent files")
+
+            self.assertEqual(approvals, ["a.txt", "b.txt"])
+
+    def test_same_path_write_batch_preserves_call_order(self):
+        with tempfile.TemporaryDirectory() as root:
+            engine = AgentEngine(root, access="edit", approval_mode="auto", task_intent="implement")
+            responses = [
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "write", "function": {"name": "write_file", "arguments": {"path": "ordered.txt", "content": "first\n"}}},
+                    {"id": "append", "function": {"name": "append_file", "arguments": {"path": "ordered.txt", "content": "second\n"}}},
+                ]}},
+                {"message": {"role": "assistant", "content": "The file is complete."}},
+            ]
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Write and extend one file")
+
+            self.assertEqual(Path(root, "ordered.txt").read_text(encoding="utf-8"), "first\nsecond\n")
+
     def test_finish_after_active_tool_stops_before_the_next_model_call(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
