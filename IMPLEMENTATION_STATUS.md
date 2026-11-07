@@ -1,5 +1,11 @@
 # Implementation and verification status
 
+## 2026-11-07 grouped-verification work in progress
+
+- The engine now preapproves each independent disjoint file write in an Ask-mode batch before dispatching approved writes concurrently. Existing dependency, overlap, permission, and cancellation checks remain in the dispatch path. This work is in engine commit `295047b02bd718077361d20b2cad9500d270d4c1`; paired app pin is `core-revision.txt` in the Electron repository.
+- A checkpoint-pressure handoff is now re-compacted together with the current conversation before dispatch. Previously the handoff text was appended after compaction, so its own tokens could exceed the selected input budget. The selected context/output values remain intact. A regression now exercises 65,536 context / 8,192 output with prior history and checks every dispatched request against the selected input budget; it has not been run.
+- Do not treat the focused regressions or older status entries below as verification of the current source. Grouped engine, sidecar, renderer, typecheck, package, and visible Flint acceptance remain pending. No model was loaded and no model settings were changed during these edits.
+
 ## 2026-11-07 model-authored plans (verification queued)
 
 - Engine `e2bbeb611e928cd5d97cbff6174552645358b1e8` removes host-generated starter checklists at task start and before the first file mutation. A new task therefore has no displayed plan until the model calls `update_plan`; ordinary Auto chat no longer receives a synthetic `task_progress` plan. Existing saved Workbench checklists remain readable and can still advance for recovery compatibility.

@@ -2616,7 +2616,13 @@ class AgentEngine:
                     "checkpoint. A progress_checkpoint-only call leaves the current plan unchanged. After saving it, "
                     "continue the same task normally. Do not restate private chain-of-thought."
                     )
-                    request_messages=_append_continuation_guidance(request_messages,checkpoint_request)
+                    # The checkpoint instruction itself consumes input context.
+                    # Rebuild the request through the same budget-aware compactor
+                    # before dispatch so the safety handoff cannot overflow a
+                    # user-selected context setting.
+                    checkpoint_history=_append_continuation_guidance(request_history,checkpoint_request)
+                    request_messages=self.context.compact(
+                        checkpoint_history,tools,self.state["max_tokens"],self.event,checkpoint=checkpoint)
                     manifest=build_prompt_manifest(
                         request_messages,tools,request_index=request_index,context=self.context.context,
                         output_tokens=self.state["max_tokens"],input_budget=self.context.budget(self.state["max_tokens"]),

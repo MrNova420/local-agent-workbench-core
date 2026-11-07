@@ -1,3 +1,5 @@
+import json
+
 from prompt_manifest import build_prompt_manifest
 from desktop_engine import AgentEngine
 
@@ -170,14 +172,16 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
     events = []
     dispatched = []
     def measured_manifest(messages, tools, **kwargs):
-        return {"request_index": kwargs["request_index"], "estimated_request_input_tokens": 710,
-                "input_budget": 1000, "configured_context": kwargs["context"],
+        budget = kwargs["input_budget"]
+        return {"request_index": kwargs["request_index"], "estimated_request_input_tokens": int(budget * 0.71),
+                "input_budget": budget, "configured_context": kwargs["context"],
                 "maximum_output_tokens": kwargs["output_tokens"], "messages": []}
 
     monkeypatch.setattr(desktop_engine, "build_prompt_manifest", measured_manifest)
-    engine = AgentEngine(tmp_path, event=events.append, task_intent="discuss")
+    engine = AgentEngine(tmp_path, context=65536, max_tokens=8192, event=events.append, task_intent="discuss")
     engine.state["registry"].plan=[{"title":"Keep current plan","status":"pending"}]
     original_plan=list(engine.state["registry"].plan)
+    dispatched_sizes = []
     responses=iter([
         {"message":{"role":"assistant","tool_calls":[{"id":"premature-write","type":"function",
           "function":{"name":"write_file","arguments":{"path":"before-checkpoint.txt","content":"not written"}}}]}},
@@ -192,10 +196,14 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
     def finish(state, messages, *_args):
         dispatched.extend(messages)
         calls.append(messages)
+        dispatched_sizes.append(engine.context.estimate_request(json.dumps(
+            {"messages": messages, "tools": state["request_tools"]}, ensure_ascii=False, separators=(",", ":"))))
         return next(responses)
     engine.runtime.stream = finish
 
-    engine.run("Review the current project without making changes.")
+    history = [{"role": "user", "content": "Earlier review notes " + ("old finding " * 20_000)},
+               {"role": "assistant", "content": "Earlier analysis " + ("old context " * 20_000)}]
+    engine.run("Review the current project without making changes.", history)
 
     checkpoint_request = next(message for message in dispatched
                               if message.get("role") == "user" and "[Workbench progress checkpoint requested]" in message.get("content", ""))
@@ -205,6 +213,8 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
     assert manifest["context_checkpoint_threshold_ratio"] == 0.70
     assert manifest["context_checkpoint_ratio"] == 0.71
     assert len(calls)==3
+    assert all(size <= engine.context.budget(engine.state["max_tokens"]) for size in dispatched_sizes)
+    assert any(event.get("type") == "context_compacted" for event in events)
     system_prefixes=[next(message["content"] for message in request if message.get("role")=="system") for request in calls]
     assert len(set(system_prefixes))==1
     assert any(message.get("role")=="user" and "[Current Workbench continuation]" in message.get("content","")
