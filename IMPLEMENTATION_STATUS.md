@@ -1,5 +1,10 @@
 # Implementation and verification status
 
+## 2026-11-07 model-authored plans (verification queued)
+
+- Engine `e2bbeb611e928cd5d97cbff6174552645358b1e8` removes host-generated starter checklists at task start and before the first file mutation. A new task therefore has no displayed plan until the model calls `update_plan`; ordinary Auto chat no longer receives a synthetic `task_progress` plan. Existing saved Workbench checklists remain readable and can still advance for recovery compatibility.
+- Regression coverage now asserts an empty new checkpoint, no fake plan event for direct implementation, and no plan event for ordinary chat. Tests have not been run yet; they are queued for the grouped verification pass. This change does not alter model settings, tool permissions, context, output, or task duration.
+
 ## 2026-11-04 file tools verified above 100,000 lines
 
 - Added an engine regression that writes 100,001 UTF-8 lines, reads them back, appends two ordered lines, and confirms the final 100,003-line file. Existing tests also cover multi-megabyte Unicode writes, cumulative progress, and rollback after cancellation.
