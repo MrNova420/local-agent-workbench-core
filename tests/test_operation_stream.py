@@ -704,6 +704,52 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["verification"]["contract"]["post_change_inspection"], "completed")
             self.assertEqual(messages[-1]["content"], "The page is ready.")
 
+    def test_per_action_parallel_writes_then_parallel_readback_are_terminally_verified(self):
+        with tempfile.TemporaryDirectory() as root:
+            events = []
+            responses = [
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "plan", "function": {"name": "update_plan", "arguments": {
+                        "task_mode": "implement",
+                        "items": [
+                            {"title": "Implement the website", "status": "in_progress"},
+                            {"title": "Read back the website files", "status": "pending"},
+                        ],
+                    }}}
+                ]}},
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "write-html", "function": {"name": "write_file", "arguments": {"path": "index.html", "content": "<main>Ready</main>"}}},
+                    {"id": "write-css", "function": {"name": "write_file", "arguments": {"path": "styles.css", "content": "main { color: white; }"}}},
+                    {"id": "write-js", "function": {"name": "write_file", "arguments": {"path": "script.js", "content": "document.title = 'Ready';"}}},
+                ]}},
+                {"message": {"role": "assistant", "tool_calls": [
+                    {"id": "read-html", "function": {"name": "read_file", "arguments": {"path": "index.html"}}},
+                    {"id": "read-css", "function": {"name": "read_file", "arguments": {"path": "styles.css"}}},
+                    {"id": "read-js", "function": {"name": "read_file", "arguments": {"path": "script.js"}}},
+                ]}},
+                {"message": {"role": "assistant", "content": "The website is ready.", "tool_calls": [
+                    {"id": "finish-plan", "function": {"name": "update_plan", "arguments": {
+                        "task_mode": "implement",
+                        "items": [
+                            {"title": "Implement the website", "status": "completed"},
+                            {"title": "Read back the website files", "status": "completed"},
+                        ],
+                    }}}
+                ]}},
+            ]
+            engine = AgentEngine(root, access="ask", approval_mode="per-action", task_intent="implement",
+                                 approve=lambda *_args: True, event=events.append)
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            engine.run("Create a small website and verify the files.")
+
+            self.assertEqual(Path(root, "index.html").read_text(encoding="utf-8"), "<main>Ready</main>")
+            self.assertEqual(Path(root, "styles.css").read_text(encoding="utf-8"), "main { color: white; }")
+            self.assertEqual(Path(root, "script.js").read_text(encoding="utf-8"), "document.title = 'Ready';")
+            completion = next(event for event in events if event["type"] == "complete")
+            self.assertEqual(completion["verification"]["contract"]["post_change_inspection"], "completed")
+            self.assertEqual(completion["workflowOutcome"], "inspected")
+
     def test_implementation_with_command_but_no_review_continues_for_inspection(self):
         with tempfile.TemporaryDirectory() as root:
             events = []

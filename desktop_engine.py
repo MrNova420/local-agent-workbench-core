@@ -3135,6 +3135,27 @@ class AgentEngine:
                     ((call.get("function") or {}).get("name") == "update_plan") for call in calls
                 )
                 if plan_only_batch:
+                    saved_plan=checkpoint_state.get("plan",[])
+                    plan_remaining=_plan_has_open_work(saved_plan if isinstance(saved_plan,list) else [])
+                    post_change_inspection=last_inspection_action_index>last_effect_action_index
+                    if (_assistant_has_final_content(msg) and not plan_remaining
+                            and not _needs_implementation_continuation(
+                                implementation_requested,self.workspace.access,action_denied,
+                                completed_project_change,False,False,
+                                command_effects_inspected=command_side_effects_possible and post_change_inspection)):
+                        verification=_verification_report(verification_steps,implementation_requested,
+                            completed_project_change,command_side_effects_possible,post_change_inspection)
+                        self._advance_workbench_plan("update_plan","completed",final=True,
+                            verification=str(verification.get("status","")),project_changed=completed_project_change,
+                            post_change_inspection=post_change_inspection)
+                        workflow_outcome=_workflow_outcome(self.workspace.access,action_denied,
+                            completed_project_change,verification,saved_plan,self.task_intent,
+                            implementation_requested,self.state["registry"].task_mode)
+                        finish_task(checkpoint,"completed",verification,outcome=workflow_outcome)
+                        self.event({"type":"complete","elapsed":time.monotonic()-start,"usage":result,
+                            "implementationRequested":implementation_requested,"projectChanged":completed_project_change,
+                            "actionDenied":action_denied,"verification":verification,"workflowOutcome":workflow_outcome})
+                        return msgs
                     progress_signature=_continuation_progress_signature(checkpoint_state,verification_steps)
                     if plan_only_signature != progress_signature:
                         plan_only_signature=progress_signature
@@ -3186,7 +3207,7 @@ class AgentEngine:
                             "plan and activity remain available for recovery."
                         )
                         verification=_verification_report(verification_steps,implementation_requested,
-                            completed_project_change,command_side_effects_possible,False)
+                            completed_project_change,command_side_effects_possible,post_change_inspection)
                         verification["status"]=outcome
                         verification["incomplete_reason"]=blocker
                         terminal_status="stopped" if blocked or incomplete else "failed"
