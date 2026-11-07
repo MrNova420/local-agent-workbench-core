@@ -3,6 +3,7 @@
 ## 2026-11-07 model-authored plans (verification queued)
 
 - Engine `e2bbeb611e928cd5d97cbff6174552645358b1e8` removes host-generated starter checklists at task start and before the first file mutation. A new task therefore has no displayed plan until the model calls `update_plan`; ordinary Auto chat no longer receives a synthetic `task_progress` plan. Existing saved Workbench checklists remain readable and can still advance for recovery compatibility.
+- Independent disjoint file batches can now gather the selected per-action/task/session/auto approval decisions before dispatch, then execute only approved targets concurrently. Duplicate, conflicting, dependent, denied, and uncertain actions remain serialized or blocked under existing rules. A regression checks all approvals finish before any write starts and verifies concurrent file results. Coverage is written but not run yet.
 - Regression coverage now asserts an empty new checkpoint, no fake plan event for direct implementation, and no plan event for ordinary chat. Tests have not been run yet; they are queued for the grouped verification pass. This change does not alter model settings, tool permissions, context, output, or task duration.
 
 ## 2026-11-04 file tools verified above 100,000 lines

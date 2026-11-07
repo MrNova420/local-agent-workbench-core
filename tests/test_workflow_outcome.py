@@ -80,9 +80,9 @@ def test_all_model_profiles_keep_safe_batching_and_full_scope():
         agent_system_prompt("Edit with approval", "", harness_profile="small-model"),
     ]
     for prompt in prompts:
-        assert "Batch independent tool calls in one response when their inputs are known" in prompt
-        assert "validated independent reads concurrently" in prompt
-        assert "Keep writes, commands, and MCP calls ordered" in prompt
+        assert "Batch independent read calls and disjoint file write/edit calls" in prompt
+        assert "gathers each required approval before dispatching independent file changes concurrently" in prompt
+        assert "Keep commands and MCP calls ordered" in prompt
     assert "keep the entire requested scope and expandable plan" in prompts[1]
     assert "do not cap required work" in prompts[1]
 

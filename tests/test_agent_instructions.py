@@ -42,8 +42,8 @@ def test_small_model_workflow_guides_adaptive_work_without_a_fixed_tool_call_lim
 
     assert "small-model workflow: keep the entire requested scope and expandable plan" in prompt.casefold()
     assert "once the next safe step is clear, act and use results to continue" in prompt.casefold()
-    assert "batch independent tool calls in one response when their inputs are known" in prompt.casefold()
-    assert "keep writes, commands, and mcp calls ordered under their normal approval rules" in prompt.casefold()
+    assert "batch independent read calls and disjoint file write/edit calls" in prompt.casefold()
+    assert "gathers each required approval before dispatching independent file changes concurrently" in prompt.casefold()
     assert "keep all required work and acceptance checks" in prompt.casefold()
     assert "use results to continue" in prompt.casefold()
 
@@ -73,7 +73,7 @@ def test_small_model_continuity_guidance_preserves_discussion_and_plan_intents()
 def test_standard_workflow_remains_general():
     prompt = agent_system_prompt("Ask before writes", "Project guidance", harness_profile="standard")
 
-    assert "batch independent tool calls in one response" in prompt.casefold()
+    assert "batch independent read calls and disjoint file write/edit calls" in prompt.casefold()
     assert "small-model workflow:" not in prompt.casefold()
     assert "living, expandable plan" not in prompt.casefold()
 

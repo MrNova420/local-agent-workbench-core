@@ -102,6 +102,53 @@ class EngineToolBatchTests(unittest.TestCase):
             self.assertGreaterEqual(peak, 2)
             self.assertEqual([m["content"] for m in history if m.get("role") == "tool"], ["git_status", "git_diff"])
 
+    def test_independent_file_writes_collect_approvals_before_parallel_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            approvals = []
+            execution_count_at_approval = []
+            lock = threading.Lock()
+            active = 0
+            peak = 0
+            engine = AgentEngine(root, access="ask", approval_mode="per-action",
+                                 approve=lambda name, args: (approvals.append((name, args["path"])),
+                                                             execution_count_at_approval.append(executed[0]), True)[2])
+            calls = [{"id": name, "function": {"name": "write_file", "arguments": {
+                "path": f"{name}.txt", "content": name}}} for name in ("one", "two", "three")]
+            responses = [
+                {"message": {"role": "assistant", "content": "", "tool_calls": calls}},
+                {"message": {"role": "assistant", "content": "All three independent files were written."}},
+            ]
+            original_run = engine.state["registry"].run
+            executed = [0]
+
+            def run_tool(name, args, **kwargs):
+                nonlocal active, peak
+                self.assertTrue(kwargs.get("approval_already_granted"))
+                with lock:
+                    active += 1
+                    executed[0] += 1
+                    peak = max(peak, active)
+                try:
+                    time.sleep(0.05)
+                    return original_run(name, args, **kwargs)
+                finally:
+                    with lock:
+                        active -= 1
+
+            engine.state["registry"].run = run_tool
+            engine.runtime.stream = lambda *_args: responses.pop(0)
+
+            history = engine.run("Create three independent text files")
+
+            self.assertEqual(approvals, [("write_file", "one.txt"), ("write_file", "two.txt"),
+                                         ("write_file", "three.txt")])
+            self.assertEqual(execution_count_at_approval, [0, 0, 0])
+            self.assertGreaterEqual(peak, 2)
+            self.assertEqual([Path(root, f"{name}.txt").read_text(encoding="utf-8")
+                              for name in ("one", "two", "three")], ["one", "two", "three"])
+            self.assertEqual([row["content"] for row in history if row.get("role") == "tool"],
+                             ["Wrote one.txt", "Wrote two.txt", "Wrote three.txt"])
+
     def test_uncertain_mcp_result_stops_batch_then_returns_honest_final_status(self):
         with tempfile.TemporaryDirectory() as root:
             mcp_tool = {"type": "function", "function": {

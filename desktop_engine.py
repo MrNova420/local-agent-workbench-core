@@ -197,7 +197,7 @@ def agent_system_prompt(access_policy: str, project_instructions: str, harness_p
         "Execution rule: when the user asks you to build, create, implement, fix, or change project files, planning is an intermediate step. Continue directly to structured tools in the same task and verify the result. Do not stop after announcing what you are about to do. Only provide a plan without edits when the user explicitly asks for plan-only/review-only work or access is read-only.\n\n"
         "Implementation pacing: plan only enough to identify the next safe, useful action and the checks needed for completion, then start doing the work through project tools. For a clear implementation request, do not spend the whole response deriving an exhaustive design before the first useful operation; move from adequate scoping into the first relevant inspection or change, then refine from evidence. After publishing or revising an implementation plan, take its next open step through an appropriate structured tool on the next response unless approval, missing information, or a genuine dependency blocks it. Do not repeat a plan or reread a checkpoint section when the latest tool result already gives the state you need. Expand or revise the plan when new evidence, dependencies, user direction, or a real blocker warrants it; keep all required work and acceptance checks. Do not wait to fully design every file before making the first inspected, approved change, and do not replace project edits with a long source draft in chat. This is a pacing preference, not a cap on reasoning, planning, scope, tool calls, iterations, context, output, or runtime.\n\n"
         "Tool and approval protocol: perform project operations by calling the structured tools provided to you. Do not narrate an intended tool call and then stop. "
-        "Batch independent tool calls in one response when their inputs are known; the host may run validated independent reads concurrently. Keep writes, commands, and MCP calls ordered under their normal approval rules, and do not batch actions that depend on earlier results. "
+        "Batch independent read calls and disjoint file write/edit calls in one response when their inputs are known. The host validates the full batch, gathers each required approval before dispatching independent file changes concurrently, and keeps denied, conflicting, or dependent operations from running. Keep commands and MCP calls ordered unless their independence is explicit and safe. "
         "Commands are non-interactive: their stdin is isolated from the sidecar protocol and prompt-driven programs receive end-of-input. Use non-interactive flags when available; do not assume a command can ask follow-up questions. "
         "When the host provides ask_user, use it only when a missing requirement or user choice would materially change the implementation; keep working from reasonable defaults otherwise. It is for task clarification, never for permission to run a file change or command. "
         "Persistent Workbench tool permission rules are enforced by the host; a denied tool is unavailable for this task and must not be retried through another tool or MCP route. Hard-deny rules override run approval settings. Structured file tools stay inside the selected project unless a matching external_directory rule grants a concrete folder; an external_directory ask rule requires approval for each outside-project path action. Shell commands and MCP retain their separately described host capabilities. "
@@ -847,7 +847,8 @@ class ToolRegistry:
                 result+=f"[File listing scan capped at {PROJECT_LIST_SCAN_LIMIT:,} files; results may be incomplete. Narrow the path or pattern.]"
             return result
     def run(self, name: str, args: dict, *, output_byte_budget: int | None = None,
-            event_callback: Callable[[dict[str,Any]],None] | None = None) -> str:
+            event_callback: Callable[[dict[str,Any]],None] | None = None,
+            approval_already_granted: bool = False) -> str:
         active_output_budget=self.read_output_byte_budget if output_byte_budget is None else max(0,int(output_byte_budget))
         if name == "ask_user":
             if self.ask_user_callback is None:return "Ask-user interaction is unavailable in this runtime."
@@ -881,7 +882,7 @@ class ToolRegistry:
         policy=permission_decision(name,args,self.permission_rules)
         policy_approved=False
         if policy in {"allow","ask"}:
-            if not self.approval(name,args):return "Denied by user or permission policy."
+            if not approval_already_granted and not self.approval(name,args):return "Denied by user or permission policy."
             policy_approved=True
         elif policy=="deny":
             return "Denied by user: a persistent deny permission rule blocks this action."
@@ -1290,7 +1291,7 @@ class ToolRegistry:
             return result
         if name in {"write_file", "append_file", "edit_file"}:
             if self.workspace.access == "plan": return "Blocked: project is in read-only plan mode."
-            if self.workspace.access == "ask" and not policy_approved and not self.approval(name,args): return "Denied by user."
+            if self.workspace.access == "ask" and not policy_approved and not approval_already_granted and not self.approval(name,args): return "Denied by user."
             path=self.workspace.resolve(args["path"])
             if name == "write_file":
                 content=args["content"]
@@ -2438,14 +2439,13 @@ class AgentEngine:
         """Only parallelize separate file targets after their approval path is non-interactive."""
         if len(parsed_batch)<2:return False
         registry=self.state["registry"]
-        # ``ask`` access invokes the interactive approval callback even when
-        # the task/session approval mode is otherwise granted. Keep those
-        # calls ordered so the user sees one approval at a time.
-        if self.workspace.access in {"plan","copy","ask"}:return False
+        # Ask access can still batch disjoint writes: the engine gathers each
+        # action's approval first, then dispatches only approved calls together.
+        if self.workspace.access in {"plan","copy"}:return False
         approved_mode=(self.approval_mode=="auto" or
                        (self.approval_mode=="per-task" and self.approved_task) or
                        (self.approval_mode=="per-session" and self.approved_session))
-        if not approved_mode:return False
+        if not approved_mode and self.workspace.access!="ask":return False
         targets=[];identities=set()
         for _,_,name,args in parsed_batch:
             if name not in {"write_file","append_file","edit_file"}:return False
@@ -2852,15 +2852,61 @@ class AgentEngine:
                         parsed_batch.append((batch_index,batch_call,batch_name,batch_args if isinstance(batch_args,dict) else {}))
                     batch_is_parallel_write=batch_write_candidate and self._can_parallelize_file_writes(parsed_batch)
                     if (batch_is_readonly or batch_is_parallel_write) and not batch_has_duplicate_action and not self.cancel_event.is_set():
+                        approved_write_calls:dict[int,tuple[str,float]]={}
+                        if batch_is_parallel_write and self.workspace.access=="ask":
+                            for batch_index,batch_call,batch_name,batch_args in parsed_batch:
+                                operation_id=uuid.uuid4().hex;operation_started=time.time()
+                                self.event({"type":"tool_start","operationId":operation_id,
+                                            "toolCallId":batch_call.get("id",f"call-{batch_index}"),
+                                            "name":batch_name,"arguments":batch_args,
+                                            "status":"awaiting_approval","startedAt":operation_started})
+                                try:
+                                    approved=self._approval(batch_name,batch_args)
+                                except RequestCancelled:
+                                    approved=False
+                                    self.cancel_event.set()
+                                if approved:
+                                    approved_write_calls[batch_index]=(operation_id,operation_started)
+                                    continue
+                                cancelled=self.cancel_event.is_set()
+                                output=("Cancelled before this approved batch was dispatched." if cancelled
+                                        else "Denied by user.")
+                                operation_event={"type":"tool_done","operationId":operation_id,
+                                    "toolCallId":batch_call.get("id",f"call-{batch_index}"),"name":batch_name,
+                                    "result":output,"status":"cancelled" if cancelled else "denied",
+                                    "affectedFiles":[],"startedAt":operation_started,"completedAt":time.time()}
+                                self.operation_results[operation_id]=output
+                                record_operation(checkpoint,operation_event,batch_args);self.event(operation_event)
+                                prepared_batch[batch_index]={"operation_id":operation_id,"started":operation_started,
+                                    "output":output,"budget":0,"completed_event":True}
+                                if cancelled:break
+                            if self.cancel_event.is_set():
+                                for batch_index,(operation_id,operation_started) in approved_write_calls.items():
+                                    batch_call=parsed_batch[batch_index][1];batch_name=parsed_batch[batch_index][2]
+                                    output="Cancelled before this approved batch was dispatched."
+                                    operation_event={"type":"tool_done","operationId":operation_id,
+                                        "toolCallId":batch_call.get("id",f"call-{batch_index}"),"name":batch_name,
+                                        "result":output,"status":"cancelled","affectedFiles":[],
+                                        "startedAt":operation_started,"completedAt":time.time()}
+                                    self.operation_results[operation_id]=output
+                                    record_operation(checkpoint,operation_event,parsed_batch[batch_index][3]);self.event(operation_event)
+                                    prepared_batch[batch_index]={"operation_id":operation_id,"started":operation_started,
+                                        "output":output,"budget":0,"completed_event":True}
+                                approved_write_calls.clear()
                         futures={}
                         with ThreadPoolExecutor() as executor:
                             for batch_index,batch_call,batch_name,batch_args in parsed_batch:
-                                operation_id=uuid.uuid4().hex;operation_started=time.time()
-                                self.event({"type":"tool_start","operationId":operation_id,"toolCallId":batch_call.get("id",f"call-{batch_index}"),"name":batch_name,"arguments":batch_args,"status":"running","startedAt":operation_started})
+                                if batch_is_parallel_write and self.workspace.access=="ask":
+                                    if batch_index not in approved_write_calls:continue
+                                    operation_id,operation_started=approved_write_calls[batch_index]
+                                else:
+                                    operation_id=uuid.uuid4().hex;operation_started=time.time()
+                                    self.event({"type":"tool_start","operationId":operation_id,"toolCallId":batch_call.get("id",f"call-{batch_index}"),"name":batch_name,"arguments":batch_args,"status":"running","startedAt":operation_started})
                                 output_budget=self._tool_output_budget(request_messages,assistant_tool_message,[],tools,checkpoint,batch_name,len(calls))
                                 progress_callback=lambda event,op=operation_id:self.event({**event,"operationId":op})
                                 future=executor.submit(self.state["registry"].run,batch_name,batch_args,
-                                                       output_byte_budget=output_budget,event_callback=progress_callback)
+                                                       output_byte_budget=output_budget,event_callback=progress_callback,
+                                                       approval_already_granted=batch_is_parallel_write and self.workspace.access=="ask")
                                 futures[future]=(batch_index,operation_id,operation_started,output_budget)
                             for future in as_completed(futures):
                                 batch_index,operation_id,operation_started,output_budget=futures[future]
