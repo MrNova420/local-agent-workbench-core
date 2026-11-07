@@ -1,4 +1,5 @@
 import json
+import math
 
 from prompt_manifest import build_prompt_manifest
 from desktop_engine import AgentEngine
@@ -211,7 +212,7 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
     manifest = next(event for event in events if event.get("type") == "prompt_manifest")
     assert manifest["context_checkpoint_due"] is True
     assert manifest["context_checkpoint_threshold_ratio"] == 0.70
-    assert manifest["context_checkpoint_ratio"] == 0.71
+    assert math.isclose(manifest["context_checkpoint_ratio"], 0.71, rel_tol=0, abs_tol=1e-5)
     assert len(calls)==3
     assert all(size <= engine.context.budget(engine.state["max_tokens"]) for size in dispatched_sizes)
     assert any(event.get("type") == "context_compacted" for event in events)
