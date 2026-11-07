@@ -17,7 +17,7 @@ from project_walk import iter_project_files
 from mcp_support import MCPRequestCancelled, MCPRequestUncertain
 from prompt_manifest import build_prompt_manifest
 from cancellable_http import interrupt_connection, open_http_stream
-from task_checkpoint import CONTEXT_CHECKPOINT_DUE_RATIO, CONTEXT_CHECKPOINT_RESET_RATIO, acknowledge_context_checkpoint, begin_task, checkpoint_omissions, current_task, finish_task, initial_task_plan, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint, update_context_checkpoint_pressure
+from task_checkpoint import CONTEXT_CHECKPOINT_DUE_RATIO, CONTEXT_CHECKPOINT_RESET_RATIO, acknowledge_context_checkpoint, begin_task, checkpoint_omissions, current_task, finish_task, plan_item_is_open, record_assistant_status, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, render_checkpoint, update_context_checkpoint_pressure
 from tool_schema_capabilities import schema_validator_class, unsupported_schema_features
 from permission_policy import _paths, external_directory_decision, permission_decision, permission_rules_for_workspace, validate_permission_rules
 from windows_process_job import WindowsProcessJob
@@ -2510,14 +2510,6 @@ class AgentEngine:
         checkpoint_state.setdefault("goal",prompt)
         checkpoint_state["workspace"]=str(self.workspace.root)
         registry=self.state["registry"]
-        if self.task_intent=="auto" and not registry.plan:
-            registry.plan=initial_task_plan(prompt,"auto")
-            if registry.plan:
-                registry.plan_source="workbench"
-                record_plan(checkpoint,registry.plan,task_mode=registry.task_mode,plan_source="workbench")
-                self.event({"type":"plan","items":copy.deepcopy(registry.plan),
-                            "acceptanceCriteria":copy.deepcopy(checkpoint_state.get("acceptance_criteria",[])),
-                            "source":"workbench","taskMode":registry.task_mode})
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
@@ -2860,13 +2852,6 @@ class AgentEngine:
                         parsed_batch.append((batch_index,batch_call,batch_name,batch_args if isinstance(batch_args,dict) else {}))
                     batch_is_parallel_write=batch_write_candidate and self._can_parallelize_file_writes(parsed_batch)
                     if (batch_is_readonly or batch_is_parallel_write) and not batch_has_duplicate_action and not self.cancel_event.is_set():
-                        if batch_is_parallel_write and self.task_intent=="auto" and not self.state["registry"].plan:
-                            registry=self.state["registry"]
-                            registry.plan=initial_task_plan(prompt,"implement")
-                            registry.plan_source="workbench";registry.task_mode="implement"
-                            record_plan(checkpoint,registry.plan,[],task_mode="implement",plan_source="workbench")
-                            self.event({"type":"plan","items":copy.deepcopy(registry.plan),
-                                        "acceptanceCriteria":[],"source":"workbench","taskMode":"implement"})
                         futures={}
                         with ThreadPoolExecutor() as executor:
                             for batch_index,batch_call,batch_name,batch_args in parsed_batch:
@@ -2925,19 +2910,6 @@ class AgentEngine:
                         operation_id=prepared["operation_id"] if prepared else uuid.uuid4().hex
                         operation_started=prepared["started"] if prepared else time.time()
                         registry=self.state["registry"]
-                        if (not prepared and self.task_intent == "auto"
-                                and name in {"write_file", "append_file", "edit_file", "apply_patch", "run_command", "run_shell"}
-                                and not registry.plan):
-                            # A real structured project-changing operation is
-                            # reliable evidence that Automatic mode needs an
-                            # implementation checklist. Publish it before the
-                            # operation; do not guess from prompt wording.
-                            registry.plan=initial_task_plan(prompt,"implement")
-                            registry.plan_source="workbench"
-                            registry.task_mode="implement"
-                            record_plan(checkpoint,registry.plan,[],task_mode="implement",plan_source="workbench")
-                            self.event({"type":"plan","items":copy.deepcopy(registry.plan),
-                                        "acceptanceCriteria":[],"source":"workbench","taskMode":"implement"})
                         tool_call_id=call.get("id",f"call-{index}")
                         if prepared:
                             out=prepared["output"]

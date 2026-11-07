@@ -1,6 +1,6 @@
 import desktop_engine
 from desktop_engine import AgentEngine, ToolRegistry, Workspace, _assistant_has_final_content, _continuation_progress_signature, _implementation_evidence, _no_progress_response_signature, _plan_has_open_work, _plan_requests_implementation, _restored_plan_requests_implementation, _saved_plan_source, _verification_report, _workflow_outcome, agent_system_prompt
-from task_checkpoint import begin_task, initial_task_plan
+from task_checkpoint import begin_task
 
 
 def test_workflow_outcome_distinguishes_plan_change_inspection_and_command():
@@ -140,26 +140,12 @@ def test_automatic_plan_phase_promotes_actionable_plan_to_implementation(tmp_pat
     assert checkpoint["current"]["task_mode"] == "implement"
 
 
-def test_host_starter_plan_is_visible_and_intent_specific():
-    assert initial_task_plan("", "implement") == []
-    assert initial_task_plan("Explain this code", "discuss") == []
-    plan = initial_task_plan("Add a settings page", "implement")
-    automatic_plan = initial_task_plan("Build a small website", "auto")
+def test_new_automatic_task_starts_without_a_host_authored_plan():
+    checkpoint = begin_task(None, prompt="Build a small website", turn_id="turn-1",
+                            workspace="C:/project", settings={"task_intent": "auto"})
 
-    assert plan[0] == {"title": "Use the task brief and project instructions as the objective", "status": "completed", "source": "workbench", "phase": "task_brief"}
-    assert [row["title"] for row in plan[1:]] == [
-        "Inspect relevant project context",
-        "Refine the checklist with affected files and acceptance criteria",
-        "Implement the requested changes under the selected access and approval rules",
-        "Inspect the changes and run relevant approved checks",
-    ]
-    assert [row["phase"] for row in plan[1:]] == ["inspect", "planning", "implementation", "verification"]
-    assert all(row["source"] == "workbench" for row in plan)
-    assert automatic_plan == [{
-        "title": "Assess the request and track the next useful action",
-        "status": "in_progress", "source": "workbench", "phase": "task_progress",
-    }]
-    assert initial_task_plan("How do I fix this?", "auto") == automatic_plan
+    assert checkpoint["current"]["plan"] == []
+    assert "plan_source" not in checkpoint["current"]
 
 
 def test_automatic_implementation_uses_structured_evidence_not_prompt_wording():

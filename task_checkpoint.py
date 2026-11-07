@@ -78,36 +78,6 @@ def begin_task(
     return {"task_history": history, "current": current, **session_metadata}
 
 
-def initial_task_plan(prompt: str, intent: str) -> list[dict[str, Any]]:
-    """Create a visible, factual starter checklist before a model call begins."""
-    if intent not in {"plan", "implement", "auto"}:
-        return []
-    if not str(prompt).strip():
-        return []
-    if intent == "plan":
-        phases = [
-            ("inspect", "Inspect relevant project context", "pending"),
-            ("planning", "Refine this request into sequenced steps and surface assumptions", "pending"),
-            ("present", "Present the plan without changing workspace files", "pending"),
-        ]
-    elif intent == "implement":
-        phases = [
-            ("inspect", "Inspect relevant project context", "pending"),
-            ("planning", "Refine the checklist with affected files and acceptance criteria", "pending"),
-            ("implementation", "Implement the requested changes under the selected access and approval rules", "pending"),
-            ("verification", "Inspect the changes and run relevant approved checks", "pending"),
-        ]
-    elif intent == "auto":
-        return [{"title": "Assess the request and track the next useful action",
-                 "status": "in_progress", "source": "workbench", "phase": "task_progress"}]
-    else:
-        return []
-    return [
-        {"title": "Use the task brief and project instructions as the objective", "status": "completed", "source": "workbench", "phase": "task_brief"},
-        *({"title": title, "status": status, "source": "workbench", "phase": phase} for phase, title, status in phases),
-    ]
-
-
 def record_plan(checkpoint: dict[str, Any], items: Any, acceptance_criteria: Any = None,
                 decisions: Any = None, task_mode: str | None = None,
                 plan_source: str | None = None) -> None:

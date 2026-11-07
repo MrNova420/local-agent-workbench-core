@@ -920,7 +920,7 @@ class OperationStreamTests(unittest.TestCase):
             self.assertEqual(completion["workflowOutcome"], "inspected")
             self.assertFalse(any(event.get("type") == "implementation_incomplete" for event in events))
 
-    def test_automatic_direct_write_gets_a_live_plan_without_prompt_keyword_matching(self):
+    def test_automatic_direct_write_does_not_emit_a_host_authored_plan(self):
         with tempfile.TemporaryDirectory() as root:
             events = []
             engine = AgentEngine(root, access="edit", event=events.append, task_intent="auto")
@@ -937,12 +937,9 @@ class OperationStreamTests(unittest.TestCase):
 
             engine.run("Make this usable")
 
-            plan_index = next(index for index, event in enumerate(events)
-                              if event.get("type") == "plan" and event.get("source") == "workbench")
-            write_index = next(index for index, event in enumerate(events)
-                               if event.get("type") == "tool_start" and event.get("name") == "write_file")
             completion = next(event for event in events if event.get("type") == "complete")
-            self.assertLess(plan_index, write_index)
+            self.assertFalse(any(event.get("type") == "plan" and event.get("source") == "workbench"
+                                 for event in events))
             self.assertEqual((Path(root) / "app.py").read_text(encoding="utf-8"), "print('ready')\\n")
             self.assertEqual(completion["workflowOutcome"], "inspected")
 
@@ -958,12 +955,8 @@ class OperationStreamTests(unittest.TestCase):
             checkpoint = engine.state["task_checkpoint"]["current"]
             self.assertEqual(completion["workflowOutcome"], "no_action")
             self.assertEqual(checkpoint["workflow_outcome"], "no_action")
-            plan_events = [event for event in events if event.get("type") == "plan"]
-            self.assertEqual(len(plan_events), 2)
-            self.assertEqual(plan_events[0]["items"][0]["phase"], "task_progress")
-            self.assertEqual(plan_events[0]["items"][0]["status"], "in_progress")
-            self.assertEqual(plan_events[-1]["items"][0]["status"], "completed")
-            self.assertEqual(checkpoint["plan"][0]["status"], "completed")
+            self.assertFalse(any(event.get("type") == "plan" for event in events))
+            self.assertEqual(checkpoint["plan"], [])
             self.assertFalse(any(event.get("type") == "tool_start" for event in events))
 
     def test_automatic_final_answer_does_not_trigger_metadata_only_model_request(self):
