@@ -2513,7 +2513,7 @@ class AgentEngine:
         checkpoint_state["plan"]=copy.deepcopy(self.state["registry"].plan or checkpoint_state.get("plan",[]))
         checkpoint_state["status"]="active"
         checkpoint_state["updated_at"]=time.time()
-        start=time.monotonic();request_index=0;provider_retry_attempt=0;seen_no_progress_responses=set();seen_checkpoint_responses=set();last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
+        start=time.monotonic();request_index=0;provider_retry_attempt=0;seen_no_progress_responses=set();checkpoint_retry_requested=False;last_truncated_response_signature=None;plan_only_signature=None;plan_only_guidance_signature=None;current_continuation_guidance=None;completed_project_change=False;command_side_effects_possible=False;mutation_attempted=False;tool_action_index=0;last_effect_action_index=0;last_inspection_action_index=0;action_denied=False;verification_steps=[]
         implementation_requested=(
             True if self.task_intent=="implement" else False if self.task_intent in {"discuss", "plan"} else
             bool(checkpoint_state.get("implementation_requested") or _restored_plan_requests_implementation(
@@ -2524,7 +2524,7 @@ class AgentEngine:
 
         def require_progress_checkpoint(message:dict[str,Any], calls:list[dict[str,Any]], usage:dict[str,Any])->bool:
             """Persist context continuity before accepting another long response or operation."""
-            nonlocal current_continuation_guidance
+            nonlocal current_continuation_guidance,checkpoint_retry_requested
             state=current_task(checkpoint).get("context_checkpoint",{})
             if not isinstance(state,dict) or not state.get("due") or state.get("acknowledged"):
                 return False
@@ -2539,11 +2539,19 @@ class AgentEngine:
                     break
             if has_checkpoint_call:
                 return False
-            signature=_no_progress_response_signature(current_task(checkpoint),verification_steps,message)
+            # A final user-visible response needs no further task handoff. If
+            # implementation work remains, the normal structured continuation
+            # check below still requires a checkpoint before any next operation.
+            if not calls and _assistant_has_final_content(message):
+                return False
             blocker=("The selected input budget reached the progress-checkpoint threshold, but the model did not save "
                      "the requested continuity handoff. The existing transcript, plan, and completed operations are "
                      "preserved; resume from this checkpoint without replaying completed actions.")
-            if signature in seen_checkpoint_responses:
+            # Give the model one explicit correction after a missed checkpoint.
+            # A second reasoning-only/non-checkpoint response has no durable
+            # progress, even if its private reasoning text differs. Stop with a
+            # recoverable checkpoint instead of burning another output window.
+            if checkpoint_retry_requested:
                 record_blocker(checkpoint,blocker)
                 verification=_verification_report(verification_steps,implementation_requested,completed_project_change,
                     command_side_effects_possible,last_inspection_action_index>last_effect_action_index)
@@ -2554,7 +2562,7 @@ class AgentEngine:
                     "implementationRequested":implementation_requested,"projectChanged":completed_project_change,
                     "actionDenied":action_denied,"verification":verification,"workflowOutcome":"checkpoint_missing"})
                 return True
-            seen_checkpoint_responses.add(signature)
+            checkpoint_retry_requested=True
             for call in calls:
                 function=call.get("function") or {}
                 name=function.get("name","unknown_tool")
@@ -2575,6 +2583,7 @@ class AgentEngine:
                 checkpoint_pressure=current_task(checkpoint).get("context_checkpoint",{})
                 if isinstance(checkpoint_pressure,dict) and checkpoint_pressure.get("acknowledged"):
                     current_continuation_guidance=None
+                    checkpoint_retry_requested=False
                 if self.stop_after_operation.is_set():
                     finish_task(checkpoint,"stopped")
                     self.event({"type":"stopped_after_operation","elapsed":time.monotonic()-start});return msgs

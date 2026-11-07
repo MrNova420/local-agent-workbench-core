@@ -229,7 +229,7 @@ def test_engine_requests_progress_checkpoint_at_the_adaptive_budget_threshold(tm
     assert any(event.get("type")=="progress_checkpoint" for event in events)
 
 
-def test_context_checkpoint_repeat_stops_with_recoverable_checkpoint_missing(tmp_path, monkeypatch):
+def test_context_checkpoint_miss_stops_without_relying_on_repeated_model_wording(tmp_path, monkeypatch):
     import desktop_engine
 
     events=[]
@@ -238,7 +238,12 @@ def test_context_checkpoint_repeat_stops_with_recoverable_checkpoint_missing(tmp
         "configured_context":kwargs["context"],"maximum_output_tokens":kwargs["output_tokens"],"messages":[]})
     engine=AgentEngine(tmp_path,event=events.append,task_intent="discuss")
     calls=[]
-    engine.runtime.stream=lambda *_args:(calls.append(True) or {"message":{"role":"assistant","content":"I am still reviewing."}})
+    responses=iter([
+        {"message":{"role":"assistant","thinking":"I am still reviewing."}},
+        {"message":{"role":"assistant","thinking":"The same review is still in progress."}},
+        {"message":{"role":"assistant","thinking":"The same review is still in progress."}},
+    ])
+    engine.runtime.stream=lambda *_args:(calls.append(True) or next(responses))
 
     engine.run("Review the current project without making changes.")
 
@@ -247,3 +252,28 @@ def test_context_checkpoint_repeat_stops_with_recoverable_checkpoint_missing(tmp
     assert terminal["workflowOutcome"]=="checkpoint_missing"
     assert terminal["verification"]["status"]=="checkpoint_missing"
     assert "transcript, plan, and completed operations are preserved" in terminal["verification"]["incomplete_reason"]
+
+
+def test_final_user_visible_answer_can_finish_without_a_redundant_checkpoint_call(tmp_path, monkeypatch):
+    import desktop_engine
+
+    events=[]
+    monkeypatch.setattr(desktop_engine,"build_prompt_manifest",lambda messages,tools,**kwargs:{
+        "request_index":kwargs["request_index"],"estimated_request_input_tokens":710,"input_budget":1000,
+        "configured_context":kwargs["context"],"maximum_output_tokens":kwargs["output_tokens"],"messages":[]})
+    engine=AgentEngine(tmp_path,event=events.append,task_intent="discuss")
+    requests=[]
+    responses=iter([
+        {"message":{"role":"assistant","content":"Review complete."}},
+        {"message":{"role":"assistant","content":"Review complete."}},
+    ])
+    def stream(_state,messages,*_args):
+        requests.append(messages)
+        return next(responses)
+    engine.runtime.stream=stream
+
+    engine.run("Review the current project without making changes.")
+
+    assert len(requests)==1
+    terminal=next(event for event in events if event.get("type")=="complete")
+    assert terminal["workflowOutcome"]=="discussion"
