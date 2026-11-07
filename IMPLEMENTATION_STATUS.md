@@ -6,6 +6,11 @@
 - A checkpoint-pressure handoff is now re-compacted together with the current conversation before dispatch. Previously the handoff text was appended after compaction, so its own tokens could exceed the selected input budget. The selected context/output values remain intact. A regression now exercises 65,536 context / 8,192 output with prior history and checks every dispatched request against the selected input budget; it has not been run.
 - Do not treat the focused regressions or older status entries below as verification of the current source. Grouped engine, sidecar, renderer, typecheck, package, and visible Flint acceptance remain pending. No model was loaded and no model settings were changed during these edits.
 
+## 2026-11-07 repeated-compaction handoff retention (verification queued)
+
+- A second progress handoff previously replaced the prior handoff summary. Handoffs now accumulate deduplicated verified findings and completed work, while the newest pending work and next action replace the prior frontier. Provider-emitted reasoning remains in canonical conversation history; the checkpoint records concise explicit findings rather than claiming hidden reasoning.
+- When the inference-only checkpoint must shrink, handoff details are progressively removed from its oldest entries and recorded in `checkpoint_omissions`; the canonical saved checkpoint is not mutated. Regression coverage checks repeated handoffs and budgeted omission while preserving the latest next action. It remains unrun with the grouped suite.
+
 ## 2026-11-07 model-authored plans (verification queued)
 
 - Engine `e2bbeb611e928cd5d97cbff6174552645358b1e8` removes host-generated starter checklists at task start and before the first file mutation. A new task therefore has no displayed plan until the model calls `update_plan`; ordinary Auto chat no longer receives a synthetic `task_progress` plan. Existing saved Workbench checklists remain readable and can still advance for recovery compatibility.

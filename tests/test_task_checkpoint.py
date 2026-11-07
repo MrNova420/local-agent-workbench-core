@@ -2,7 +2,7 @@ import copy
 import json
 
 from desktop_engine import ContextManager
-from task_checkpoint import begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, record_user_update, render_checkpoint
+from task_checkpoint import acknowledge_context_checkpoint, begin_task, checkpoint_omissions, finish_task, record_blocker, record_decision, record_implementation_requested, record_operation, record_plan, record_user_update, render_checkpoint
 
 
 def test_same_task_steering_is_durable_and_delivery_updates_are_idempotent():
@@ -419,7 +419,7 @@ def test_conversation_reader_recovers_emitted_reasoning_and_excludes_system_prom
 
 
 def test_context_checkpoint_pressure_latches_until_compaction_crosses_reset_band(tmp_path):
-    from task_checkpoint import acknowledge_context_checkpoint, update_context_checkpoint_pressure
+    from task_checkpoint import update_context_checkpoint_pressure
 
     checkpoint = begin_task(None, prompt="Build a project", turn_id="t1", workspace=str(tmp_path), settings={})
     first = update_context_checkpoint_pressure(checkpoint, 700, 1000)
@@ -440,6 +440,58 @@ def test_context_checkpoint_pressure_latches_until_compaction_crosses_reset_band
     next_cycle = update_context_checkpoint_pressure(checkpoint, 710, 1000)
     assert next_cycle["due"] is True and next_cycle["acknowledged"] is False
     assert "context_checkpoint" in render_checkpoint(checkpoint)
+
+
+def test_repeated_context_handoffs_keep_prior_verified_and_completed_facts():
+    checkpoint = begin_task(None, prompt="Finish the same project task", turn_id="handoff-1",
+                            workspace="C:/p", settings={})
+    acknowledge_context_checkpoint(checkpoint, {
+        "verified_findings": ["The existing router owns the project routes."],
+        "completed_work": ["Inspected route configuration."],
+        "pending_work": ["Add the requested page."],
+        "next_action": "Add the page through the existing router.",
+    })
+    acknowledge_context_checkpoint(checkpoint, {
+        "verified_findings": ["The existing router owns the project routes.", "The page is now registered."],
+        "completed_work": ["Added the requested page."],
+        "pending_work": ["Inspect the rendered route."],
+        "next_action": "Inspect the rendered route and report the result.",
+    })
+
+    summary = checkpoint["current"]["context_checkpoint"]["summary"]
+    assert summary["verified_findings"] == [
+        "The existing router owns the project routes.", "The page is now registered.",
+    ]
+    assert summary["completed_work"] == [
+        "Inspected route configuration.", "Added the requested page.",
+    ]
+    assert summary["pending_work"] == ["Inspect the rendered route."]
+    assert summary["next_action"] == "Inspect the rendered route and report the result."
+    rendered = render_checkpoint(checkpoint)
+    assert "Inspected route configuration." in rendered
+    assert "Added the requested page." in rendered
+
+
+def test_budgeted_checkpoint_reports_handoff_omissions_and_keeps_latest_next_action():
+    checkpoint = begin_task(None, prompt="Continue the project", turn_id="handoff-budget",
+                            workspace="C:/p", settings={})
+    acknowledge_context_checkpoint(checkpoint, {
+        "verified_findings": [f"Verified finding {index}: " + ("detail " * 18) for index in range(20)],
+        "completed_work": [f"Completed operation {index}: " + ("detail " * 18) for index in range(20)],
+        "pending_work": [f"Pending item {index}: " + ("detail " * 18) for index in range(5)],
+        "next_action": "Inspect the latest implementation, finish verification, and report the actual result.",
+    })
+
+    rendered = render_checkpoint(checkpoint, token_budget=500)
+    payload = json.loads(rendered.partition("\n")[2].partition("\nUse read_task_checkpoint")[0])
+    omissions = checkpoint_omissions(rendered)
+
+    assert ContextManager.estimate(rendered) <= 500
+    assert payload["context_checkpoint"]["summary"]["next_action"] == (
+        "Inspect the latest implementation, finish verification, and report the actual result."
+    )
+    assert any(key.startswith("context_checkpoint_") for key in omissions)
+    assert len(checkpoint["current"]["context_checkpoint"]["summary"]["verified_findings"]) == 20
 
 
 def test_due_context_checkpoint_blocks_changes_until_saved_progress_handoff(tmp_path):

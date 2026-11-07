@@ -150,13 +150,29 @@ def update_context_checkpoint_pressure(checkpoint: dict[str, Any], estimated_tok
 
 
 def acknowledge_context_checkpoint(checkpoint: dict[str, Any], summary: dict[str, Any]) -> None:
-    """Persist the model's concise, explicit progress handoff before allowing mutations."""
+    """Persist an explicit handoff without discarding prior verified/completed facts."""
     task = _current(checkpoint)
     state = task.setdefault("context_checkpoint", {})
     if not isinstance(state, dict):
         state = task["context_checkpoint"] = {}
+    previous = state.get("summary")
+    merged = copy.deepcopy(summary)
+    if isinstance(previous, dict):
+        for key in ("verified_findings", "completed_work"):
+            prior_rows = previous.get(key, [])
+            current_rows = summary.get(key, [])
+            if isinstance(prior_rows, list) and isinstance(current_rows, list):
+                combined: list[str] = []
+                seen: set[str] = set()
+                for item in [*prior_rows, *current_rows]:
+                    if isinstance(item, str) and item.strip() and item.strip() not in seen:
+                        combined.append(item.strip())
+                        seen.add(item.strip())
+                merged[key] = combined
+        # pending_work and next_action describe the current frontier, so the
+        # newest explicit checkpoint replaces those fields.
     state.update({"due": False, "acknowledged": True,
-                  "summary": copy.deepcopy(summary), "acknowledged_at": time.time(),
+                  "summary": merged, "acknowledged_at": time.time(),
                   "updated_at": time.time()})
     task["updated_at"] = time.time()
 
@@ -365,6 +381,49 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
     def current_size() -> int:
         return token_estimate(encode())
 
+    def compact_context_checkpoint() -> bool:
+        context_state = visible.get("context_checkpoint")
+        summary = context_state.get("summary") if isinstance(context_state, dict) else None
+        if isinstance(summary, dict):
+            # Keep the most recent details and next action in the inference
+            # copy. The canonical checkpoint and progress events remain complete.
+            for key in ("verified_findings", "completed_work", "pending_work"):
+                rows = summary.get(key)
+                if isinstance(rows, list) and rows:
+                    rows.pop(0)
+                    note_omission(f"context_checkpoint_{key}")
+                    return True
+            next_action = summary.get("next_action")
+            if isinstance(next_action, str) and next_action:
+                if len(next_action) > 64:
+                    shortened = next_action[:32] + "…" + next_action[-31:]
+                    note_omission("context_checkpoint_next_action_characters", len(next_action) - len(shortened))
+                    summary["next_action"] = shortened
+                else:
+                    summary.pop("next_action", None)
+                    note_omission("context_checkpoint_next_action")
+                return True
+            summary.pop("verified_findings", None)
+            summary.pop("completed_work", None)
+            summary.pop("pending_work", None)
+            if not summary:
+                context_state.pop("summary", None)
+            note_omission("context_checkpoint_summary_fields")
+            return True
+        if isinstance(context_state, dict):
+            field = next((key for key in ("last_ratio", "last_estimated_tokens", "input_budget",
+                                          "threshold_ratio", "reset_ratio", "requested_at", "acknowledged_at",
+                                          "armed", "due", "acknowledged", "updated_at")
+                          if key in context_state), None)
+            if field is not None:
+                context_state.pop(field, None)
+                note_omission(f"context_checkpoint_{field}")
+                return True
+            visible.pop("context_checkpoint", None)
+            note_omission("context_checkpoint_fields")
+            return True
+        return False
+
     while current_size() > token_budget:
         reduced = False
         for key in ("user_updates", "operations", "decisions", "changed_files", "blockers"):
@@ -435,6 +494,8 @@ def render_checkpoint(checkpoint: dict[str, Any] | None, token_budget: int | Non
                 reduced = True
                 break
         if reduced:
+            continue
+        if compact_context_checkpoint():
             continue
         shortened = next((key for key in ("last_assistant_update", "goal", "next_action") if shorten_string(key)), None)
         if shortened:
