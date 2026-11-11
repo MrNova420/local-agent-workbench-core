@@ -58,6 +58,12 @@ class ToolSelectionStabilityTests(unittest.TestCase):
                 self.mcp_tools = []
                 self.registry = self.state["registry"]
 
+            def _tools_for_request(self, base_messages, selected_names=None):
+                return AgentEngine._tools_for_request(self, base_messages, selected_names)
+
+            def _load_tools(self, args, base_messages, response_byte_budget=None):
+                return AgentEngine._load_tools(self, args, base_messages, response_byte_budget)
+
         harness = _Harness()
         results = []
         for prompt in prompts:
@@ -96,11 +102,15 @@ class ToolSelectionStabilityTests(unittest.TestCase):
     def test_explicitly_loaded_tool_is_merged_and_then_stays_sticky(self):
         harness, _ = self._engine_tools(self._schemas(), ["fix the login bug"])
         original = list(harness._sticky_request_tools)
-        harness._selected_tool_names = {"append_file"}
-        request2 = AgentEngine._tools_for_request(
-            harness, [{"role": "system", "content": "sys"}, {"role": "user", "content": "continue"}])
+        # Exercise the same explicit-schema loading path used by the model's
+        # load_tools action, rather than mutating the selection state directly.
+        message = [{"role": "system", "content": "sys"}, {"role": "user", "content": "continue"}]
+        result = AgentEngine._load_tools(harness, {"names": ["append_file"]}, message)
+        self.assertIn("append_file", result)
+        request2 = AgentEngine._tools_for_request(harness, message)
         request2_names = [(tool.get("function") or {}).get("name") for tool in request2]
         self.assertIn("append_file", request2_names)
+        self.assertNotIn("append_file", harness._deferred_tool_names)
         self.assertEqual(request2[:len(original)], original)
         request3 = AgentEngine._tools_for_request(
             harness, [{"role": "system", "content": "sys"}, {"role": "user", "content": "another continuation"}])

@@ -2144,6 +2144,9 @@ class OllamaRuntime:
                 raise ConnectionError("Ollama stream closed without its final done=true record; received output was preserved as partial.")
             emit({"type":"request_complete","provider":"ollama","request_index":request_index,
                   "provider_done":result.get("done"),"provider_done_reason":result.get("done_reason")})
+            usage={key:result[key] for key in ("prompt_eval_count","prompt_eval_cached_count","prompt_eval_duration","eval_count","eval_duration","load_duration","total_duration")
+                   if isinstance(result.get(key),(int,float)) and not isinstance(result.get(key),bool)}
+            if usage:emit({"type":"generation_usage","provider":"ollama","request_index":request_index,"usage":usage})
             return result
         except Exception as exc:
             with self.lock:active_response=self.response
@@ -2344,7 +2347,12 @@ class AgentEngine:
             except (TypeError,ValueError):
                 sticky=None
         if sticky is not None:
-            self._deferred_tool_names=list(getattr(self,"_sticky_deferred_tool_names",[]))
+            sticky_names={(tool.get("function") or {}).get("name") for tool in sticky}
+            self._deferred_tool_names=[
+                name for name in getattr(self,"_sticky_deferred_tool_names",[])
+                if name not in sticky_names
+            ]
+            self._sticky_deferred_tool_names=list(self._deferred_tool_names)
             self._catalog_skill_names=list(getattr(self,"_sticky_catalog_skill_names",[]))
             self.state["deferred_tool_names"]=list(self._deferred_tool_names)
             return sticky
