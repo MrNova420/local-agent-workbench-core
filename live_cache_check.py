@@ -17,7 +17,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from desktop_engine import AgentEngine  # noqa: E402
 
-TARGET = "ornith-1.5-9b-q4-k-m:64k"
+DEFAULT_TARGET = "ornith-1.5-9b-q4-k-m:64k"
+
+
+def _selected_target() -> str:
+    """Accept an explicitly named already-resident model.
+
+    Passing a model never authorises loading or evicting anything: the probe
+    still refuses unless that exact model is already resident.
+    """
+    argv = sys.argv[1:]
+    if "--model" in argv:
+        index = argv.index("--model")
+        if index + 1 < len(argv):
+            return argv[index + 1].strip()
+    return DEFAULT_TARGET
 
 class UsageRuntime:
     """Same usage-event adapter used by the desktop sidecar."""
@@ -52,6 +66,7 @@ def deny(name, args):
     return False
 
 def main() -> int:
+    TARGET = _selected_target()
     req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
     try:
         with urllib.request.urlopen(req, timeout=5) as response:
