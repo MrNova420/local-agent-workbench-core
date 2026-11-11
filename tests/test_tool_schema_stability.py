@@ -77,7 +77,8 @@ class ToolSelectionStabilityTests(unittest.TestCase):
                 schema("write_file", "write a project file"),
                 schema("edit_file", "edit a project file"),
                 schema("run_command", "run an approved command"),
-                schema("git_status", "git status of the project")]
+                schema("git_status", "git status of the project"),
+                schema("append_file", "append to a project file")]
 
     def test_same_prompt_repeated_selects_identical_tools(self):
         _, results = self._engine_tools(self._schemas(), ["fix the login bug"] * 2)
@@ -91,6 +92,19 @@ class ToolSelectionStabilityTests(unittest.TestCase):
             ["fix the login bug in the auth module",
              "the auth module now needs a test; run the suite after the fix"])
         self.assertEqual(results[0], results[1], "tool schema array changed between consecutive requests")
+
+    def test_explicitly_loaded_tool_is_merged_and_then_stays_sticky(self):
+        harness, _ = self._engine_tools(self._schemas(), ["fix the login bug"])
+        original = list(harness._sticky_request_tools)
+        harness._selected_tool_names = {"append_file"}
+        request2 = AgentEngine._tools_for_request(
+            harness, [{"role": "system", "content": "sys"}, {"role": "user", "content": "continue"}])
+        request2_names = [(tool.get("function") or {}).get("name") for tool in request2]
+        self.assertIn("append_file", request2_names)
+        self.assertEqual(request2[:len(original)], original)
+        request3 = AgentEngine._tools_for_request(
+            harness, [{"role": "system", "content": "sys"}, {"role": "user", "content": "another continuation"}])
+        self.assertEqual(request2, request3)
 
 
 if __name__ == "__main__":

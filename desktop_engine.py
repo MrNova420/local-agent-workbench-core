@@ -2318,11 +2318,29 @@ class AgentEngine:
         # reachable through load_tools, and an explicit selected_names request
         # (load_tools) still recomputes.
         sticky=None
-        if selected_names is None and getattr(self,"_sticky_request_tools",None):
-            candidate=copy.deepcopy(self._sticky_request_tools)
+        sticky_tools=getattr(self,"_sticky_request_tools",None)
+        # Explicitly loaded schemas must be merged into the sticky set. Otherwise
+        # load_tools can report success but the following ordinary request would
+        # silently reuse the pre-load schema list.
+        if selected_names is None and sticky_tools:
+            registry_schemas=self.state["registry"].schemas+self.mcp_tools
+            by_name={(tool.get("function") or {}).get("name"):tool for tool in registry_schemas}
+            sticky_names={(tool.get("function") or {}).get("name") for tool in sticky_tools}
+            newly_selected=set(getattr(self,"_selected_tool_names",set()))-sticky_names
+            candidate=copy.deepcopy(sticky_tools)
+            for name in sorted(newly_selected):
+                schema=by_name.get(name)
+                if schema is not None:
+                    candidate.append(copy.deepcopy(schema))
             try:
-                if self.context.estimate_request(json.dumps({"messages":base_messages,"tools":candidate},ensure_ascii=False,separators=(",",":")))<=self.context.budget(self.state["max_tokens"]):
+                fits_budget=(self.context.estimate_request(json.dumps(
+                    {"messages":base_messages,"tools":candidate},ensure_ascii=False,separators=(",",":"))
+                    )<=self.context.budget(self.state["max_tokens"]))
+                if newly_selected.issubset({(tool.get("function") or {}).get("name") for tool in candidate}) and fits_budget:
                     sticky=candidate
+                    if newly_selected:
+                        self._sticky_request_tools=copy.deepcopy(candidate)
+                        self._sticky_selected_names=set(getattr(self,"_sticky_selected_names",set()))|newly_selected
             except (TypeError,ValueError):
                 sticky=None
         if sticky is not None:
