@@ -16,8 +16,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from desktop_engine import AgentEngine  # noqa: E402
-from urllib.parse import urlparse
-from urllib.request import urlopen
 
 TARGET = "ornith-1.5-9b-q4-k-m:64k"
 
@@ -38,7 +36,10 @@ rows: list[dict] = []
 
 def event(payload: dict) -> None:
     kind = payload.get("type")
-    if kind == "request_headers":
+    if kind in {"complete", "error", "cancelled", "stopped_after_operation"}:
+        row = {"type": kind, "workflowOutcome": payload.get("workflowOutcome"), "error": payload.get("error")}
+        rows.append(row); print(json.dumps(row), flush=True)
+    elif kind == "request_headers":
         row = {"type": kind, "request_index": payload.get("request_index"),
                "header_wait_seconds": payload.get("header_wait_seconds"), "status": payload.get("http_status")}
         rows.append(row); print(json.dumps(row), flush=True)
@@ -52,39 +53,60 @@ def deny(name, args):
 
 def main() -> int:
     req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
-    with urllib.request.urlopen(req, timeout=5) as response:
-        installed = {m.get("model") for m in json.loads(response.read()).get("models", [])}
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            installed = {m.get("model") for m in json.loads(response.read()).get("models", [])}
+    except Exception as exc:
+        print(json.dumps({"pass":False,"blocked":"ollama_unavailable","error":f"{type(exc).__name__}: {exc}"}), flush=True)
+        return 3
     if TARGET not in installed:
         print(f"Required model not installed: {TARGET}"); return 2
-    with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=5) as response:
-        loaded = {m.get("name") for m in json.loads(response.read()).get("models", [])}
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=5) as response:
+            loaded = {m.get("name") for m in json.loads(response.read()).get("models", [])}
+    except Exception as exc:
+        print(json.dumps({"pass":False,"blocked":"ollama_runner_state_unavailable","error":f"{type(exc).__name__}: {exc}"}), flush=True)
+        return 3
     if TARGET not in loaded:
         print(f"Refusing to load or evict models; {TARGET} is installed but not resident. Current loaded: {sorted(loaded)}")
         return 3
     print(f"Using already-resident {TARGET}; no model lifecycle change.", flush=True)
-    prompt = (
-        "Read-only acceptance: inspect nothing, write nothing, run no commands. "
-        "Reply READY, then on my next message reply CONFIRMED."
-    )
-    followup = "As requested, reply with exactly CONFIRMED; do not inspect or change files."
+    prompts = [
+        "Read-only check: do not inspect or change files. Reply exactly READY.",
+        "Read-only check: do not inspect or change files. Reply exactly CONFIRMED.",
+    ]
+    message_completions = 0
     with tempfile.TemporaryDirectory(prefix="workbench-ornith-cache-") as root:
         engine = AgentEngine(Path(root), model=TARGET, context=65536, max_tokens=8192,
                              temperature=0.2, access="plan", approval_mode="per-action",
                              task_intent="discuss", event=event, approve=deny)
         engine.runtime = UsageRuntime(engine.runtime)
-        started = time.monotonic()
-        engine.run(prompt)
-        first_elapsed = time.monotonic() - started
-        print(json.dumps({"type":"user_message_finished", "message":1,
-                          "elapsed_seconds":round(first_elapsed,2)}), flush=True)
-        started = time.monotonic()
-        engine.run(followup, engine.state.get("messages", []))
-        print(json.dumps({"type":"user_message_finished", "message":2,
-                          "elapsed_seconds":round(time.monotonic()-started,2)}), flush=True)
+        for index, prompt in enumerate(prompts, start=1):
+            started = time.monotonic()
+            result = engine.run(prompt, engine.state.get("messages", []))
+            completed = bool(result and result[-1].get("role") == "assistant"
+                             and str(result[-1].get("content", "")).strip())
+            message_completions += int(completed)
+            print(json.dumps({"type":"user_message_finished", "message":index,
+                              "content_completed":completed,
+                              "elapsed_seconds":round(time.monotonic()-started,2)}), flush=True)
     headers = [r for r in rows if r["type"] == "request_headers"]
     usage = [r for r in rows if r["type"] == "generation_usage"]
-    print("SUMMARY", json.dumps({"requests":len(headers), "headers":headers, "usage":usage}), flush=True)
-    return 0
+    request_ids = sorted({row.get("request_index") for row in headers
+                          if isinstance(row.get("request_index"), int)})
+    usage_by_request = {row.get("request_index"): row for row in usage
+                        if isinstance(row.get("request_index"), int)}
+    second_usage = usage_by_request.get(request_ids[1]) if len(request_ids) > 1 else None
+    cached = second_usage.get("prompt_eval_cached_count") if second_usage else None
+    total = second_usage.get("prompt_eval_count") if second_usage else None
+    cache_percent = round(cached * 100 / total) if isinstance(cached, int) and isinstance(total, int) and total > 0 else None
+    passed = (message_completions == 2 and len(request_ids) >= 2
+              and all(request_id in usage_by_request for request_id in request_ids[:2])
+              and isinstance(cached, int) and isinstance(total, int) and total > 0 and cached > 0)
+    print("SUMMARY", json.dumps({"pass":passed, "completed_user_messages":message_completions,
+          "request_ids":request_ids, "headers":headers, "usage":usage,
+          "second_request_cache_percent":cache_percent}), flush=True)
+    return 0 if passed else 4
 
 if __name__ == "__main__":
     raise SystemExit(main())
