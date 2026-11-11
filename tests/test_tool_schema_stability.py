@@ -122,6 +122,33 @@ if __name__ == "__main__":
 
 
 class MessagePrefixStabilityTests(unittest.TestCase):
+    def test_provider_token_calibration_is_scoped_to_provider_and_exact_model(self):
+        context = ContextManager(context=65536)
+        checkpoint = {"provider_token_calibrations": {
+            "ollama|model-a": {"max_observed_ratio": 0.5, "observation_count": 2},
+            "ollama|model-b": {"max_observed_ratio": 0.9, "observation_count": 3},
+        }}
+        context.configure_provider_calibration(checkpoint, "ollama", "model-a")
+        estimate_a = context.estimate_request("x" * 100)
+        self.assertEqual(estimate_a, 25)
+        context.configure_provider_calibration(checkpoint, "ollama", "model-b")
+        estimate_b = context.estimate_request("x" * 100)
+        self.assertEqual(estimate_b, 45)
+        context.configure_provider_calibration(checkpoint, "llama.cpp", "model-b")
+        self.assertEqual(context.estimate_request("x" * 100), ContextManager.estimate("x" * 100))
+
+    def test_observed_provider_counts_update_only_matching_calibration(self):
+        context = ContextManager(context=65536)
+        checkpoint = {}
+        context.configure_provider_calibration(checkpoint, "ollama", "model-a")
+        recorded = context.observe_provider_prompt(checkpoint, "ollama", "model-a", 100, 80)
+        self.assertEqual(recorded["max_observed_ratio"], 0.8)
+        self.assertEqual(recorded["observation_count"], 1)
+        other = context.observe_provider_prompt(checkpoint, "ollama", "model-b", 100, 90)
+        self.assertEqual(other["max_observed_ratio"], 0.9)
+        self.assertEqual(checkpoint["provider_token_calibrations"]["ollama|model-a"]["max_observed_ratio"], 0.8)
+        self.assertEqual(checkpoint["provider_token_calibrations"]["ollama|model-b"]["max_observed_ratio"], 0.9)
+
     def test_system_prompt_is_deterministic(self):
         from desktop_engine import agent_system_prompt
         first = agent_system_prompt("ask", "Project rules here", "standard", True, "auto", "")
