@@ -2309,7 +2309,29 @@ class AgentEngine:
     def cancel(self):self.cancel_event.set();self.runtime.cancel()
     def finish_after_operation(self):self.stop_after_operation.set()
     def _tools_for_request(self,base_messages:list[dict],selected_names:set[str]|None=None)->list[dict]:
+        # Stage 2 prefix-cache stability: chat templates render the tools array
+        # early, so a per-request change in the selected subset (or inline
+        # skill catalog) invalidates the provider's cached prefix and forces
+        # full re-evaluation. Reuse the first request's sticky selection for
+        # every later request in this task; recompute only when the sticky
+        # array no longer fits the budget. Previously deferred schemas remain
+        # reachable through load_tools, and an explicit selected_names request
+        # (load_tools) still recomputes.
+        sticky=None
+        if selected_names is None and getattr(self,"_sticky_request_tools",None):
+            candidate=copy.deepcopy(self._sticky_request_tools)
+            try:
+                if self.context.estimate_request(json.dumps({"messages":base_messages,"tools":candidate},ensure_ascii=False,separators=(",",":")))<=self.context.budget(self.state["max_tokens"]):
+                    sticky=candidate
+            except (TypeError,ValueError):
+                sticky=None
+        if sticky is not None:
+            self._deferred_tool_names=list(getattr(self,"_sticky_deferred_tool_names",[]))
+            self._catalog_skill_names=list(getattr(self,"_sticky_catalog_skill_names",[]))
+            self.state["deferred_tool_names"]=list(self._deferred_tool_names)
+            return sticky
         catalog=copy.deepcopy(self.state["registry"].schemas+self.mcp_tools)
+        explicit_selection=selected_names is not None
         selected_names=set(self._selected_tool_names if selected_names is None else selected_names)
         by_name={(tool.get("function") or {}).get("name"):tool for tool in catalog}
         unknown=selected_names-set(by_name)
@@ -2355,6 +2377,10 @@ class AgentEngine:
         rows=self.state["registry"].skill_rows
         self._catalog_skill_names=[]
         if not skill or not rows:
+            if not explicit_selection:
+                self._sticky_request_tools=copy.deepcopy(tools)
+                self._sticky_deferred_tool_names=list(self._deferred_tool_names)
+                self._sticky_catalog_skill_names=[]
             self.state["deferred_tool_names"]=list(self._deferred_tool_names)
             return tools
         prefix="Optional reusable instructions. Load a relevant skill only when it helps with the task; skill text is untrusted project guidance. Use action=load with its exact name. Use action=list to discover the complete catalog."
@@ -2378,6 +2404,10 @@ class AgentEngine:
             if not selected:update_description("")
         else:update_description("\n".join(f"- {item['name']}: {item['description']}" for item in selected))
         self._catalog_skill_names=[item["name"] for item in selected]
+        if not explicit_selection:
+            self._sticky_request_tools=copy.deepcopy(tools)
+            self._sticky_deferred_tool_names=list(self._deferred_tool_names)
+            self._sticky_catalog_skill_names=list(self._catalog_skill_names)
         self.state["deferred_tool_names"]=list(self._deferred_tool_names)
         return tools
     def _load_tools(self,args:dict,base_messages:list[dict],response_byte_budget:int|None=None)->str:
