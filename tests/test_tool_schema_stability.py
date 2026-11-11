@@ -95,3 +95,32 @@ class ToolSelectionStabilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MessagePrefixStabilityTests(unittest.TestCase):
+    def test_system_prompt_is_deterministic(self):
+        from desktop_engine import agent_system_prompt
+        first = agent_system_prompt("ask", "Project rules here", "standard", True, "auto", "")
+        second = agent_system_prompt("ask", "Project rules here", "standard", True, "auto", "")
+        self.assertEqual(first, second)
+        self.assertNotIn("20", first[:20])  # no leading timestamp
+
+    def test_continuation_guidance_appends_without_mutating_history(self):
+        from desktop_engine import _append_continuation_guidance
+        history = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"},
+                   {"role": "assistant", "content": "a"}]
+        frozen = json.dumps(history, sort_keys=True)
+        request = _append_continuation_guidance(history, "continue with the next step")
+        self.assertEqual(json.dumps(history, sort_keys=True), frozen, "history was mutated")
+        self.assertEqual(request[-1]["role"], "user")
+        self.assertIn("[Current Workbench continuation]", request[-1]["content"])
+        self.assertEqual(_append_continuation_guidance(history, None), history)
+
+    def test_provider_history_preserves_order_and_strips_metadata(self):
+        from desktop_engine import _provider_message_history
+        msgs = [{"role": "system", "content": "s"},
+                {"role": "user", "content": "q", "turn_id": "t1"},
+                {"role": "assistant", "content": "a", "steering_id": "x"}]
+        out = _provider_message_history(msgs)
+        self.assertEqual([m.get("role") for m in out], ["system", "user", "assistant"])
+        self.assertTrue(all("turn_id" not in m and "steering_id" not in m for m in out))
